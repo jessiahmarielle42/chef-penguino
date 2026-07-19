@@ -1,6 +1,7 @@
 import './style.css'
 
 const app = document.querySelector('#app')
+const BASE = import.meta.env.BASE_URL
 
 const STORAGE_KEY = 'chef-penguino-save'
 const INTRO_DURATION = 5.2 // seconds of the intro clip to play before cutting to the game
@@ -28,7 +29,7 @@ renderIntro()
 function renderIntro() {
   app.innerHTML = `
     <div class="intro">
-      <video class="intro-video" src="/assets/intro.mp4" playsinline autoplay></video>
+      <video class="intro-video" src="${BASE}assets/intro.mp4" playsinline autoplay></video>
       <button class="intro-skip" type="button">Skip</button>
     </div>
   `
@@ -54,7 +55,7 @@ function renderIntro() {
 function renderIntroStart() {
   app.innerHTML = `
     <div class="intro-start">
-      <img src="/assets/penguin-icon.png" alt="Chef Penguino" />
+      <img src="${BASE}assets/penguin-icon.png" alt="Chef Penguino" />
       <h1>Chef Penguino</h1>
       <button type="button">Tap to Start</button>
     </div>
@@ -68,7 +69,7 @@ function renderGame() {
   app.innerHTML = `
     <div class="kitchen">
       <button class="tap-layer" type="button" aria-label="Tap to make pizza">
-        <img class="kitchen-bg" src="/assets/kitchen-bg.jpg" alt="" />
+        <img class="kitchen-bg" src="${BASE}assets/kitchen-bg.jpg" alt="" />
       </button>
       <div class="hud">
         <div class="score">
@@ -86,7 +87,7 @@ function renderGame() {
   const muteBtn = app.querySelector('.mute-btn')
   const hint = app.querySelector('.tap-hint')
 
-  const music = new Audio('/assets/bg-music.mp3')
+  const music = new Audio(`${BASE}assets/bg-music.mp3`)
   music.loop = true
   music.volume = 0.5
   const updateMuteIcon = () => { muteBtn.textContent = state.muted ? '🔇' : '🔊' }
@@ -126,7 +127,7 @@ function renderGame() {
     const jitterY = y + (Math.random() * 20 - 10)
 
     const pizza = document.createElement('img')
-    pizza.src = '/assets/pizza-pop.png'
+    pizza.src = `${BASE}assets/pizza-pop.png`
     pizza.className = 'pizza-pop'
     pizza.style.left = `${jitterX}px`
     pizza.style.top = `${jitterY}px`
