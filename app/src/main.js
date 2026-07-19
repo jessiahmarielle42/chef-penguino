@@ -4,7 +4,7 @@ const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
 
 const STORAGE_KEY = 'chef-penguino-save'
-const INTRO_DURATION = 5.2 // seconds of the intro clip to play before cutting to the game
+const INTRO_DURATION = 2.8 // seconds of the intro clip to play before cutting to the game (right before the customer scene starts)
 
 const state = load()
 
