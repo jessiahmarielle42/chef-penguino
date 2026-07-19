@@ -4,7 +4,6 @@ const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
 
 const STORAGE_KEY = 'chef-penguino-save'
-const INTRO_DURATION = 2.8 // seconds of the intro clip to play before cutting to the game (right before the customer scene starts)
 
 const state = load()
 
@@ -37,14 +36,14 @@ function renderIntro() {
   const video = app.querySelector('.intro-video')
   const skipBtn = app.querySelector('.intro-skip')
 
+  let transitioned = false
   const goToGame = () => {
+    if (transitioned) return
+    transitioned = true
     video.pause()
     renderGame()
   }
 
-  video.addEventListener('timeupdate', () => {
-    if (video.currentTime >= INTRO_DURATION) goToGame()
-  })
   video.addEventListener('ended', goToGame)
   skipBtn.addEventListener('click', goToGame)
 
