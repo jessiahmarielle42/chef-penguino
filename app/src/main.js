@@ -63,31 +63,31 @@ function renderIntroStart() {
 function renderGame() {
   app.innerHTML = `
     <div class="kitchen">
-      <video class="kitchen-loop" src="${BASE}assets/gameplay-loop.mp4" playsinline autoplay loop></video>
-      <button class="mute-btn" type="button" aria-label="Toggle sound"></button>
+      <video class="kitchen-loop" src="${BASE}assets/gameplay-loop.mp4" playsinline autoplay loop muted></video>
+      <button class="mute-btn" type="button" aria-label="Toggle music"></button>
     </div>
   `
 
   const loopVideo = app.querySelector('.kitchen-loop')
   const muteBtn = app.querySelector('.mute-btn')
 
-  const updateMuteIcon = () => { muteBtn.textContent = state.muted ? '🔇' : '🔊' }
-  loopVideo.muted = state.muted
-  updateMuteIcon()
+  // The video's own audio track stays off; background music plays instead.
+  loopVideo.muted = true
+  loopVideo.play().catch(() => {})
 
-  // Autoplay with sound is usually blocked on first load; retry muted so the loop always starts.
-  loopVideo.play().catch(() => {
-    loopVideo.muted = true
-    state.muted = true
-    updateMuteIcon()
-    save()
-    loopVideo.play().catch(() => {})
-  })
+  const music = new Audio(`${BASE}assets/bg-music.mp3`)
+  music.loop = true
+  music.volume = 0.5
+
+  const updateMuteIcon = () => { muteBtn.textContent = state.muted ? '🔇' : '🔊' }
+  updateMuteIcon()
+  if (!state.muted) music.play().catch(() => {})
 
   muteBtn.addEventListener('click', () => {
     state.muted = !state.muted
-    loopVideo.muted = state.muted
     updateMuteIcon()
+    if (state.muted) music.pause()
+    else music.play().catch(() => {})
     save()
   })
 }
