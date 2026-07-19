@@ -12,15 +12,11 @@ function load() {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return JSON.parse(raw)
   } catch {}
-  return { pizzas: 0, muted: false }
+  return { muted: false }
 }
 
 function save() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-}
-
-function formatNumber(n) {
-  return Math.floor(n).toLocaleString('en-US')
 }
 
 renderIntro()
@@ -67,78 +63,31 @@ function renderIntroStart() {
 function renderGame() {
   app.innerHTML = `
     <div class="kitchen">
-      <button class="tap-layer" type="button" aria-label="Tap to make pizza">
-        <img class="kitchen-bg" src="${BASE}assets/kitchen-bg.jpg" alt="" />
-      </button>
-      <div class="hud">
-        <div class="score">
-          <span id="score-value">${formatNumber(state.pizzas)}</span>
-          <span class="label">pizzas</span>
-        </div>
-        <button class="mute-btn" type="button" aria-label="Toggle music"></button>
-      </div>
-      <div class="tap-hint">Tap Chef Penguino to make pizza!</div>
+      <video class="kitchen-loop" src="${BASE}assets/gameplay-loop.mp4" playsinline autoplay loop></video>
+      <button class="mute-btn" type="button" aria-label="Toggle sound"></button>
     </div>
   `
 
-  const tapLayer = app.querySelector('.tap-layer')
-  const scoreEl = app.querySelector('#score-value')
+  const loopVideo = app.querySelector('.kitchen-loop')
   const muteBtn = app.querySelector('.mute-btn')
-  const hint = app.querySelector('.tap-hint')
 
-  const music = new Audio(`${BASE}assets/bg-music.mp3`)
-  music.loop = true
-  music.volume = 0.5
   const updateMuteIcon = () => { muteBtn.textContent = state.muted ? '🔇' : '🔊' }
+  loopVideo.muted = state.muted
   updateMuteIcon()
-  if (!state.muted) music.play().catch(() => {})
+
+  // Autoplay with sound is usually blocked on first load; retry muted so the loop always starts.
+  loopVideo.play().catch(() => {
+    loopVideo.muted = true
+    state.muted = true
+    updateMuteIcon()
+    save()
+    loopVideo.play().catch(() => {})
+  })
 
   muteBtn.addEventListener('click', () => {
     state.muted = !state.muted
+    loopVideo.muted = state.muted
     updateMuteIcon()
-    if (state.muted) music.pause()
-    else music.play().catch(() => {})
     save()
   })
-
-  let hintShown = true
-  let tapTimeout
-
-  tapLayer.addEventListener('pointerdown', (e) => {
-    state.pizzas += 1
-    scoreEl.textContent = formatNumber(state.pizzas)
-    save()
-
-    if (hintShown) {
-      hintShown = false
-      hint.style.opacity = '0'
-    }
-
-    tapLayer.classList.add('tapped')
-    clearTimeout(tapTimeout)
-    tapTimeout = setTimeout(() => tapLayer.classList.remove('tapped'), 120)
-
-    spawnPop(e.clientX, e.clientY)
-  })
-
-  function spawnPop(x, y) {
-    const jitterX = x + (Math.random() * 30 - 15)
-    const jitterY = y + (Math.random() * 20 - 10)
-
-    const pizza = document.createElement('img')
-    pizza.src = `${BASE}assets/pizza-pop.png`
-    pizza.className = 'pizza-pop'
-    pizza.style.left = `${jitterX}px`
-    pizza.style.top = `${jitterY}px`
-    tapLayer.after(pizza)
-    pizza.addEventListener('animationend', () => pizza.remove())
-
-    const plus = document.createElement('div')
-    plus.className = 'pop-plus'
-    plus.textContent = '+1'
-    plus.style.left = `${jitterX + 34}px`
-    plus.style.top = `${jitterY - 10}px`
-    tapLayer.after(plus)
-    plus.addEventListener('animationend', () => plus.remove())
-  }
 }

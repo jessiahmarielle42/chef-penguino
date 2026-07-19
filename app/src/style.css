@@ -94,65 +94,18 @@ html, body {
   background: #0d0d12;
 }
 
-.kitchen-bg {
+.kitchen-loop {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
-  animation: breathe 3.6s ease-in-out infinite;
-  transform-origin: 50% 78%;
-}
-
-@keyframes breathe {
-  0%, 100% { transform: scale(1) translateY(0); }
-  50% { transform: scale(1.015) translateY(-4px); }
-}
-
-.tap-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  border: none;
-  background: transparent;
-  padding: 0;
-  width: 100%;
-  height: 100%;
-}
-
-.tap-layer.tapped .kitchen-bg {
-  animation: none;
-  transform: scale(0.975) translateY(3px);
-}
-
-.hud {
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: max(14px, env(safe-area-inset-top)) 16px 12px;
-  color: #fff5e6;
-  pointer-events: none;
-}
-
-.hud .score {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-weight: 700;
-  font-size: 24px;
-  text-shadow: 0 2px 6px rgba(0,0,0,.6);
-}
-
-.hud .score .label {
-  font-size: 13px;
-  font-weight: 500;
-  opacity: 0.8;
 }
 
 .mute-btn {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  right: 16px;
   width: 42px;
   height: 42px;
   border-radius: 50%;
@@ -163,49 +116,5 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  pointer-events: auto;
-  z-index: 4;
-}
-
-.pizza-pop {
-  position: absolute;
-  z-index: 5;
-  width: 54px;
-  height: auto;
-  pointer-events: none;
-  transform: translate(-50%, -50%);
-  animation: pop-float 800ms ease-out forwards;
-}
-
-.pop-plus {
-  position: absolute;
-  z-index: 5;
-  pointer-events: none;
-  color: #ffe9b0;
-  font-weight: 800;
-  font-size: 20px;
-  text-shadow: 0 2px 4px rgba(0,0,0,.6);
-  transform: translate(-50%, -50%);
-  animation: pop-float 800ms ease-out forwards;
-}
-
-@keyframes pop-float {
-  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
-  15% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
-  100% { opacity: 0; transform: translate(-50%, calc(-50% - 90px)) scale(1); }
-}
-
-.tap-hint {
-  position: absolute;
-  bottom: max(18px, env(safe-area-inset-bottom));
-  left: 0;
-  right: 0;
-  text-align: center;
-  color: rgba(255,245,230,.85);
-  font-size: 14px;
-  letter-spacing: 0.5px;
-  z-index: 3;
-  pointer-events: none;
-  text-shadow: 0 2px 4px rgba(0,0,0,.6);
-  transition: opacity 400ms ease;
+  z-index: 2;
 }
