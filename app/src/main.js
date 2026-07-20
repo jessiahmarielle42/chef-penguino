@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.0.6'
+const APP_VERSION = 'v2.0.7'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -587,7 +587,7 @@ function renderShop() {
     return
   }
 
-  const thumb = `${BASE}assets/display-case/12.jpg`
+  const thumb = `${BASE}assets/display-case/shop-preview.jpg`
   const cards = EMOTES.map(e => {
     const owned = isOwned(e.id)
     const equipped = equippedEmote() === e.id
