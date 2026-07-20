@@ -500,6 +500,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .btn-edit-profile svg { width:1.125rem; height:1.125rem; flex: none; }
 .popup-wide h3 { text-align: center; }
 .popup-wide .coin.xl { display: block; }
+.popup-emoji-xl { font-size:4.5rem; line-height: 1; margin:0 auto 1rem; text-align: center; filter: drop-shadow(0 8px 16px rgba(0,0,0,0.35)); }
 .popup-facts { display: flex; flex-direction: column; gap:0.75rem; margin-bottom:1.25rem; }
 .fact { display: flex; gap:0.625rem; align-items: baseline; }
 .fact-k {

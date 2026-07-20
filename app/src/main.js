@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.1.2'
+const APP_VERSION = 'v2.1.3'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -385,7 +385,7 @@ function statusBarHtml() {
         </div>
       </div>
       <div class="stats">
-        <span class="chip"><span class="ic">🍕</span><span>${formatScore(displayPizzas())}</span></span>
+        <button class="chip" type="button" data-action="pizza-info"><span class="ic">🍕</span><span>${formatScore(displayPizzas())}</span></button>
         <button class="chip coin-chip" type="button" data-action="coin-info">${coinImg()}<span>${coinBalance()}</span></button>
       </div>
     </div>
@@ -432,6 +432,7 @@ function mountScreen(active, contentHtml, after, opts = {}) {
 function wireStatusBar() {
   app.querySelector('[data-action="profile"]')?.addEventListener('click', openProfilePopup)
   app.querySelector('[data-action="coin-info"]')?.addEventListener('click', openCoinInfo)
+  app.querySelector('[data-action="pizza-info"]')?.addEventListener('click', openPizzaInfo)
 }
 
 function wireTabBar() {
@@ -700,6 +701,19 @@ function openCoinInfo() {
     </div>
     <button type="button" data-action="ok">Got it</button>
   `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
+}
+
+// =================================================================
+//  Lifetime pizzas info popup (the (i) education popup, top-left chip)
+// =================================================================
+function openPizzaInfo() {
+  const o = overlay(`
+    <div class="popup-emoji-xl">🍕</div>
+    <h3>Lifetime Pizzas</h3>
+    <p>All the Pizzas you've ever cooked. 1 Pizza = 1 hour you worked on a task!</p>
+    <button type="button" data-action="ok">Got it</button>
+  `)
   o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
 }
 
