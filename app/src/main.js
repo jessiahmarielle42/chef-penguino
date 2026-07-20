@@ -541,7 +541,7 @@ function renderSettings() {
     <div class="home">
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
       <div class="home-content">
-        <button class="back-btn" type="button">&larr; Back</button>
+        <button class="back-arrow-btn back-arrow-fixed" type="button" aria-label="Back">&larr;</button>
         <h1>Settings</h1>
         <div class="settings-row">
           <label for="volume-slider">Music volume</label>
@@ -578,7 +578,7 @@ function renderSettings() {
       </div>
     </div>
   `
-  app.querySelector('.back-btn').addEventListener('click', renderHome)
+  app.querySelector('.back-arrow-btn').addEventListener('click', renderHome)
   app.querySelector('#volume-slider').addEventListener('input', (e) => {
     state.volume = Number(e.target.value) / 100
     save()
@@ -620,7 +620,7 @@ async function renderFriends() {
       <div class="home">
         <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
         <div class="home-content">
-          <button class="back-btn" type="button">&larr; Back</button>
+          <button class="back-arrow-btn back-arrow-fixed" type="button" aria-label="Back">&larr;</button>
           <h1>Friends</h1>
           <p class="home-tag">Sign in with Google to add friends and see their progress</p>
           <div class="home-btn-col">
@@ -629,7 +629,7 @@ async function renderFriends() {
         </div>
       </div>
     `
-    app.querySelector('.back-btn').addEventListener('click', renderHome)
+    app.querySelector('.back-arrow-btn').addEventListener('click', renderHome)
     app.querySelector('[data-action="sign-in"]').addEventListener('click', signInWithGoogle)
     return
   }
@@ -638,7 +638,7 @@ async function renderFriends() {
     <div class="home">
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
       <div class="log-content">
-        <button class="back-btn" type="button">&larr; Back</button>
+        <button class="back-arrow-btn back-arrow-fixed" type="button" aria-label="Back">&larr;</button>
         <div class="log-header">
           <h1>Friends</h1>
           <p class="home-tag">Your code: <strong>${currentProfile?.friend_code || '...'}</strong></p>
@@ -652,7 +652,7 @@ async function renderFriends() {
       </div>
     </div>
   `
-  app.querySelector('.back-btn').addEventListener('click', renderHome)
+  app.querySelector('.back-arrow-btn').addEventListener('click', renderHome)
 
   const errorEl = app.querySelector('#friends-error')
   app.querySelector('#add-friend-btn').addEventListener('click', async () => {
@@ -780,13 +780,15 @@ function renderDurationPicker() {
   renderTimePickerUI({
     title: 'How long do you want to work?',
     onPick: (minutes) => renderTaskPrompt(minutes),
+    onBack: renderHome,
   })
 }
 
-function renderTimePickerUI({ title, onPick }) {
+function renderTimePickerUI({ title, onPick, onBack }) {
   app.innerHTML = `
     <div class="picker">
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
+      ${onBack ? '<button class="back-arrow-btn back-arrow-fixed" type="button" aria-label="Back">&larr;</button>' : ''}
       <div class="picker-content">
         <h2>${title}</h2>
         <div class="picker-grid">
@@ -819,6 +821,8 @@ function renderTimePickerUI({ title, onPick }) {
     const minutes = Math.floor(Number(customInput.value))
     if (minutes > 0) onPick(minutes)
   })
+
+  if (onBack) app.querySelector('.back-arrow-btn').addEventListener('click', onBack)
 }
 
 // ---------- Task prompt ----------
@@ -826,6 +830,7 @@ function renderTaskPrompt(minutes) {
   app.innerHTML = `
     <div class="picker">
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
+      <button class="back-arrow-btn back-arrow-fixed" type="button" aria-label="Back">&larr;</button>
       <div class="picker-content">
         <h2>What are you working on?</h2>
         <p class="home-tag">Short phrase, max 30 characters</p>
@@ -836,6 +841,7 @@ function renderTaskPrompt(minutes) {
   `
   const input = app.querySelector('.task-input')
   input.focus()
+  app.querySelector('.back-arrow-btn').addEventListener('click', renderDurationPicker)
   app.querySelector('[data-done]').addEventListener('click', () => {
     startSession(minutes, input.value.trim().slice(0, 30))
   })
@@ -999,6 +1005,7 @@ function renderTimerLoop(justStarted) {
           save()
           renderTimerLoop(false)
         },
+        onBack: () => renderTimerLoop(false),
       })
     })
 

@@ -270,27 +270,11 @@ img.avatar-circle {
   width: 100%;
 }
 
-.back-btn {
+.back-arrow-fixed {
   position: absolute;
   top: max(16px, env(safe-area-inset-top));
   left: 16px;
   z-index: 2;
-  min-height: 44px;
-  min-width: 44px;
-  padding: 10px 22px;
-  font-size: 15px;
-  font-weight: 600;
-  border: none;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #ffcf4d, #ff9d1c);
-  color: #3a2200;
-  box-shadow: 0 4px 0 #b56e00, 0 8px 16px rgba(0,0,0,.4);
-  transition: transform 120ms ease, box-shadow 120ms ease;
-}
-
-.back-btn:active {
-  transform: translateY(3px) scale(0.97);
-  box-shadow: 0 1px 0 #b56e00, 0 3px 8px rgba(0,0,0,.4);
 }
 
 /* ---------- Settings ---------- */
@@ -575,10 +559,20 @@ img.avatar-circle {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 16px;
   color: #fff;
-  padding: 24px 0;
+  padding: max(16px, env(safe-area-inset-top)) 0 24px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.shop-content .log-list {
+  flex: none;
+  overflow: visible;
+  width: 100%;
+  max-width: 380px;
+  padding: 0 20px;
 }
 
 .shop-image {
