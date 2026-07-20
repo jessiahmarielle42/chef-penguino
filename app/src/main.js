@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.2.2'
+const APP_VERSION = 'v2.3.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -29,7 +29,7 @@ async function refreshProfile() {
   if (!currentUser) { currentProfile = null; return }
   const { data } = await supabase
     .from('profiles')
-    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote')
+    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment')
     .eq('id', currentUser.id)
     .single()
   currentProfile = data || null
@@ -236,6 +236,7 @@ async function boot() {
       handleSignedIn(session.user).then(() => {
         if (!state.timer) renderHome()
         checkPendingNoots()
+        checkPendingCoinGifts()
       })
     } else if (event === 'SIGNED_OUT') {
       currentUser = null
@@ -260,6 +261,7 @@ async function boot() {
     renderHome()
   }
   checkPendingNoots()
+  checkPendingCoinGifts()
 }
 
 boot()
@@ -273,7 +275,6 @@ const EMOTES = [
   { id: 'spin-wheel', name: 'Spin Wheel', desc: 'Spins a pizza like a wheel', clip: 'spin-wheel.mp4' },
   { id: 'eating', name: 'Sneaky Bite', desc: 'Steals a slice for himself', clip: 'eating.mp4' },
   { id: 'lovey-talk', name: 'Lovey talk', desc: 'Whispers words of love to pizza', clip: 'lovey-talk.mp4' },
-  { id: 'magic-trick', name: 'Magic Trick', desc: 'How did that happen? No one knows.', clip: 'magic-trick.mp4' },
   { id: 'show-off', name: 'Show Off', desc: 'Juggles 2 pizzas for entertainment', clip: 'show-off.mp4' },
   { id: 'phase-through', name: "Physics? What's that?", desc: 'Phase through the shelf, coz you can.', clip: 'phase-through.mp4' },
   { id: 'happy-feet', name: 'Happy Feet', desc: 'Chef dances in excitement', clip: 'happy-feet.mp4' },
@@ -290,7 +291,10 @@ function ownedEmotes() {
 }
 function isOwned(id) { return id === 'waving' || ownedEmotes().includes(id) }
 function coinsEarned() { return Math.floor(Math.floor(displayPizzas()) / 12) }
-function coinBalance() { return Math.max(0, coinsEarned() - ownedEmotes().length) }
+// coin_adjustment is the net of coins gifted away (-) and received (+); it
+// only exists for signed-in profiles. Guests can't gift, so it's 0 for them.
+function coinAdjustment() { return currentProfile ? (currentProfile.coin_adjustment || 0) : 0 }
+function coinBalance() { return Math.max(0, coinsEarned() - ownedEmotes().length + coinAdjustment()) }
 function stashCount() { return Math.floor(displayPizzas()) % 12 }
 function equippedEmote() {
   const e = (currentProfile ? currentProfile.equipped_emote : state.equippedEmote) || 'waving'
@@ -850,7 +854,7 @@ async function renderFriends() {
   const content = `
     <div class="friend-swipe-hint" style="margin-top:6px">
       <span class="info-badge" aria-hidden="true">i</span>
-      <p>Tap a friend to view their Pizzeria, tap 🐧 to Noot them, or swipe left to remove them.</p>
+      <p>Tap a friend to view their Pizzeria. Tap and hold a friend to see more actions.</p>
     </div>
     <div class="section-h" style="margin-top:1.75rem"><h2>Leaderboard</h2></div>
     <div id="friends-list"><p class="log-empty">Loading&hellip;</p></div>
@@ -905,38 +909,114 @@ async function loadFriendsList() {
   listEl.innerHTML = board.map((f, i) => {
     const rank = i < 3 ? `<div class="medal">${medals[i]}</div>` : `<div class="rank">${i + 1}</div>`
     const name = f.isMe ? `${escapeHtml(f.display_name)} <span class="you-tag">(you)</span>` : escapeHtml(f.display_name)
-    const noot = f.isMe ? '' : `<button class="frow-noot ${pendingNootTargets.has(f.id) ? 'disabled' : ''}" type="button" data-noot="${f.id}" aria-label="Noot ${escapeHtml(f.display_name)}">🐧</button>`
-    const row = `
-      <div class="frow ${f.isMe ? 'me' : ''}" ${f.isMe ? '' : `data-view="${f.id}" role="button" tabindex="0"`}>
+    return `
+      <div class="frow ${f.isMe ? 'me' : ''}" ${f.isMe ? '' : `data-friend="${f.id}" role="button" tabindex="0"`}>
         ${rank}
         <img src="${f.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
         <div><div class="fn">${name}</div><div class="fp">Code ${escapeHtml(f.friend_code || '')}</div></div>
-        ${noot}
         <div class="score">🍕 ${formatScore(f.pizzas)}</div>
       </div>
     `
-    return f.isMe ? row : `<div class="frow-wrap"><button class="frow-delete" type="button" data-remove="${f.id}">🗑<span>Delete</span></button>${row}</div>`
   }).join('')
 
   const friendsById = Object.fromEntries(friends.map(f => [f.id, f]))
-  const nameById = Object.fromEntries(friends.map(f => [f.id, f.display_name]))
-  listEl.querySelectorAll('.frow-wrap').forEach(wrap => {
-    const viewId = wrap.querySelector('.frow').dataset.view
-    wireSwipeRow(wrap, nameById, () => renderFriendHome(friendsById[viewId]))
-  })
-
-  listEl.querySelectorAll('[data-noot]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation()
-      const friend = friendsById[btn.dataset.noot]
-      playNootSound()
-      if (btn.classList.contains('disabled')) { openNootCooldownInfo(friend.display_name); return }
-      confirmNoot(friend, btn)
-    })
+  // Tap = visit Pizzeria (fast path); press-and-hold = the full action menu.
+  listEl.querySelectorAll('.frow[data-friend]').forEach(row => {
+    const friend = friendsById[row.dataset.friend]
+    wireFriendRow(row, friend, pendingNootTargets)
   })
 }
 
-function confirmNoot(friend, btn) {
+// A single friend row: quick tap opens their Pizzeria, a ~450ms press-and-hold
+// opens the action menu. A drag beyond a small threshold is treated as a scroll
+// and cancels both, so the list still scrolls normally.
+function wireFriendRow(row, friend, pendingNootTargets) {
+  let timer = null, startX = 0, startY = 0, longFired = false, active = false
+  const clear = () => { if (timer) { clearTimeout(timer); timer = null } }
+  row.addEventListener('pointerdown', (e) => {
+    active = true; longFired = false
+    startX = e.clientX; startY = e.clientY
+    clear()
+    timer = setTimeout(() => {
+      longFired = true
+      openFriendActions(friend, pendingNootTargets.has(friend.id))
+    }, 450)
+  })
+  row.addEventListener('pointermove', (e) => {
+    if (!active) return
+    if (Math.abs(e.clientX - startX) > 10 || Math.abs(e.clientY - startY) > 10) { clear(); active = false }
+  })
+  row.addEventListener('pointerup', () => {
+    if (!active) return
+    active = false
+    clear()
+    if (!longFired) renderFriendHome(friend)
+  })
+  row.addEventListener('pointercancel', () => { active = false; clear() })
+  // Suppress the iOS long-press callout / context menu on the row.
+  row.addEventListener('contextmenu', (e) => e.preventDefault())
+}
+
+// Press-and-hold action menu for a friend: every friend action lives here.
+function openFriendActions(friend, alreadyNooted) {
+  const o = overlay(`
+    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
+    <img class="popup-profile-avatar" src="${friend.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
+    <div class="popup-profile-name">${escapeHtml(friend.display_name)}</div>
+    <div class="home-btn-col">
+      <button type="button" data-action="gift">🎁 Gift Coins</button>
+      <button type="button" class="btn-secondary" data-action="visit">🏠 Visit Pizzeria</button>
+      <button type="button" class="btn-secondary" data-action="noot">🐧 Noot</button>
+      <button type="button" class="btn-danger" data-action="remove">🗑 Remove</button>
+    </div>
+  `, { popupClass: 'popup-profile' })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="visit"]').addEventListener('click', () => { o.remove(); renderFriendHome(friend) })
+  o.querySelector('[data-action="gift"]').addEventListener('click', () => { o.remove(); playNootSound(); confirmGiftCoin(friend) })
+  o.querySelector('[data-action="noot"]').addEventListener('click', () => {
+    o.remove()
+    playNootSound()
+    if (alreadyNooted) { openNootCooldownInfo(friend.display_name); return }
+    confirmNoot(friend)
+  })
+  o.querySelector('[data-action="remove"]').addEventListener('click', () => { o.remove(); confirmRemoveFriend(friend.id, friend.display_name) })
+}
+
+function confirmGiftCoin(friend) {
+  const bal = coinBalance()
+  if (bal < 1) {
+    const o = overlay(`
+      ${coinImg('xl')}
+      <h3>No coins to gift</h3>
+      <p>You need at least 1 Penguino Coin to gift. Bake more pizzas to earn coins!</p>
+      <button type="button" data-action="ok">Got it</button>
+    `)
+    o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
+    return
+  }
+  const o = overlay(`
+    ${coinImg('xl')}
+    <h3>Gift 1 Penguino Coin to ${escapeHtml(friend.display_name)}?</h3>
+    <p>You have ${bal} coin${bal === 1 ? '' : 's'}. This can't be undone.</p>
+    <div class="home-btn-col">
+      <button type="button" data-action="yes">Yes, gift 1 coin</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    o.remove()
+    playNootSound()
+    const { error } = await supabase.rpc('gift_coin', { target_id: friend.id })
+    if (error) { toast(error.message); return }
+    await refreshProfile()
+    const chip = app.querySelector('.coin-chip span:last-child')
+    if (chip) chip.textContent = coinBalance()
+    toast(`Gifted 1 coin to ${friend.display_name}! 🎁`)
+  })
+}
+
+function confirmNoot(friend) {
   const o = overlay(`
     <h3>Do you want to Noot ${escapeHtml(friend.display_name)}?</h3>
     <div class="popup-emoji-xl">🐧</div>
@@ -951,7 +1031,6 @@ function confirmNoot(friend, btn) {
     playNootSound()
     const { error } = await supabase.rpc('send_noot', { target_id: friend.id })
     if (error) { toast(error.message); return }
-    btn.classList.add('disabled')
     toast(`Nooted ${friend.display_name}!`)
   })
 }
@@ -994,9 +1073,42 @@ function showNootReceivedPopup(noot) {
   })
 }
 
+async function checkPendingCoinGifts() {
+  if (!currentUser) return
+  const { data: gift } = await supabase
+    .from('coin_gifts')
+    .select('id, created_at, sender:sender_id(display_name, avatar_url)')
+    .eq('recipient_id', currentUser.id)
+    .is('acknowledged_at', null)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  if (!gift) return
+  showCoinGiftReceivedPopup(gift)
+}
+
+function showCoinGiftReceivedPopup(gift) {
+  playNootSound()
+  const o = overlay(`
+    <img class="popup-profile-avatar" src="${gift.sender?.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
+    <h3>${escapeHtml(gift.sender?.display_name || 'A friend')} gifted you a Penguino Coin! 🎁</h3>
+    ${coinImg('lg')}
+    <button type="button" data-action="ok">Got it!</button>
+  `, { popupClass: 'popup-profile', dismissable: false })
+  o.querySelector('[data-action="ok"]').addEventListener('click', async () => {
+    await supabase.rpc('acknowledge_coin_gift', { gift_id: gift.id })
+    o.remove()
+    await refreshProfile()
+    const chip = app.querySelector('.coin-chip span:last-child')
+    if (chip) chip.textContent = coinBalance()
+    checkPendingCoinGifts()
+  })
+}
+
 function openNootCooldownInfo(name) {
   const o = overlay(`
     <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
+    <div class="popup-emoji-xl">🐧</div>
     <h3>Already Nooted</h3>
     <p>You can Noot ${escapeHtml(name)} again once they've acknowledged your last Noot.</p>
     <button type="button" data-action="ok">Got it</button>
@@ -1045,65 +1157,7 @@ function renderFriendHome(friend) {
   }, { hideStatusBar: true })
 }
 
-function closeAllSwipes(except) {
-  app.querySelectorAll('.frow-wrap').forEach(w => {
-    if (w === except) return
-    w.querySelector('.frow').style.transform = ''
-    w.classList.remove('open')
-  })
-}
-
-function wireSwipeRow(wrap, nameById, onTap) {
-  const row = wrap.querySelector('.frow')
-  const delBtn = wrap.querySelector('.frow-delete')
-  const friendId = delBtn.dataset.remove
-  let startX = 0, startY = 0, currentX = 0, dragging = false, axis = null, suppressClick = false
-  // Read the delete button's actual rendered width so the swipe reveal matches
-  // whatever the CSS renders (it scales with the fluid rem sizing).
-  let openX = -84
-
-  row.addEventListener('pointerdown', (e) => {
-    openX = -(delBtn.offsetWidth || 84)
-    startX = e.clientX; startY = e.clientY
-    currentX = wrap.classList.contains('open') ? openX : 0
-    dragging = true; axis = null
-    wrap.classList.add('dragging')
-    try { row.setPointerCapture(e.pointerId) } catch {}
-  })
-  row.addEventListener('pointermove', (e) => {
-    if (!dragging) return
-    const dx = e.clientX - startX, dy = e.clientY - startY
-    if (axis === null && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y'
-    if (axis !== 'x') return
-    row.style.transform = `translateX(${Math.min(0, Math.max(openX, currentX + dx))}px)`
-  })
-  const end = (e) => {
-    if (!dragging) return
-    dragging = false
-    wrap.classList.remove('dragging')
-    if (axis !== 'x') { axis = null; return }
-    const finalX = Math.min(0, Math.max(openX, currentX + (e.clientX - startX)))
-    const open = finalX < openX / 2
-    const wasOpen = wrap.classList.contains('open')
-    closeAllSwipes(wrap)
-    row.style.transform = open ? `translateX(${openX}px)` : ''
-    wrap.classList.toggle('open', open)
-    if (open && !wasOpen) suppressClick = true
-    axis = null
-  }
-  row.addEventListener('pointerup', end)
-  row.addEventListener('pointercancel', end)
-  row.addEventListener('click', (e) => {
-    if (suppressClick) { suppressClick = false; e.stopPropagation(); return }
-    if (wrap.classList.contains('open')) { e.stopPropagation(); closeAllSwipes(); return }
-    if (e.target.closest('[data-noot]')) return
-    onTap?.()
-  }, true)
-
-  delBtn.addEventListener('click', () => confirmRemoveFriend(friendId, nameById[friendId] || 'this friend', wrap))
-}
-
-function confirmRemoveFriend(friendId, name, wrap) {
+function confirmRemoveFriend(friendId, name) {
   const o = overlay(`
     <h3>Do you want to remove ${escapeHtml(name)} as friend?</h3>
     <p>You can add them back anytime with their friend code.</p>
@@ -1112,12 +1166,13 @@ function confirmRemoveFriend(friendId, name, wrap) {
       <button type="button" class="btn-secondary" data-action="no">Cancel</button>
     </div>
   `)
-  o.querySelector('[data-action="no"]').addEventListener('click', () => { o.remove(); closeAllSwipes() })
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
     o.remove()
-    await supabase.rpc('remove_friend', { target_id: friendId })
-    wrap?.remove()
+    const { error } = await supabase.rpc('remove_friend', { target_id: friendId })
+    if (error) { toast(error.message); return }
     toast(`Removed ${name}`)
+    loadFriendsList()
   })
 }
 
