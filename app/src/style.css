@@ -171,24 +171,18 @@ html, body {
   box-shadow: 0 2px 0 #b56e00, 0 4px 10px rgba(0,0,0,.4);
 }
 
-.home-secondary-row {
+.home-btn-col {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 12px;
-  margin-top: 6px;
+  width: 100%;
+  max-width: 220px;
+  margin-top: 4px;
 }
 
-.secondary-btn {
-  padding: 10px 22px;
-  font-size: 14px;
-  font-weight: 600;
-  border: 1px solid rgba(255,255,255,.35);
-  border-radius: 999px;
-  background: rgba(0,0,0,.35);
-  color: #fff;
-}
-
-.secondary-btn:active {
-  background: rgba(0,0,0,.55);
+.home-btn-col .start-btn {
+  width: 100%;
 }
 
 .back-btn {
@@ -292,21 +286,52 @@ html, body {
   left: 0;
   right: 0;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
   z-index: 1;
   pointer-events: none;
 }
 
 .timer-value {
-  background: rgba(0,0,0,.45);
-  color: #fff;
+  background: linear-gradient(180deg, #ffcf4d, #ff9d1c);
+  color: #3a2200;
   font-size: 26px;
   font-weight: 700;
-  padding: 8px 22px;
+  padding: 8px 26px;
   border-radius: 999px;
   letter-spacing: 1px;
-  text-shadow: 0 2px 4px rgba(0,0,0,.6);
+  box-shadow: 0 5px 0 #b56e00, 0 10px 20px rgba(0,0,0,.4);
   font-variant-numeric: tabular-nums;
+}
+
+.timer-caption {
+  color: #fff;
+  font-size: 13px;
+  font-style: italic;
+  opacity: .85;
+  text-shadow: 0 2px 4px rgba(0,0,0,.7);
+}
+
+.start-cooking {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,.4);
+  color: #fff;
+  font-size: 38px;
+  font-weight: 800;
+  text-align: center;
+  text-shadow: 0 4px 14px rgba(0,0,0,.7);
+  padding: 24px;
+  transition: opacity 600ms ease;
+}
+
+.start-cooking.fade-out {
+  opacity: 0;
 }
 
 /* ---------- Kitchen / Game ---------- */

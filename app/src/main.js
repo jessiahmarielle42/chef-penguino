@@ -68,15 +68,15 @@ function renderHome() {
         </div>
         <h1>Chef Penguino</h1>
         <p class="home-tag">Focus timer</p>
-        <button class="start-btn" type="button">Start</button>
-        <div class="home-secondary-row">
-          <button class="secondary-btn" data-nav="pizzas" type="button">Pizzas</button>
-          <button class="secondary-btn" data-nav="settings" type="button">Settings</button>
+        <div class="home-btn-col">
+          <button class="start-btn" data-nav="start" type="button">Start</button>
+          <button class="start-btn" data-nav="pizzas" type="button">Pizzas</button>
+          <button class="start-btn" data-nav="settings" type="button">Settings</button>
         </div>
       </div>
     </div>
   `
-  app.querySelector('.start-btn').addEventListener('click', () => {
+  app.querySelector('[data-nav="start"]').addEventListener('click', () => {
     renderIntro(renderDurationPicker, false)
   })
   app.querySelector('[data-nav="pizzas"]').addEventListener('click', renderPizzas)
@@ -210,18 +210,28 @@ function startSession(minutes) {
   const endAt = Date.now() + minutes * 60 * 1000
   state.timer = { endAt, durationMin: minutes }
   save()
-  renderTimerLoop(minutes, minutes * 60 * 1000)
+  renderTimerLoop(minutes, minutes * 60 * 1000, true)
 }
 
 // ---------- Timer + looping gameplay video ----------
-function renderTimerLoop(minutes, remainingMs) {
+function renderTimerLoop(minutes, remainingMs, justStarted) {
   app.innerHTML = `
     <div class="kitchen">
       <video class="kitchen-loop" src="${BASE}assets/gameplay-loop.mp4" playsinline autoplay loop muted></video>
-      <div class="timer-hud"><span class="timer-value">--:--</span></div>
+      <div class="timer-hud">
+        <span class="timer-value">--:--</span>
+        <span class="timer-caption">Cook with Chef Penguino!</span>
+      </div>
       <button class="mute-btn" type="button" aria-label="Toggle music"></button>
+      ${justStarted ? '<div class="start-cooking">Start Cooking!</div>' : ''}
     </div>
   `
+
+  if (justStarted) {
+    const splash = app.querySelector('.start-cooking')
+    setTimeout(() => splash.classList.add('fade-out'), 1200)
+    setTimeout(() => splash.remove(), 1800)
+  }
 
   const loopVideo = app.querySelector('.kitchen-loop')
   const muteBtn = app.querySelector('.mute-btn')
