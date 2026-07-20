@@ -27,7 +27,7 @@ async function refreshProfile() {
   if (!currentUser) { currentProfile = null; return }
   const { data } = await supabase
     .from('profiles')
-    .select('id, display_name, friend_code, pizzas')
+    .select('id, display_name, friend_code, pizzas, avatar_url')
     .eq('id', currentUser.id)
     .single()
   currentProfile = data || null
@@ -368,6 +368,8 @@ function renderLogRow(entry) {
 
 // ---------- Settings ----------
 function renderSettings() {
+  const avatarSrc = currentProfile?.avatar_url || `${BASE}assets/penguin-icon.png`
+
   app.innerHTML = `
     <div class="home">
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
@@ -382,6 +384,21 @@ function renderSettings() {
             <span>🔊</span>
           </div>
         </div>
+        ${currentUser ? `
+        <div class="settings-row">
+          <label>Profile picture</label>
+          <img class="home-icon" id="avatar-preview" src="${avatarSrc}" alt="" />
+          <input type="file" accept="image/*" id="avatar-input" hidden />
+          <button class="start-btn" data-action="change-photo" type="button">Change Photo</button>
+          <p class="friends-error" id="avatar-error" hidden></p>
+        </div>
+        <div class="settings-row">
+          <label for="name-input">Display name</label>
+          <input type="text" id="name-input" maxlength="15" class="task-input" value="${escapeHtml(currentProfile?.display_name || '')}" />
+          <button class="start-btn" data-action="save-name" type="button">Save Name</button>
+          <p class="friends-error" id="name-error" hidden></p>
+        </div>
+        ` : ''}
         <div class="settings-row">
           <label>Account</label>
           ${currentUser
@@ -401,6 +418,45 @@ function renderSettings() {
   })
   app.querySelector('[data-action="sign-in"]')?.addEventListener('click', signInWithGoogle)
   app.querySelector('[data-action="sign-out"]')?.addEventListener('click', signOut)
+
+  app.querySelector('[data-action="change-photo"]')?.addEventListener('click', () => {
+    app.querySelector('#avatar-input').click()
+  })
+  app.querySelector('#avatar-input')?.addEventListener('change', async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    const errorEl = app.querySelector('#avatar-error')
+    errorEl.hidden = true
+    const ext = file.name.split('.').pop()
+    const path = `${currentUser.id}/avatar.${ext}`
+    const { error: uploadError } = await supabase.storage.from('avatars').upload(path, file, { upsert: true })
+    if (uploadError) {
+      errorEl.textContent = uploadError.message
+      errorEl.hidden = false
+      return
+    }
+    const { data } = supabase.storage.from('avatars').getPublicUrl(path)
+    const url = `${data.publicUrl}?t=${Date.now()}`
+    await supabase.from('profiles').update({ avatar_url: url }).eq('id', currentUser.id)
+    currentProfile.avatar_url = url
+    app.querySelector('#avatar-preview').src = url
+  })
+
+  app.querySelector('[data-action="save-name"]')?.addEventListener('click', async () => {
+    const input = app.querySelector('#name-input')
+    const errorEl = app.querySelector('#name-error')
+    errorEl.hidden = true
+    const newName = input.value.trim().slice(0, 15)
+    if (!newName) return
+    const { error } = await supabase.from('profiles').update({ display_name: newName }).eq('id', currentUser.id)
+    if (error) {
+      errorEl.textContent = error.message
+      errorEl.hidden = false
+      return
+    }
+    currentProfile.display_name = newName
+    renderSettings()
+  })
 }
 
 // ---------- Friends ----------
@@ -469,7 +525,7 @@ async function loadFriendsList() {
 
   const { data: friendRows } = await supabase
     .from('friends')
-    .select('friend_id, profiles:friend_id(id, display_name, pizzas)')
+    .select('friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url)')
 
   if (!friendRows || friendRows.length === 0) {
     listEl.innerHTML = '<p class="log-empty">No friends yet. Share your code above!</p>'

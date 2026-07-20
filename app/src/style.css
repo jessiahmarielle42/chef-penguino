@@ -124,6 +124,8 @@ html, body {
   color: #fff;
   text-align: center;
   padding: 24px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .home-icon {
