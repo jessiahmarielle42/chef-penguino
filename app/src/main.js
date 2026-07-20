@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.1.3'
+const APP_VERSION = 'v2.1.4'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -86,14 +86,18 @@ const state = load()
 
 function load() {
   const defaults = {
-    pizzas: 0, muted: false, volume: 0.5, darkenLevel: 1, autoDarken: true,
+    pizzas: 0, muted: false, volume: 0.5, lastVolume: 0.5, darkenLevel: 1, autoDarken: true,
     timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null,
     pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', lastSeenCoins: null,
     lightMode: false,
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return { ...defaults, ...JSON.parse(raw) }
+    if (raw) {
+      const merged = { ...defaults, ...JSON.parse(raw) }
+      if (merged.muted) merged.volume = 0
+      return merged
+    }
   } catch {}
   return defaults
 }
@@ -864,6 +868,7 @@ function confirmNoot(friend, btn) {
 
 const nootSound = new Audio(`${BASE}assets/noot.mp3`)
 function playNootSound() {
+  if (state.muted) return
   try { nootSound.currentTime = 0; nootSound.play().catch(() => {}) } catch {}
 }
 
@@ -1275,7 +1280,7 @@ function renderSettings(highlightProfile) {
       <p class="glab">Audio</p>
       <div class="glist">
         <div class="grow">
-          <div><div class="gt">Background music</div></div>
+          <div><div class="gt">On/Off all sounds</div></div>
           <div class="right"><div class="switch ${state.muted ? 'off' : ''}" data-action="toggle-music"></div></div>
         </div>
         <div class="grow">
@@ -1314,10 +1319,20 @@ function renderSettings(highlightProfile) {
 
   mountScreen('settings', content, () => {
     app.querySelector('#volume-slider').addEventListener('input', (e) => {
-      state.volume = Number(e.target.value) / 100; save(); syncMusic()
+      const v = Number(e.target.value) / 100
+      state.volume = v
+      state.muted = v === 0
+      if (v > 0) state.lastVolume = v
+      save(); syncMusic()
+      app.querySelector('[data-action="toggle-music"]')?.classList.toggle('off', state.muted)
     })
     app.querySelector('[data-action="toggle-music"]').addEventListener('click', (e) => {
-      state.muted = !state.muted; save(); syncMusic(); e.currentTarget.classList.toggle('off', state.muted)
+      state.muted = !state.muted
+      state.volume = state.muted ? 0 : (state.lastVolume || 0.5)
+      save(); syncMusic()
+      e.currentTarget.classList.toggle('off', state.muted)
+      const slider = app.querySelector('#volume-slider')
+      if (slider) slider.value = Math.round(state.volume * 100)
     })
     app.querySelector('[data-action="toggle-darken"]').addEventListener('click', (e) => {
       state.autoDarken = !state.autoDarken; save(); e.currentTarget.classList.toggle('off', !state.autoDarken)
@@ -1393,6 +1408,7 @@ function renderIntro(onEnd, isAlarm, videoSrc = 'intro.mp4', sessionSummary) {
     </div>
   `
   const video = app.querySelector('.intro-video')
+  video.muted = state.muted
   const skipBtn = app.querySelector('.intro-skip')
 
   let transitioned = false
@@ -1556,6 +1572,7 @@ function renderTimerLoop(justStarted) {
 
   muteBtn.addEventListener('click', () => {
     state.muted = !state.muted
+    state.volume = state.muted ? 0 : (state.lastVolume || 0.5)
     updateMuteIcon()
     save()
     if (!isPausedNow) syncMusic()
