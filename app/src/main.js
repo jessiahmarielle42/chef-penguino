@@ -303,8 +303,34 @@ function pizzaImagePath(count) {
 // on each tap. Their shelf only visually matches the 12-pizza display case,
 // so tapping snaps back to the real picture right after the clip ends
 // rather than claiming to be a pixel-perfect match at every pizza count.
+// Kept preloaded and off-screen (rather than created fresh per tap) so
+// tapping starts playback instantly instead of showing a blank loading gap.
 const PIZZA_TAP_VIDEOS = ['pizzas-waving.mp4', 'pizzas-sniffing.mp4']
 let pizzaTapVideoIndex = 0
+const preloadedPizzaVideos = PIZZA_TAP_VIDEOS.map(src => {
+  const v = document.createElement('video')
+  v.src = `${BASE}assets/${src}`
+  v.preload = 'auto'
+  v.muted = true
+  v.playsInline = true
+  v.style.position = 'fixed'
+  v.style.left = '-9999px'
+  v.style.width = '1px'
+  v.style.height = '1px'
+  document.body.appendChild(v)
+  return v
+})
+function parkPizzaTapVideo(v) {
+  v.pause()
+  v.currentTime = 0
+  v.id = ''
+  v.className = ''
+  v.style.position = 'fixed'
+  v.style.left = '-9999px'
+  v.style.width = '1px'
+  v.style.height = '1px'
+  document.body.appendChild(v)
+}
 
 // ---------- Pizzas (shop front + log, one scrollable page) ----------
 // Pass a friend object ({id, display_name, pizzas, avatar_url}) to view
@@ -362,15 +388,16 @@ async function renderPizzas(friend) {
 
   function attachTapHandler(imgEl) {
     imgEl.addEventListener('click', () => {
-      const videoSrc = PIZZA_TAP_VIDEOS[pizzaTapVideoIndex % PIZZA_TAP_VIDEOS.length]
+      const video = preloadedPizzaVideos[pizzaTapVideoIndex % preloadedPizzaVideos.length]
       pizzaTapVideoIndex++
 
-      const video = document.createElement('video')
       video.className = 'shop-image'
       video.id = 'shop-media'
-      video.src = `${BASE}assets/${videoSrc}`
-      video.playsInline = true
-      video.muted = true
+      video.style.position = ''
+      video.style.left = ''
+      video.style.width = ''
+      video.style.height = ''
+      video.currentTime = 0
       imgEl.replaceWith(video)
 
       let swapped = false
@@ -383,9 +410,10 @@ async function renderPizzas(friend) {
         img.alt = ''
         img.src = pizzaImagePath(displayedCount)
         video.replaceWith(img)
+        parkPizzaTapVideo(video)
         attachTapHandler(img)
       }
-      video.addEventListener('ended', swapBackToImage)
+      video.addEventListener('ended', swapBackToImage, { once: true })
       video.play().catch(swapBackToImage)
     })
   }
