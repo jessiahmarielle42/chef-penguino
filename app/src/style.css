@@ -470,6 +470,39 @@ img.avatar-circle {
   filter: blur(14px) brightness(0.6);
 }
 
+.kitchen.darkened > .kitchen-loop,
+.kitchen.darkened > .session-pizza-badge,
+.kitchen.darkened > .timer-hud,
+.kitchen.darkened > .mute-btn {
+  filter: brightness(0.15);
+  transition: filter 500ms ease;
+}
+
+.darken-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgba(0,0,0,.4);
+  animation: overlay-fade-in 500ms ease;
+}
+
+.darken-overlay[hidden] {
+  display: none;
+}
+
+.darken-text {
+  color: #fff;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.5;
+  max-width: 260px;
+  opacity: .85;
+}
+
 /* ---------- Pause / confirm overlays ---------- */
 .pause-overlay {
   position: absolute;

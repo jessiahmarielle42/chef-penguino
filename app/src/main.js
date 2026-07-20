@@ -52,7 +52,21 @@ async function migrateLocalDataIfNeeded() {
 async function handleSignedIn(user) {
   currentUser = user
   await migrateLocalDataIfNeeded()
+  await flushPendingSessions()
   await refreshProfile()
+}
+
+// Sessions that failed to reach Supabase (offline, dropped connection, etc.)
+// are queued here so nothing gets silently lost, and retried on next sign-in.
+async function flushPendingSessions() {
+  if (!currentUser || !state.pendingSessions?.length) return
+  const remaining = []
+  for (const row of state.pendingSessions) {
+    const { error } = await supabase.from('sessions').insert({ ...row, user_id: currentUser.id })
+    if (error) remaining.push(row)
+  }
+  state.pendingSessions = remaining
+  save()
 }
 
 function displayPizzas() {
@@ -68,7 +82,7 @@ const DURATIONS = [
 const state = load()
 
 function load() {
-  const defaults = { pizzas: 0, muted: false, volume: 0.5, timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null }
+  const defaults = { pizzas: 0, muted: false, volume: 0.5, timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null, pendingSessions: [] }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return { ...defaults, ...JSON.parse(raw) }
@@ -132,7 +146,7 @@ function logSession({ completedAt, minutes, pizzas, task }) {
   save()
 }
 
-function finalizeSession(playAlarm) {
+async function finalizeSession(playAlarm) {
   const t = state.timer
   const minutes = t.elapsedMs / 60000
   const pizzasEarned = round2(minutes / 60)
@@ -143,13 +157,18 @@ function finalizeSession(playAlarm) {
   save()
 
   if (currentUser) {
-    supabase.from('sessions').insert({
-      user_id: currentUser.id,
+    const row = {
       completed_at: new Date(completedAt).toISOString(),
       minutes,
       pizzas: pizzasEarned,
       task: t.task || '',
-    }).then(() => refreshProfile())
+    }
+    const { error } = await supabase.from('sessions').insert({ ...row, user_id: currentUser.id })
+    if (error) {
+      state.pendingSessions.push(row)
+      save()
+    }
+    await refreshProfile()
   }
 
   if (playAlarm) renderIntro(() => renderPizzas(), true)
@@ -976,6 +995,9 @@ function renderTimerLoop(justStarted) {
         <span class="timer-caption">Cook with Chef Penguino!</span>
       </div>
       <button class="mute-btn" type="button" aria-label="Toggle music"></button>
+      <div class="darken-overlay" hidden>
+        <p class="darken-text">Auto-darken enabled to save battery and reduce distraction. Tap anywhere to brighten.</p>
+      </div>
       ${justStarted ? '<div class="start-cooking">Start Cooking!</div>' : ''}
     </div>
   `
@@ -1012,6 +1034,28 @@ function renderTimerLoop(justStarted) {
     else if (!isPausedNow) music.play().catch(() => {})
   })
 
+  const darkenOverlay = app.querySelector('.darken-overlay')
+  let darkenTimeoutId = null
+
+  function armDarkenTimer() {
+    clearTimeout(darkenTimeoutId)
+    darkenTimeoutId = setTimeout(() => {
+      kitchenEl.classList.add('darkened')
+      darkenOverlay.hidden = false
+    }, 5000)
+  }
+
+  function disarmDarken() {
+    clearTimeout(darkenTimeoutId)
+    kitchenEl.classList.remove('darkened')
+    darkenOverlay.hidden = true
+  }
+
+  darkenOverlay.addEventListener('click', () => {
+    disarmDarken()
+    if (!isPausedNow) armDarkenTimer()
+  })
+
   function formatTime(ms) {
     const totalSec = Math.max(0, Math.ceil(ms / 1000))
     const m = Math.floor(totalSec / 60)
@@ -1040,6 +1084,7 @@ function renderTimerLoop(justStarted) {
     if (remaining <= 0) {
       clearInterval(intervalId)
       music.pause()
+      disarmDarken()
       state.timer.elapsedMs += state.timer.segmentPlannedMs
       finalizeSession(true)
     }
@@ -1052,6 +1097,7 @@ function renderTimerLoop(justStarted) {
     clearInterval(intervalId)
     intervalId = setInterval(tick, 250)
     tick()
+    armDarkenTimer()
   }
 
   function pauseNow() {
@@ -1063,6 +1109,7 @@ function renderTimerLoop(justStarted) {
     state.timer.segmentStartedAt = null
     save()
     clearInterval(intervalId)
+    disarmDarken()
     loopVideo.pause()
     music.pause()
     kitchenEl.classList.add('paused')
