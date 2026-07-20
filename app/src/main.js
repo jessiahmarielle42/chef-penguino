@@ -82,7 +82,7 @@ const DURATIONS = [
 const state = load()
 
 function load() {
-  const defaults = { pizzas: 0, muted: false, volume: 0.5, timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null, pendingSessions: [] }
+  const defaults = { pizzas: 0, muted: false, volume: 0.5, autoDarkenEnabled: true, timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null, pendingSessions: [] }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return { ...defaults, ...JSON.parse(raw) }
@@ -687,6 +687,10 @@ function renderSettings() {
             <span>🔊</span>
           </div>
         </div>
+        <div class="settings-row">
+          <label>Auto-darken during focus sessions</label>
+          <button class="start-btn" data-action="toggle-auto-darken" type="button">${state.autoDarkenEnabled ? 'On' : 'Off'}</button>
+        </div>
         ${currentUser ? `
         <div class="settings-row">
           <label>Profile picture</label>
@@ -725,6 +729,11 @@ function renderSettings() {
     save()
     syncMusic()
     e.target.textContent = state.muted ? 'Off' : 'On'
+  })
+  app.querySelector('[data-action="toggle-auto-darken"]').addEventListener('click', (e) => {
+    state.autoDarkenEnabled = !state.autoDarkenEnabled
+    save()
+    e.target.textContent = state.autoDarkenEnabled ? 'On' : 'Off'
   })
   app.querySelector('[data-action="sign-in"]')?.addEventListener('click', signInWithGoogle)
   app.querySelector('[data-action="sign-out"]')?.addEventListener('click', signOut)
@@ -1019,7 +1028,7 @@ function renderTimerLoop(justStarted) {
       </div>
       <button class="mute-btn" type="button" aria-label="Toggle music"></button>
       <div class="darken-overlay" hidden>
-        <p class="darken-text">Auto-darken enabled to save battery and reduce distraction. Tap anywhere to brighten.</p>
+        <p class="darken-text">Auto-darken enabled to save battery and reduce distraction. Tap anywhere to brighten. Toggle on/off in settings.</p>
       </div>
       ${justStarted ? '<div class="start-cooking">Start Cooking!</div>' : ''}
     </div>
@@ -1059,6 +1068,7 @@ function renderTimerLoop(justStarted) {
 
   function armDarkenTimer() {
     clearTimeout(darkenTimeoutId)
+    if (!state.autoDarkenEnabled) return
     darkenTimeoutId = setTimeout(() => {
       kitchenEl.classList.add('darkened')
       darkenOverlay.hidden = false
