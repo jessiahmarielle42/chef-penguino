@@ -13,5 +13,10 @@
 alter table public.profiles
   add column if not exists owned_emotes text[] not null default '{}';
 
+-- Which emote is currently equipped, persisted so friends viewing your
+-- Pizzeria see the same emote play that you'd see yourself.
+alter table public.profiles
+  add column if not exists equipped_emote text not null default 'waving';
+
 -- (RLS already lets a user update their own profile row via the existing
 --  "users can update their own profile" policy, so no new policy is needed.)

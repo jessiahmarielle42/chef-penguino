@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.0.10'
+const APP_VERSION = 'v2.1.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -29,7 +29,7 @@ async function refreshProfile() {
   if (!currentUser) { currentProfile = null; return }
   const { data } = await supabase
     .from('profiles')
-    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes')
+    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote')
     .eq('id', currentUser.id)
     .single()
   currentProfile = data || null
@@ -220,6 +220,7 @@ async function boot() {
     if (event === 'SIGNED_IN' && session?.user) {
       handleSignedIn(session.user).then(() => {
         if (!state.timer) renderHome()
+        checkPendingNoots()
       })
     } else if (event === 'SIGNED_OUT') {
       currentUser = null
@@ -243,6 +244,7 @@ async function boot() {
   } else {
     renderHome()
   }
+  checkPendingNoots()
 }
 
 boot()
@@ -269,7 +271,7 @@ function coinsEarned() { return Math.floor(Math.floor(displayPizzas()) / 12) }
 function coinBalance() { return Math.max(0, coinsEarned() - ownedEmotes().length) }
 function stashCount() { return Math.floor(displayPizzas()) % 12 }
 function equippedEmote() {
-  const e = state.equippedEmote || 'waving'
+  const e = (currentProfile ? currentProfile.equipped_emote : state.equippedEmote) || 'waving'
   return isOwned(e) ? e : 'waving'
 }
 
@@ -286,10 +288,16 @@ async function buyEmote(id) {
   }
 }
 
-function equipEmote(id) {
+async function equipEmote(id) {
   if (!isOwned(id)) return
-  state.equippedEmote = id
-  save()
+  if (currentUser && currentProfile) {
+    const { error } = await supabase.from('profiles').update({ equipped_emote: id }).eq('id', currentUser.id)
+    if (error) { toast(error.message); return }
+    currentProfile.equipped_emote = id
+  } else {
+    state.equippedEmote = id
+    save()
+  }
 }
 
 // Preloaded emote clips so tapping starts playback instantly.
@@ -408,15 +416,15 @@ function tabBarHtml(active) {
   `
 }
 
-function mountScreen(active, contentHtml, after) {
+function mountScreen(active, contentHtml, after, opts = {}) {
   app.innerHTML = `
     <div class="app">
-      ${statusBarHtml()}
+      ${opts.hideStatusBar ? '' : statusBarHtml()}
       <div class="scroll view active">${contentHtml}</div>
       ${tabBarHtml(active)}
     </div>
   `
-  wireStatusBar()
+  if (!opts.hideStatusBar) wireStatusBar()
   wireTabBar()
   if (after) after()
 }
@@ -525,8 +533,8 @@ function renderHome() {
   })
 }
 
-async function loadHomeLog() {
-  const log = await fetchLog(currentUser?.id)
+async function loadHomeLog(userId) {
+  const log = await fetchLog(userId ?? currentUser?.id)
   const listEl = app.querySelector('#home-log')
   if (!listEl) return
   const recent = log.slice(0, 6)
@@ -652,7 +660,7 @@ function renderShop() {
       btn.addEventListener('click', () => confirmBuy(btn.dataset.buy))
     })
     app.querySelectorAll('[data-equip]').forEach(btn => {
-      btn.addEventListener('click', () => { equipEmote(btn.dataset.equip); renderShop() })
+      btn.addEventListener('click', async () => { await equipEmote(btn.dataset.equip); renderShop() })
     })
   })
 }
@@ -747,7 +755,7 @@ async function renderFriends() {
     <p class="code-note">Your code: <b id="friend-code-val">${currentProfile?.friend_code || '…'}</b> <button class="copy-btn" type="button" data-action="copy" aria-label="Copy friend code">${COPY_SVG}</button> — share it to compare pizzas.</p>
     <div class="friend-swipe-hint">
       <span class="info-badge" aria-hidden="true">i</span>
-      <p>To remove friends, swipe left on their name above.</p>
+      <p>Tap a friend to view their Pizzeria, tap 🐧 to Noot them, or swipe left to remove them.</p>
     </div>
   `
 
@@ -777,11 +785,13 @@ async function loadFriendsList() {
   const listEl = app.querySelector('#friends-list')
   if (!listEl) return
 
-  const { data: friendRows } = await supabase
-    .from('friends')
-    .select('friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code)')
+  const [{ data: friendRows }, { data: pendingRows }] = await Promise.all([
+    supabase.from('friends').select('friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote)'),
+    supabase.from('noots').select('recipient_id').eq('sender_id', currentUser.id).is('acknowledged_at', null),
+  ])
 
   const friends = (friendRows || []).map(r => r.profiles).filter(Boolean).sort((a, b) => b.pizzas - a.pizzas)
+  const pendingNootTargets = new Set((pendingRows || []).map(r => r.recipient_id))
   if (!friends.length) {
     listEl.innerHTML = '<p class="log-empty">No friends yet. Share your code below!</p>'
     return
@@ -791,17 +801,136 @@ async function loadFriendsList() {
   listEl.innerHTML = friends.map((f, i) => `
     <div class="frow-wrap">
       <button class="frow-delete" type="button" data-remove="${f.id}">🗑<span>Delete</span></button>
-      <div class="frow">
+      <div class="frow" data-view="${f.id}">
         <div class="${i < 3 ? 'medal' : 'rank'}">${i < 3 ? medals[i] : (i + 1)}</div>
         <img src="${f.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
         <div><div class="fn">${escapeHtml(f.display_name)}</div><div class="fp">Code ${escapeHtml(f.friend_code || '')}</div></div>
         <div class="score">🍕 ${formatScore(f.pizzas)}</div>
+        <button class="frow-noot ${pendingNootTargets.has(f.id) ? 'disabled' : ''}" type="button" data-noot="${f.id}" aria-label="Noot ${escapeHtml(f.display_name)}">🐧</button>
       </div>
     </div>
   `).join('')
 
+  const friendsById = Object.fromEntries(friends.map(f => [f.id, f]))
   const nameById = Object.fromEntries(friends.map(f => [f.id, f.display_name]))
-  listEl.querySelectorAll('.frow-wrap').forEach(wrap => wireSwipeRow(wrap, nameById))
+  listEl.querySelectorAll('.frow-wrap').forEach(wrap => {
+    const viewId = wrap.querySelector('.frow').dataset.view
+    wireSwipeRow(wrap, nameById, () => renderFriendHome(friendsById[viewId]))
+  })
+
+  listEl.querySelectorAll('[data-noot]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const friend = friendsById[btn.dataset.noot]
+      if (btn.classList.contains('disabled')) { openNootCooldownInfo(friend.display_name); return }
+      playNootSound()
+      confirmNoot(friend, btn)
+    })
+  })
+}
+
+function confirmNoot(friend, btn) {
+  const o = overlay(`
+    <h3>Do you want to Noot ${escapeHtml(friend.display_name)}?</h3>
+    <div class="home-btn-col">
+      <button type="button" data-action="yes">Yes</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    o.remove()
+    playNootSound()
+    const { error } = await supabase.rpc('send_noot', { target_id: friend.id })
+    if (error) { toast(error.message); return }
+    btn.classList.add('disabled')
+    toast(`Nooted ${friend.display_name}!`)
+  })
+}
+
+const nootSound = new Audio(`${BASE}assets/noot.mp3`)
+function playNootSound() {
+  try { nootSound.currentTime = 0; nootSound.play().catch(() => {}) } catch {}
+}
+
+async function checkPendingNoots() {
+  if (!currentUser) return
+  const { data: noot } = await supabase
+    .from('noots')
+    .select('id, created_at, sender:sender_id(display_name, avatar_url)')
+    .eq('recipient_id', currentUser.id)
+    .is('acknowledged_at', null)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  if (!noot) return
+  showNootReceivedPopup(noot)
+}
+
+function showNootReceivedPopup(noot) {
+  playNootSound()
+  const when = new Date(noot.created_at).toLocaleString(undefined, {
+    day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit',
+  })
+  const o = overlay(`
+    <img class="popup-profile-avatar" src="${noot.sender?.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
+    <h3>${escapeHtml(noot.sender?.display_name || 'A friend')} Nooted you!</h3>
+    <p>${escapeHtml(when)}</p>
+    <button type="button" data-action="ok">Got it!</button>
+  `, { popupClass: 'popup-profile', dismissable: false })
+  o.querySelector('[data-action="ok"]').addEventListener('click', async () => {
+    await supabase.rpc('acknowledge_noot', { noot_id: noot.id })
+    o.remove()
+    checkPendingNoots()
+  })
+}
+
+function openNootCooldownInfo(name) {
+  const o = overlay(`
+    <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
+    <h3>Already Nooted</h3>
+    <p>You can Noot ${escapeHtml(name)} again once they've acknowledged your last Noot.</p>
+    <button type="button" data-action="ok">Got it</button>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
+}
+
+function renderFriendHome(friend) {
+  const stash = Math.floor(friend.pizzas) % 12
+  const toNext = 12 - stash
+  const pct = Math.round((stash / 12) * 100)
+  const heroSrc = pizzaImagePath(stash)
+
+  const content = `
+    <div class="viewing-banner">Viewing: ${escapeHtml(friend.display_name)}'s Pizzeria</div>
+    <div class="hero-card" id="hero-card">
+      <img class="hero-still" src="${heroSrc}" alt="" />
+      <div class="glow"></div>
+    </div>
+
+    <div class="tiles">
+      <div class="tile">
+        <div class="lab">🍕 Lifetime pizzas</div>
+        <div class="big">${formatScore(friend.pizzas)}</div>
+        <div class="sub">All-time made</div>
+      </div>
+      <div class="tile coin-tile">
+        <div class="lab">Pizzas in stash</div>
+        <div class="big">${stash}<span style="font-size:16px;color:var(--muted)">/12</span></div>
+        <div class="sub">${toNext} more → 1 coin</div>
+        <div class="progress"><i style="width:${pct}%"></i></div>
+      </div>
+    </div>
+
+    <div class="section-h"><h2>Recent sessions</h2></div>
+    <div class="log-list" id="home-log"><p class="log-empty">Loading&hellip;</p></div>
+  `
+
+  mountScreen('friends', content, () => {
+    loadHomeLog(friend.id)
+    const img = app.querySelector('#hero-card .hero-still')
+    if (img) playEmoteInto(img, friend.equipped_emote || 'waving', heroSrc)
+  }, { hideStatusBar: true })
 }
 
 function closeAllSwipes(except) {
@@ -812,7 +941,7 @@ function closeAllSwipes(except) {
   })
 }
 
-function wireSwipeRow(wrap, nameById) {
+function wireSwipeRow(wrap, nameById, onTap) {
   const row = wrap.querySelector('.frow')
   const delBtn = wrap.querySelector('.frow-delete')
   const friendId = delBtn.dataset.remove
@@ -854,7 +983,9 @@ function wireSwipeRow(wrap, nameById) {
   row.addEventListener('pointercancel', end)
   row.addEventListener('click', (e) => {
     if (suppressClick) { suppressClick = false; e.stopPropagation(); return }
-    if (wrap.classList.contains('open')) { e.stopPropagation(); closeAllSwipes() }
+    if (wrap.classList.contains('open')) { e.stopPropagation(); closeAllSwipes(); return }
+    if (e.target.closest('[data-noot]')) return
+    onTap?.()
   }, true)
 
   delBtn.addEventListener('click', () => confirmRemoveFriend(friendId, nameById[friendId] || 'this friend', wrap))

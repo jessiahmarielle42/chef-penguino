@@ -299,6 +299,20 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .frow .fn { font-weight: 800; color: var(--cream); font-size:0.9375rem; }
 .frow .fp { font-size:0.75rem; color: var(--muted); margin-top:0.125rem; }
 .frow .score { margin-left: auto; font-family: var(--font-display); font-weight: 800; color: var(--fire); font-variant-numeric: tabular-nums; }
+.frow-noot {
+  flex: none; width:1.875rem; height:1.875rem; margin-left:0.5rem; padding: 0;
+  border-radius: 50%; border: 1px solid var(--line); background: var(--card-2);
+  font-size:1.0625rem; line-height: 1; cursor: pointer; display: grid; place-items: center;
+}
+.frow-noot:active { transform: scale(0.92); }
+.frow-noot.disabled { opacity: 0.4; }
+
+.viewing-banner {
+  background: linear-gradient(160deg, rgba(246,198,75,0.22), var(--banner-wash));
+  border: 1px solid rgba(246,198,75,0.35); border-radius:1.25rem; padding:1rem;
+  margin-top:2.25rem; margin-bottom:0.875rem; text-align: center;
+  font-family: var(--font-display); font-weight: 800; font-size:1rem; color: var(--cream);
+}
 .frow.me { border-color: rgba(251,122,46,0.4); background: linear-gradient(160deg, rgba(251,122,46,0.12), var(--card)); }
 
 /* swipe-left-to-delete on friend rows */
