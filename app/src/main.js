@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.1.9'
+const APP_VERSION = 'v2.2.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -275,6 +275,8 @@ const EMOTES = [
   { id: 'lovey-talk', name: 'Lovey talk', desc: 'Whispers words of love to pizza', clip: 'lovey-talk.mp4' },
   { id: 'magic-trick', name: 'Magic Trick', desc: 'How did that happen? No one knows.', clip: 'magic-trick.mp4' },
   { id: 'show-off', name: 'Show Off', desc: 'Juggles 2 pizzas for entertainment', clip: 'show-off.mp4' },
+  { id: 'phase-through', name: "Physics? What's that?", desc: 'Phase through the shelf, coz you can.', clip: 'phase-through.mp4' },
+  { id: 'happy-feet', name: 'Happy Feet', desc: 'Chef dances in excitement', clip: 'happy-feet.mp4' },
 ]
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
 
@@ -795,16 +797,16 @@ async function renderFriends() {
   }
 
   const content = `
-    <div class="section-h" style="margin-top:6px"><h2>Leaderboard</h2></div>
+    <div class="friend-swipe-hint" style="margin-top:6px">
+      <span class="info-badge" aria-hidden="true">i</span>
+      <p>Tap a friend to view their Pizzeria, tap 🐧 to Noot them, or swipe left to remove them.</p>
+    </div>
+    <div class="section-h" style="margin-top:1.75rem"><h2>Leaderboard</h2></div>
     <div id="friends-list"><p class="log-empty">Loading&hellip;</p></div>
     <div class="section-h" style="margin-top:2.75rem"><h2>Add a friend</h2></div>
     <div class="addfriend"><input id="friend-code-input" placeholder="Friend's code" maxlength="6" /><button type="button" data-action="add">Add</button></div>
     <p class="friends-error" id="friends-error" hidden></p>
     <p class="code-note">Your code: <b id="friend-code-val">${currentProfile?.friend_code || '…'}</b> <button class="copy-btn" type="button" data-action="copy" aria-label="Copy friend code">${COPY_SVG}</button> — share it to compare pizzas.</p>
-    <div class="friend-swipe-hint">
-      <span class="info-badge" aria-hidden="true">i</span>
-      <p>Tap a friend to view their Pizzeria, tap 🐧 to Noot them, or swipe left to remove them.</p>
-    </div>
   `
 
   mountScreen('friends', content, () => {

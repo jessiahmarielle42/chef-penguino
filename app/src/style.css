@@ -282,7 +282,11 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   display: flex; flex-direction: column;
   isolation: isolate; transform: translateZ(0);
 }
-.anim-top { position: relative; aspect-ratio: 16/9; overflow: hidden; isolation: isolate; }
+/* Square (1/1) to match the actual assets: both the still preview image
+   (1024x1024) and every emote video (960x960) are square. A 16/9 box here
+   cropped them to a middle band via object-fit:cover, hiding the penguin,
+   the sign, and most of the scene — which read as a "broken/zoomed" image. */
+.anim-top { position: relative; aspect-ratio: 1/1; overflow: hidden; isolation: isolate; }
 .anim-top img, .anim-top video { width: 100%; height: 100%; object-fit: cover; display: block; }
 .anim-top .badge {
   /* No backdrop-filter here on purpose: Safari has a long-standing bug
