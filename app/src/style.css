@@ -157,8 +157,8 @@ img.avatar-circle {
 
 .crop-stage-wrap {
   position: relative;
-  width: 260px;
-  height: 260px;
+  width: min(80vw, 340px);
+  height: min(80vw, 340px);
 }
 
 .crop-stage {
@@ -184,27 +184,20 @@ img.avatar-circle {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 220px;
-  height: 220px;
+  width: 86%;
+  height: 86%;
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  box-shadow: 0 0 0 2000px rgba(0,0,0,.65);
+  box-shadow: 0 0 0 2000px rgba(0,0,0,.6);
   border: 2px solid #fff;
   pointer-events: none;
 }
 
-.crop-zoom-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  max-width: 260px;
-  color: #fff;
-}
-
-.crop-zoom-row input[type="range"] {
-  flex: 1;
-  accent-color: #ff9d1c;
+.crop-hint {
+  color: rgba(255,255,255,.8);
+  font-size: 13px;
+  text-align: center;
+  margin: 0;
 }
 
 .home-score {

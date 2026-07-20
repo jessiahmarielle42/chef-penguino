@@ -421,8 +421,6 @@ async function uploadAvatarBlob(blob) {
 }
 
 function openAvatarCropper(file, onCropped) {
-  const STAGE = 260
-  const CIRCLE = 220
   const objectUrl = URL.createObjectURL(file)
 
   app.insertAdjacentHTML('beforeend', `
@@ -433,10 +431,7 @@ function openAvatarCropper(file, onCropped) {
         </div>
         <div class="crop-circle-guide"></div>
       </div>
-      <div class="crop-zoom-row">
-        <span>&#128269;</span>
-        <input type="range" id="crop-zoom" min="100" max="300" value="100" />
-      </div>
+      <p class="crop-hint">Drag to move &middot; pinch or scroll to zoom</p>
       <div class="home-btn-col">
         <button class="start-btn" id="crop-confirm" type="button">Use Photo</button>
         <button class="start-btn" id="crop-cancel" type="button">Cancel</button>
@@ -445,14 +440,23 @@ function openAvatarCropper(file, onCropped) {
   `)
 
   const overlay = app.querySelector('.crop-overlay')
+  const stageWrap = overlay.querySelector('.crop-stage-wrap')
   const stage = overlay.querySelector('#crop-stage')
   const img = overlay.querySelector('#crop-img')
-  const zoomSlider = overlay.querySelector('#crop-zoom')
+  const circleGuide = overlay.querySelector('.crop-circle-guide')
+
+  // Read the actual rendered sizes so this works with the responsive CSS sizing.
+  const STAGE = stageWrap.getBoundingClientRect().width
+  const CIRCLE = circleGuide.getBoundingClientRect().width
 
   let naturalW = 0, naturalH = 0, baseScale = 1, scale = 1, tx = 0, ty = 0
-  let dragging = false, startX = 0, startY = 0, startTx = 0, startTy = 0
+  const MAX_ZOOM_FACTOR = 3
 
-  function clamp() {
+  function clampScale() {
+    scale = Math.min(Math.max(scale, baseScale), baseScale * MAX_ZOOM_FACTOR)
+  }
+
+  function clampPos() {
     const w = naturalW * scale
     const h = naturalH * scale
     const minTx = Math.min(0, STAGE - w)
@@ -465,6 +469,17 @@ function openAvatarCropper(file, onCropped) {
     img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`
   }
 
+  function zoomAt(stageX, stageY, newScale) {
+    const imgX = (stageX - tx) / scale
+    const imgY = (stageY - ty) / scale
+    scale = newScale
+    clampScale()
+    tx = stageX - imgX * scale
+    ty = stageY - imgY * scale
+    clampPos()
+    apply()
+  }
+
   img.onload = () => {
     naturalW = img.naturalWidth
     naturalH = img.naturalHeight
@@ -472,40 +487,78 @@ function openAvatarCropper(file, onCropped) {
     scale = baseScale
     tx = (STAGE - naturalW * scale) / 2
     ty = (STAGE - naturalH * scale) / 2
-    clamp()
+    clampPos()
     apply()
   }
 
-  zoomSlider.addEventListener('input', () => {
-    const zoomFactor = Number(zoomSlider.value) / 100
-    const cx = STAGE / 2
-    const cy = STAGE / 2
-    const imgCx = (cx - tx) / scale
-    const imgCy = (cy - ty) / scale
-    scale = baseScale * zoomFactor
-    tx = cx - imgCx * scale
-    ty = cy - imgCy * scale
-    clamp()
-    apply()
-  })
+  // --- Gestures: one finger/pointer drags, two fingers pinch-zoom, mouse wheel zooms ---
+  const pointers = new Map()
+  let panStart = null
+  let pinchStart = null
+
+  function stagePoint(e) {
+    const rect = stage.getBoundingClientRect()
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top }
+  }
+
+  function midpoint(a, b) {
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+  }
+
+  function distance(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y)
+  }
 
   stage.addEventListener('pointerdown', (e) => {
-    dragging = true
-    startX = e.clientX
-    startY = e.clientY
-    startTx = tx
-    startTy = ty
-    stage.setPointerCapture(e.pointerId)
+    try { stage.setPointerCapture(e.pointerId) } catch {}
+    pointers.set(e.pointerId, stagePoint(e))
+    if (pointers.size === 1) {
+      const p = [...pointers.values()][0]
+      panStart = { x: p.x, y: p.y, tx, ty }
+    } else if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()]
+      pinchStart = { dist: distance(a, b), scale, mid: midpoint(a, b), tx, ty }
+    }
   })
+
   stage.addEventListener('pointermove', (e) => {
-    if (!dragging) return
-    tx = startTx + (e.clientX - startX)
-    ty = startTy + (e.clientY - startY)
-    clamp()
-    apply()
+    if (!pointers.has(e.pointerId)) return
+    pointers.set(e.pointerId, stagePoint(e))
+
+    if (pointers.size === 1 && panStart) {
+      const p = [...pointers.values()][0]
+      tx = panStart.tx + (p.x - panStart.x)
+      ty = panStart.ty + (p.y - panStart.y)
+      clampPos()
+      apply()
+    } else if (pointers.size === 2 && pinchStart) {
+      const [a, b] = [...pointers.values()]
+      const newDist = distance(a, b)
+      const ratio = newDist / (pinchStart.dist || 1)
+      zoomAt(pinchStart.mid.x, pinchStart.mid.y, pinchStart.scale * ratio)
+    }
   })
-  stage.addEventListener('pointerup', () => { dragging = false })
-  stage.addEventListener('pointercancel', () => { dragging = false })
+
+  function releasePointer(e) {
+    pointers.delete(e.pointerId)
+    if (pointers.size === 1) {
+      const p = [...pointers.values()][0]
+      panStart = { x: p.x, y: p.y, tx, ty }
+      pinchStart = null
+    } else if (pointers.size === 0) {
+      panStart = null
+      pinchStart = null
+    }
+  }
+  stage.addEventListener('pointerup', releasePointer)
+  stage.addEventListener('pointercancel', releasePointer)
+
+  stage.addEventListener('wheel', (e) => {
+    e.preventDefault()
+    const p = stagePoint(e)
+    const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08
+    zoomAt(p.x, p.y, scale * factor)
+  }, { passive: false })
 
   function cleanup() {
     URL.revokeObjectURL(objectUrl)
