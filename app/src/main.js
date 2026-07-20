@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.0.8'
+const APP_VERSION = 'v2.0.9'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -779,7 +779,7 @@ async function loadFriendsList() {
 
   const { data: friendRows } = await supabase
     .from('friends')
-    .select('friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url)')
+    .select('friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code)')
 
   const friends = (friendRows || []).map(r => r.profiles).filter(Boolean).sort((a, b) => b.pizzas - a.pizzas)
   if (!friends.length) {

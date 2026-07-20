@@ -31,6 +31,9 @@
   --soft-fill-2: rgba(247,237,223,0.05);
   --avatar-ring: rgba(247,237,223,0.25);
   --fab-ring: #241a13;
+  --gold-ink: #F6C64B;
+  --scrim-text: #F7EDDF;
+  --banner-wash: rgba(44,33,26,0.4);
 }
 :root[data-theme="light"] {
   --card: #FFFFFF;
@@ -51,6 +54,8 @@
   --soft-fill-2: rgba(42,29,19,0.05);
   --avatar-ring: rgba(42,29,19,0.16);
   --fab-ring: #FFFBF4;
+  --gold-ink: #8A5A0A;
+  --banner-wash: rgba(255,255,255,0.55);
 }
 :root[data-theme="dark"] {
   --card: #2c211a;
@@ -71,6 +76,8 @@
   --soft-fill-2: rgba(247,237,223,0.05);
   --avatar-ring: rgba(247,237,223,0.25);
   --fab-ring: #241a13;
+  --gold-ink: #F6C64B;
+  --banner-wash: rgba(44,33,26,0.4);
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
@@ -92,6 +99,8 @@
     --soft-fill-2: rgba(42,29,19,0.05);
     --avatar-ring: rgba(42,29,19,0.16);
     --fab-ring: #FFFBF4;
+    --gold-ink: #8A5A0A;
+    --banner-wash: rgba(255,255,255,0.55);
   }
 }
 
@@ -165,10 +174,10 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   width:0.9375rem; height:0.9375rem; border-radius: 50%;
   display: inline-grid; place-items: center;
   font-family: var(--font-display); font-size:0.5625rem; font-weight: 800; font-style: italic;
-  color: var(--muted); background: var(--soft-fill); border: 1px solid var(--line);
+  color: var(--muted); background: var(--card-2); border: 1px solid var(--line);
   flex: none;
 }
-.coin-chip .info-badge { color: var(--gold); border-color: rgba(246,198,75,0.4); background: rgba(246,198,75,0.12); }
+.coin-chip .info-badge { color: var(--gold-ink); border-color: rgba(246,198,75,0.4); background: rgba(246,198,75,0.16); }
 
 /* coins are rendered as <img class="coin"> in the real app; sizing/effects only here */
 .coin {
@@ -194,8 +203,8 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .hero-card .glow { position: absolute; inset: 0; background: linear-gradient(180deg, transparent 40%, rgba(20,12,8,0.85)); pointer-events: none; }
 .hero-tap {
   position: absolute; left:0.75rem; bottom:0.75rem; z-index: 2;
-  background: rgba(20,12,8,0.6); border: 1px solid var(--line); backdrop-filter: blur(6px);
-  color: var(--cream); font-size:0.6875rem; font-weight: 700; padding:0.375rem 0.6875rem; border-radius:62.4375rem;
+  background: rgba(20,12,8,0.6); border: 1px solid rgba(247,237,223,0.15); backdrop-filter: blur(6px);
+  color: var(--scrim-text); font-size:0.6875rem; font-weight: 700; padding:0.375rem 0.6875rem; border-radius:62.4375rem;
   display: flex; align-items: center; gap:0.375rem; cursor: pointer;
 }
 .tiles { display: grid; grid-template-columns: 1fr 1fr; gap:0.75rem; margin-top:0.875rem; }
@@ -230,8 +239,8 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 /* ---------- shop ---------- */
 .shop-banner {
   position: relative; display: flex; align-items: center; gap:0.875rem; cursor: pointer;
-  background: linear-gradient(160deg, rgba(246,198,75,0.18), rgba(44,33,26,0.4));
-  border: 1px solid rgba(246,198,75,0.3); border-radius:1.25rem; padding:1rem; margin-top:0.375rem;
+  background: linear-gradient(160deg, rgba(246,198,75,0.22), var(--banner-wash));
+  border: 1px solid rgba(246,198,75,0.35); border-radius:1.25rem; padding:1rem; margin-top:0.375rem;
 }
 .shop-banner:active { transform: scale(0.99); }
 .shop-banner .txt .t { font-family: var(--font-display); font-weight: 800; font-size:0.9375rem; color: var(--cream); }
@@ -241,13 +250,14 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .anim-card {
   background: var(--card); border: 1px solid var(--line); border-radius:1.125rem; overflow: hidden; margin-top:0.75rem;
   display: flex; flex-direction: column;
+  isolation: isolate;
 }
-.anim-top { position: relative; aspect-ratio: 16/9; overflow: hidden; }
+.anim-top { position: relative; aspect-ratio: 16/9; overflow: hidden; isolation: isolate; }
 .anim-top img, .anim-top video { width: 100%; height: 100%; object-fit: cover; display: block; }
 .anim-top .badge {
   position: absolute; top:0.625rem; left:0.625rem; font-size:0.625rem; font-weight: 800; letter-spacing: 0.05em;
   text-transform: uppercase; padding:0.3125rem 0.5625rem; border-radius:62.4375rem; margin: 0;
-  background: rgba(20,12,8,0.7); color: var(--cream); border: 1px solid var(--line); backdrop-filter: blur(6px);
+  background: rgba(20,12,8,0.7); color: var(--scrim-text); border: 1px solid rgba(247,237,223,0.15); backdrop-filter: blur(6px);
   font-family: inherit;
 }
 .badge-equip { cursor: pointer; }
@@ -305,7 +315,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 
 .friend-swipe-hint {
   display: flex; align-items: flex-start; gap:0.625rem; margin-top:0.875rem;
-  background: var(--soft-fill-2); border: 1px solid var(--line);
+  background: var(--card); border: 1px solid var(--line);
   border-radius:0.875rem; padding:0.75rem 0.875rem;
 }
 .friend-swipe-hint .info-badge { margin-top:0.0625rem; }
@@ -320,7 +330,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .addfriend input::placeholder { letter-spacing: normal; text-transform: none; color: var(--muted-2); }
 .addfriend button { background: var(--fire); color: #2a1405; border: none; border-radius:0.8125rem; padding:0 1.125rem; font-weight: 800; cursor: pointer; }
 .code-note { font-size:0.75rem; color: var(--muted); margin:0.75rem 0.125rem 0; }
-.code-note b { color: var(--gold); letter-spacing: 0.15em; }
+.code-note b { color: var(--gold-ink); letter-spacing: 0.15em; }
 
 /* ---------- settings (grouped list) ---------- */
 .group { margin-top:1.125rem; }
@@ -467,18 +477,20 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
    stretch this into a full-width gold pill like the other popup action buttons */
 .popup .popup-close {
   position: absolute; top:0.875rem; right:0.875rem; width:1.75rem; height:1.75rem; border-radius: 50%;
-  background: var(--soft-fill); border: 1px solid var(--line); color: var(--cream);
+  background: var(--card-2); border: 1px solid var(--line); color: var(--cream);
   font-size:0.875rem; cursor: pointer; display: grid; place-items: center; padding: 0;
 }
 .popup-profile-name { font-family: var(--font-display); font-weight: 800; font-size:1rem; color: var(--cream); margin-bottom:0.875rem; }
 .popup-profile-avatar { width:8rem; height:8rem; border-radius: 50%; object-fit: cover; border: 3px solid var(--line); margin:0 auto 1.25rem; display: block; }
+.btn-edit-profile { display: flex; align-items: center; justify-content: center; }
+.btn-edit-profile svg { width:1.125rem; height:1.125rem; flex: none; }
 .popup-wide h3 { text-align: center; }
 .popup-wide .coin.xl { display: block; }
 .popup-facts { display: flex; flex-direction: column; gap:0.75rem; margin-bottom:1.25rem; }
 .fact { display: flex; gap:0.625rem; align-items: baseline; }
 .fact-k {
   flex: none; font-family: var(--font-display); font-weight: 800; font-size:0.6875rem; letter-spacing: 0.06em;
-  text-transform: uppercase; color: var(--gold); width:3.25rem;
+  text-transform: uppercase; color: var(--gold-ink); width:3.25rem;
 }
 .fact-v { font-size:0.8125rem; color: var(--cream); line-height: 1.5; }
 
