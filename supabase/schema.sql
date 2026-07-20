@@ -1,7 +1,7 @@
 -- Chef Penguino: profiles, session log, and friends
 -- Run this once in the Supabase SQL Editor (Dashboard -> SQL Editor -> New query -> Run)
 
--- ---------- profiles ----------
+-- ---------- tables (created first, so policies below can reference any of them) ----------
 create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   display_name text not null,
@@ -10,7 +10,29 @@ create table public.profiles (
   created_at timestamptz not null default now()
 );
 
+create table public.sessions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  completed_at timestamptz not null,
+  minutes numeric not null,
+  pizzas numeric not null,
+  task text not null default '',
+  created_at timestamptz not null default now()
+);
+
+create table public.friends (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  friend_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  unique (user_id, friend_id),
+  check (user_id <> friend_id)
+);
+
+-- ---------- row level security ----------
 alter table public.profiles enable row level security;
+alter table public.sessions enable row level security;
+alter table public.friends enable row level security;
 
 create policy "profiles are visible to self and friends"
   on public.profiles for select
@@ -23,19 +45,6 @@ create policy "users can update their own profile"
   on public.profiles for update
   using (id = auth.uid());
 
--- ---------- sessions (the pizza log) ----------
-create table public.sessions (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references public.profiles(id) on delete cascade,
-  completed_at timestamptz not null,
-  minutes numeric not null,
-  pizzas numeric not null,
-  task text not null default '',
-  created_at timestamptz not null default now()
-);
-
-alter table public.sessions enable row level security;
-
 create policy "sessions are visible to self and friends"
   on public.sessions for select
   using (
@@ -46,18 +55,6 @@ create policy "sessions are visible to self and friends"
 create policy "users can insert their own sessions"
   on public.sessions for insert
   with check (user_id = auth.uid());
-
--- ---------- friends (mutual link: one row per direction) ----------
-create table public.friends (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references public.profiles(id) on delete cascade,
-  friend_id uuid not null references public.profiles(id) on delete cascade,
-  created_at timestamptz not null default now(),
-  unique (user_id, friend_id),
-  check (user_id <> friend_id)
-);
-
-alter table public.friends enable row level security;
 
 create policy "users can see their own friend list"
   on public.friends for select
