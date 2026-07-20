@@ -1113,6 +1113,7 @@ function renderTimerLoop(justStarted) {
   function applyDarkenLevel() {
     const brightness = 1 - (state.darkenLevel * 0.85)
     kitchenEl.style.setProperty('--darken-brightness', brightness)
+    kitchenEl.style.setProperty('--darken-scrim', state.darkenLevel * 0.4)
   }
   applyDarkenLevel()
 

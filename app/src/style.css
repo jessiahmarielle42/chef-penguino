@@ -488,7 +488,8 @@ img.avatar-circle {
   justify-content: center;
   gap: 18px;
   padding: 32px;
-  background: rgba(0,0,0,.4);
+  background: rgba(0,0,0, var(--darken-scrim, 0.4));
+  transition: background 500ms ease;
   animation: overlay-fade-in 500ms ease;
 }
 
