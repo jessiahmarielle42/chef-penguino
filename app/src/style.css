@@ -571,6 +571,38 @@ html, body {
   font-weight: 700;
 }
 
+.friend-row .log-row-meta {
+  gap: 10px;
+}
+
+.friend-view-btn, .friend-remove-btn {
+  min-height: 36px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ffcf4d, #ff9d1c);
+  color: #3a2200;
+  transition: transform 120ms ease;
+}
+
+.friend-view-btn:active, .friend-remove-btn:active {
+  transform: scale(0.95);
+}
+
+.friend-remove-btn {
+  background: rgba(255,255,255,.15);
+  color: #fff;
+}
+
+.friends-error {
+  color: #ff6b6b;
+  font-size: 13px;
+  font-weight: 600;
+  margin: 6px 0 0;
+}
+
 .log-empty {
   opacity: .7;
   margin-top: 40px;

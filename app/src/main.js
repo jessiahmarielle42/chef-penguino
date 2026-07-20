@@ -1,9 +1,63 @@
 import './style.css'
+import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
 
 const STORAGE_KEY = 'chef-penguino-save'
+
+let currentUser = null
+let currentProfile = null
+
+async function signInWithGoogle() {
+  await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: window.location.origin + BASE },
+  })
+}
+
+async function signOut() {
+  await supabase.auth.signOut()
+  currentUser = null
+  currentProfile = null
+  renderHome()
+}
+
+async function refreshProfile() {
+  if (!currentUser) { currentProfile = null; return }
+  const { data } = await supabase
+    .from('profiles')
+    .select('id, display_name, friend_code, pizzas')
+    .eq('id', currentUser.id)
+    .single()
+  currentProfile = data || null
+}
+
+async function migrateLocalDataIfNeeded() {
+  if (state.cloudSynced) return
+  if (state.log.length > 0) {
+    const rows = state.log.map(e => ({
+      user_id: currentUser.id,
+      completed_at: new Date(e.completedAt).toISOString(),
+      minutes: e.minutes,
+      pizzas: e.pizzas,
+      task: e.task || '',
+    }))
+    await supabase.from('sessions').insert(rows)
+  }
+  state.cloudSynced = true
+  save()
+}
+
+async function handleSignedIn(user) {
+  currentUser = user
+  await migrateLocalDataIfNeeded()
+  await refreshProfile()
+}
+
+function displayPizzas() {
+  return currentProfile ? currentProfile.pizzas : state.pizzas
+}
 
 const DURATIONS = [
   { label: '15 min', minutes: 15 },
@@ -14,7 +68,7 @@ const DURATIONS = [
 const state = load()
 
 function load() {
-  const defaults = { pizzas: 0, muted: false, volume: 0.5, timer: null, log: [] }
+  const defaults = { pizzas: 0, muted: false, volume: 0.5, timer: null, log: [], cloudSynced: false }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return { ...defaults, ...JSON.parse(raw) }
@@ -70,31 +124,63 @@ function finalizeSession(playAlarm) {
   const t = state.timer
   const minutes = t.elapsedMs / 60000
   const pizzasEarned = round2(minutes / 60)
+  const completedAt = Date.now()
   addSessionPizzas(minutes)
-  logSession({ completedAt: Date.now(), minutes, pizzas: pizzasEarned, task: t.task })
+  logSession({ completedAt, minutes, pizzas: pizzasEarned, task: t.task })
   state.timer = null
   save()
+
+  if (currentUser) {
+    supabase.from('sessions').insert({
+      user_id: currentUser.id,
+      completed_at: new Date(completedAt).toISOString(),
+      minutes,
+      pizzas: pizzasEarned,
+      task: t.task || '',
+    }).then(() => refreshProfile())
+  }
+
   if (playAlarm) renderIntro(renderHome, true)
   else renderHome()
 }
 
 // ---------- boot ----------
-if (state.timer) {
-  const t = state.timer
-  if (t.segmentStartedAt != null) {
-    const remaining = t.segmentPlannedMs - (Date.now() - t.segmentStartedAt)
-    if (remaining > 0) {
-      renderTimerLoop(false)
+async function boot() {
+  const { data } = await supabase.auth.getSession()
+  if (data.session?.user) {
+    await handleSignedIn(data.session.user)
+  }
+
+  supabase.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_IN' && session?.user) {
+      handleSignedIn(session.user).then(() => {
+        if (!state.timer) renderHome()
+      })
+    } else if (event === 'SIGNED_OUT') {
+      currentUser = null
+      currentProfile = null
+    }
+  })
+
+  if (state.timer) {
+    const t = state.timer
+    if (t.segmentStartedAt != null) {
+      const remaining = t.segmentPlannedMs - (Date.now() - t.segmentStartedAt)
+      if (remaining > 0) {
+        renderTimerLoop(false)
+      } else {
+        t.elapsedMs += t.segmentPlannedMs
+        finalizeSession(true)
+      }
     } else {
-      t.elapsedMs += t.segmentPlannedMs
-      finalizeSession(true)
+      renderTimerLoop(false)
     }
   } else {
-    renderTimerLoop(false)
+    renderHome()
   }
-} else {
-  renderHome()
 }
+
+boot()
 
 // ---------- Home ----------
 function renderHome() {
@@ -104,7 +190,7 @@ function renderHome() {
       <div class="home-content">
         <img class="home-icon" src="${BASE}assets/penguin-icon.png" alt="Chef Penguino" />
         <div class="home-score">
-          <span class="home-score-value">${formatScore(state.pizzas)}</span>
+          <span class="home-score-value">${formatScore(displayPizzas())}</span>
           <span class="home-score-label">pizzas made</span>
         </div>
         <h1>Chef Penguino</h1>
@@ -112,6 +198,7 @@ function renderHome() {
         <div class="home-btn-col">
           <button class="start-btn" data-nav="start" type="button">Start</button>
           <button class="start-btn" data-nav="pizzas" type="button">Pizzas</button>
+          <button class="start-btn" data-nav="friends" type="button">Friends</button>
           <button class="start-btn" data-nav="settings" type="button">Settings</button>
         </div>
       </div>
@@ -121,12 +208,12 @@ function renderHome() {
     renderIntro(renderDurationPicker, false)
   })
   app.querySelector('[data-nav="pizzas"]').addEventListener('click', renderPizzas)
+  app.querySelector('[data-nav="friends"]').addEventListener('click', renderFriends)
   app.querySelector('[data-nav="settings"]').addEventListener('click', renderSettings)
 }
 
 // ---------- Pizzas (session log) ----------
-function renderPizzas() {
-  const groups = groupLogByDate(state.log)
+async function renderPizzas() {
   app.innerHTML = `
     <div class="home">
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
@@ -135,17 +222,37 @@ function renderPizzas() {
         <div class="log-header">
           <img class="home-icon log-icon" src="${BASE}assets/penguin-icon.png" alt="" />
           <div class="home-score">
-            <span class="home-score-value">${formatScore(state.pizzas)}</span>
+            <span class="home-score-value">${formatScore(displayPizzas())}</span>
             <span class="home-score-label">pizzas made</span>
           </div>
         </div>
-        <div class="log-list">
-          ${groups.length ? groups.map(renderDateGroup).join('') : '<p class="log-empty">No sessions yet. Start cooking!</p>'}
-        </div>
+        <div class="log-list"><p class="log-empty">Loading&hellip;</p></div>
       </div>
     </div>
   `
   app.querySelector('.back-btn').addEventListener('click', renderHome)
+
+  const log = await fetchLog(currentUser?.id)
+  const listEl = app.querySelector('.log-list')
+  if (!listEl) return
+  const groups = groupLogByDate(log)
+  listEl.innerHTML = groups.length ? groups.map(renderDateGroup).join('') : '<p class="log-empty">No sessions yet. Start cooking!</p>'
+}
+
+async function fetchLog(userId) {
+  if (!userId) return state.log
+  const { data } = await supabase
+    .from('sessions')
+    .select('completed_at, minutes, pizzas, task')
+    .eq('user_id', userId)
+    .order('completed_at', { ascending: false })
+  if (!data) return []
+  return data.map(r => ({
+    completedAt: new Date(r.completed_at).getTime(),
+    minutes: r.minutes,
+    pizzas: r.pizzas,
+    task: r.task,
+  }))
 }
 
 function groupLogByDate(log) {
@@ -221,6 +328,15 @@ function renderSettings() {
             <span>🔊</span>
           </div>
         </div>
+        <div class="settings-row">
+          <label>Account</label>
+          ${currentUser
+            ? `<p class="home-tag">Signed in as ${escapeHtml(currentProfile?.display_name || currentUser.email || '')}</p>
+               <button class="start-btn" data-action="sign-out" type="button">Sign Out</button>`
+            : `<p class="home-tag">Sign in to sync your progress and add friends</p>
+               <button class="start-btn" data-action="sign-in" type="button">Sign in with Google</button>`
+          }
+        </div>
       </div>
     </div>
   `
@@ -229,6 +345,156 @@ function renderSettings() {
     state.volume = Number(e.target.value) / 100
     save()
   })
+  app.querySelector('[data-action="sign-in"]')?.addEventListener('click', signInWithGoogle)
+  app.querySelector('[data-action="sign-out"]')?.addEventListener('click', signOut)
+}
+
+// ---------- Friends ----------
+async function renderFriends() {
+  if (!currentUser) {
+    app.innerHTML = `
+      <div class="home">
+        <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
+        <div class="home-content">
+          <button class="back-btn" type="button">&larr; Back</button>
+          <h1>Friends</h1>
+          <p class="home-tag">Sign in with Google to add friends and see their progress</p>
+          <div class="home-btn-col">
+            <button class="start-btn" data-action="sign-in" type="button">Sign in with Google</button>
+          </div>
+        </div>
+      </div>
+    `
+    app.querySelector('.back-btn').addEventListener('click', renderHome)
+    app.querySelector('[data-action="sign-in"]').addEventListener('click', signInWithGoogle)
+    return
+  }
+
+  app.innerHTML = `
+    <div class="home">
+      <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
+      <div class="log-content">
+        <button class="back-btn" type="button">&larr; Back</button>
+        <div class="log-header">
+          <h1>Friends</h1>
+          <p class="home-tag">Your code: <strong>${currentProfile?.friend_code || '...'}</strong></p>
+          <div class="custom-row">
+            <input type="text" maxlength="6" placeholder="Friend's code" class="custom-input" id="friend-code-input" />
+            <button class="custom-go" type="button" id="add-friend-btn">Add</button>
+          </div>
+          <p class="friends-error" id="friends-error" hidden></p>
+        </div>
+        <div class="log-list" id="friends-list"><p class="log-empty">Loading&hellip;</p></div>
+      </div>
+    </div>
+  `
+  app.querySelector('.back-btn').addEventListener('click', renderHome)
+
+  const errorEl = app.querySelector('#friends-error')
+  app.querySelector('#add-friend-btn').addEventListener('click', async () => {
+    const input = app.querySelector('#friend-code-input')
+    const code = input.value.trim()
+    if (!code) return
+    errorEl.hidden = true
+    const { error } = await supabase.rpc('add_friend_by_code', { code })
+    if (error) {
+      errorEl.textContent = error.message
+      errorEl.hidden = false
+      return
+    }
+    input.value = ''
+    loadFriendsList()
+  })
+
+  loadFriendsList()
+}
+
+async function loadFriendsList() {
+  const listEl = app.querySelector('#friends-list')
+  if (!listEl) return
+
+  const { data: friendRows } = await supabase
+    .from('friends')
+    .select('friend_id, profiles:friend_id(id, display_name, pizzas)')
+
+  if (!friendRows || friendRows.length === 0) {
+    listEl.innerHTML = '<p class="log-empty">No friends yet. Share your code above!</p>'
+    return
+  }
+
+  const friends = friendRows.map(r => r.profiles).filter(Boolean).sort((a, b) => b.pizzas - a.pizzas)
+  listEl.innerHTML = friends.map(f => `
+    <div class="log-row friend-row" data-friend-id="${f.id}">
+      <div class="log-row-main">
+        <span class="log-row-task">${escapeHtml(f.display_name)}</span>
+        <span class="log-row-pizzas">🍕 ${formatScore(f.pizzas)}</span>
+      </div>
+      <div class="log-row-meta">
+        <button class="friend-view-btn" data-friend-id="${f.id}" data-friend-name="${escapeHtml(f.display_name)}" type="button">View log</button>
+        <button class="friend-remove-btn" data-friend-id="${f.id}" type="button">Remove</button>
+      </div>
+    </div>
+  `).join('')
+
+  listEl.querySelectorAll('.friend-view-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      renderFriendLog(btn.dataset.friendId, btn.dataset.friendName)
+    })
+  })
+
+  listEl.querySelectorAll('.friend-remove-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      showRemoveFriendConfirm(btn.dataset.friendId)
+    })
+  })
+}
+
+function showRemoveFriendConfirm(friendId) {
+  const container = app.querySelector('.home')
+  const overlay = document.createElement('div')
+  overlay.className = 'pause-overlay'
+  overlay.innerHTML = `
+    <div class="pause-content">
+      <h2>Remove friend?</h2>
+      <div class="home-btn-col">
+        <button class="start-btn" data-action="confirm-remove" type="button">Yes, Remove</button>
+        <button class="start-btn" data-action="cancel" type="button">Cancel</button>
+      </div>
+    </div>
+  `
+  container.appendChild(overlay)
+  overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => overlay.remove())
+  overlay.querySelector('[data-action="confirm-remove"]').addEventListener('click', async () => {
+    await supabase.rpc('remove_friend', { target_id: friendId })
+    overlay.remove()
+    loadFriendsList()
+  })
+}
+
+async function renderFriendLog(friendId, friendName) {
+  app.innerHTML = `
+    <div class="home">
+      <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
+      <div class="log-content">
+        <button class="back-btn" type="button">&larr; Back</button>
+        <div class="log-header">
+          <img class="home-icon log-icon" src="${BASE}assets/penguin-icon.png" alt="" />
+          <div class="home-score">
+            <span class="home-score-value">${escapeHtml(friendName)}</span>
+            <span class="home-score-label">pizzas made</span>
+          </div>
+        </div>
+        <div class="log-list"><p class="log-empty">Loading&hellip;</p></div>
+      </div>
+    </div>
+  `
+  app.querySelector('.back-btn').addEventListener('click', renderFriends)
+
+  const log = await fetchLog(friendId)
+  const listEl = app.querySelector('.log-list')
+  if (!listEl) return
+  const groups = groupLogByDate(log)
+  listEl.innerHTML = groups.length ? groups.map(renderDateGroup).join('') : '<p class="log-empty">No sessions yet.</p>'
 }
 
 // ---------- Intro (used both to start a session and as the completion alarm) ----------
