@@ -398,7 +398,8 @@
   .popup p { color: var(--muted); font-size: 14px; margin: 0 0 20px; line-height: 1.5; }
   .popup button { width: 100%; border: none; cursor: pointer; font-family: var(--font-display); font-weight: 800; font-size: 16px; color: #4d360a; padding: 14px; border-radius: 16px; background: linear-gradient(180deg, #FFD873, var(--gold) 60%, var(--gold-deep)); }
 
-  .popup-wide { max-width: 320px; text-align: left; }
+  .popup-wide { max-width: 320px; text-align: left; position: relative; }
+  .popup-info-badge { position: absolute; top: 18px; left: 18px; width: 22px; height: 22px; font-size: 12px; }
   .popup-wide h3 { text-align: center; }
   .popup-wide .coin.xl { display: block; }
   .popup-facts { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
@@ -475,7 +476,7 @@
               <div class="stats">
                 <span class="chip"><span class="ic">🍕</span><span id="pizzaChip">248</span></span>
                 <button class="chip coin-chip" type="button" onclick="openCoinInfo()" aria-label="Coin balance — tap to learn about Penguino Coins">
-                  <span class="coin"></span><span id="coinChip">3</span><span class="info-badge" aria-hidden="true">i</span>
+                  <span class="coin"></span><span id="coinChip">3</span>
                 </button>
               </div>
             </div>
@@ -648,11 +649,12 @@
             <!-- coin info popup — the (i) badge pattern opens this wherever coins are explained -->
             <div class="overlay" id="coinInfoOverlay" onclick="if(event.target===this) closeCoinInfo()">
               <div class="popup popup-wide">
+                <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
                 <span class="coin xl"></span>
                 <h3>Penguino Coins</h3>
                 <div class="popup-facts">
-                  <div class="fact"><span class="fact-k">Earn</span><span class="fact-v">Bake 12 pizzas and Chef Penguino sells the batch for 1 gold coin — automatically, no selling required.</span></div>
-                  <div class="fact"><span class="fact-k">Spend</span><span class="fact-v">Use coins in the Animation Shop to unlock new tap animations for your chef, like Sniffing and Eating.</span></div>
+                  <div class="fact"><span class="fact-k">Earn</span><span class="fact-v">Every 12 pizzas you bake, Chef Penguino sells them for a Penguino Coin. Your lifetime total pizza count will not be affected.</span></div>
+                  <div class="fact"><span class="fact-k">Spend</span><span class="fact-v">Use coins to unlock awesome new animations in the Animation Shop!</span></div>
                   <div class="fact"><span class="fact-k">Cost</span><span class="fact-v">Every animation costs 1 coin. Waving is free and always yours.</span></div>
                 </div>
                 <button onclick="closeCoinInfo()">Got it</button>
