@@ -303,7 +303,7 @@ function pizzaImagePath(count) {
 // on each tap. Their shelf only visually matches the 12-pizza display case,
 // so tapping snaps back to the real picture right after the clip ends
 // rather than claiming to be a pixel-perfect match at every pizza count.
-const PIZZA_TAP_VIDEOS = ['pizzas-wave-1.mp4']
+const PIZZA_TAP_VIDEOS = ['pizzas-waving.mp4', 'pizzas-sniffing.mp4']
 let pizzaTapVideoIndex = 0
 
 // ---------- Pizzas (shop front + log, one scrollable page) ----------
