@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.0.7'
+const APP_VERSION = 'v2.0.8'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -531,8 +531,9 @@ async function loadHomeLog() {
   if (!listEl) return
   const recent = log.slice(0, 6)
   const groups = groupLogByDate(recent)
+  let rowIndex = 0
   listEl.innerHTML = groups.length
-    ? groups.map(renderDateGroup).join('')
+    ? groups.map(g => renderDateGroup(g, () => rowIndex++)).join('')
     : '<p class="log-empty">No sessions yet. Start cooking!</p>'
 }
 
@@ -931,21 +932,25 @@ function dateLabel(ts) {
   })
 }
 
-function renderDateGroup(group) {
+const LOG_ROW_ICONS = ['🍅', '🥦', '🍄‍🟫', '🧀', '🥖']
+
+function renderDateGroup(group, nextIndex) {
   return `
     <div class="log-date-group">
       <div class="log-date-heading">${group.label}</div>
-      ${group.entries.map(renderLogRow).join('')}
+      ${group.entries.map(entry => renderLogRow(entry, nextIndex())).join('')}
     </div>
   `
 }
 
-function renderLogRow(entry) {
+function renderLogRow(entry, index) {
   const time = new Date(entry.completedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
   const task = escapeHtml(entry.task) || 'Focus session'
+  const icon = LOG_ROW_ICONS[index % LOG_ROW_ICONS.length]
   return `
     <div class="log-row">
       <div class="log-row-main">
+        <span class="log-row-icon">${icon}</span>
         <span class="log-row-task">${task}</span>
         <span class="log-row-time">${time}</span>
       </div>

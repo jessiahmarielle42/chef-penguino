@@ -1245,25 +1245,31 @@ img.shop-image {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing:0.0625rem;
-  opacity: .65;
+  color: var(--muted);
   margin-bottom:0.5rem;
   text-align: left;
 }
 
 .log-row {
-  background: rgba(0,0,0,.35);
+  background: var(--card);
+  border: 1px solid var(--line);
   border-radius:0.875rem;
   padding:0.75rem 0.875rem;
   margin-bottom:0.5rem;
   text-align: left;
+  color: var(--cream);
 }
 
 .log-row-main {
   display: flex;
-  justify-content: space-between;
   align-items: baseline;
   gap:0.5rem;
   margin-bottom:0.25rem;
+}
+
+.log-row-icon {
+  font-size:0.9375rem;
+  flex-shrink: 0;
 }
 
 .log-row-task {
@@ -1272,11 +1278,12 @@ img.shop-image {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
 }
 
 .log-row-time {
   font-size:0.75rem;
-  opacity: .7;
+  color: var(--muted);
   flex-shrink: 0;
 }
 
@@ -1284,7 +1291,7 @@ img.shop-image {
   display: flex;
   justify-content: space-between;
   font-size:0.8125rem;
-  opacity: .85;
+  color: var(--muted-2);
 }
 
 .log-row-pizzas {
