@@ -212,8 +212,27 @@ function renderHome() {
   app.querySelector('[data-nav="settings"]').addEventListener('click', renderSettings)
 }
 
-// ---------- Pizzas (session log) ----------
-async function renderPizzas() {
+// ---------- Pizzas (shop front) ----------
+function renderPizzas() {
+  app.innerHTML = `
+    <div class="home">
+      <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
+      <div class="shop-content">
+        <button class="back-btn" type="button">&larr; Back</button>
+        <div class="shop-image-wrap">
+          <img class="shop-image" src="${BASE}assets/pizza-shop.png" alt="Chef Penguino's pizza shop" />
+          <div class="shop-pizza-pill">${formatScore(displayPizzas())} pizzas made</div>
+        </div>
+        <button class="start-btn" data-nav="log" type="button">See Log</button>
+      </div>
+    </div>
+  `
+  app.querySelector('.back-btn').addEventListener('click', renderHome)
+  app.querySelector('[data-nav="log"]').addEventListener('click', renderPizzaLog)
+}
+
+// ---------- Pizza log ----------
+async function renderPizzaLog() {
   app.innerHTML = `
     <div class="home">
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
@@ -230,7 +249,7 @@ async function renderPizzas() {
       </div>
     </div>
   `
-  app.querySelector('.back-btn').addEventListener('click', renderHome)
+  app.querySelector('.back-btn').addEventListener('click', renderPizzas)
 
   const log = await fetchLog(currentUser?.id)
   const listEl = app.querySelector('.log-list')
