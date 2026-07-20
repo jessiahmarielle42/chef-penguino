@@ -145,6 +145,10 @@ function formatScore1(n) {
   return String(round1(n))
 }
 
+function formatScoreFixed2(n) {
+  return round2(n).toFixed(2)
+}
+
 function escapeHtml(str) {
   const div = document.createElement('div')
   div.textContent = str
@@ -202,7 +206,7 @@ async function finalizeSession(playAlarm) {
     await refreshProfile()
   }
 
-  if (playAlarm) renderIntro(() => renderPizzas(), true, undefined, { minutes, pizzas: pizzasEarned })
+  if (playAlarm) renderTapToContinue(() => renderPizzas(), true, { minutes, pizzas: pizzasEarned })
   else renderHome()
 }
 
@@ -974,7 +978,7 @@ function renderIntro(onEnd, isAlarm, videoSrc = 'intro.mp4', sessionSummary) {
 
 function renderTapToContinue(onContinue, isAlarm, sessionSummary) {
   const resultText = isAlarm && sessionSummary
-    ? `Worked for ${formatWorkedDuration(sessionSummary.minutes)}, ${formatScore(sessionSummary.pizzas)} pizzas made`
+    ? `Worked for ${formatWorkedDuration(sessionSummary.minutes)}, ${formatScoreFixed2(sessionSummary.pizzas)} pizzas made`
     : ''
   app.innerHTML = `
     <div class="intro-start">
