@@ -613,6 +613,10 @@ img.avatar-circle {
   box-shadow: 0 10px 30px rgba(0,0,0,.5);
 }
 
+img.shop-image {
+  cursor: pointer;
+}
+
 .shop-pizza-pill {
   min-height: 44px;
   display: flex;

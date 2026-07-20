@@ -266,7 +266,7 @@ function renderHome() {
     }
   })
   app.querySelector('[data-nav="pizzas"]').addEventListener('click', () => {
-    renderPizzas(undefined, true)
+    renderPizzas()
   })
   app.querySelector('[data-nav="friends"]').addEventListener('click', renderFriends)
   app.querySelector('[data-nav="settings"]').addEventListener('click', renderSettings)
@@ -299,13 +299,19 @@ function pizzaImagePath(count) {
   return `${BASE}assets/display-case/${clamped}.jpg`
 }
 
+// Waving/animated clips shown when the shop image is tapped. They rotate
+// on each tap. Their shelf only visually matches the 12-pizza display case,
+// so tapping snaps back to the real picture right after the clip ends
+// rather than claiming to be a pixel-perfect match at every pizza count.
+const PIZZA_TAP_VIDEOS = ['pizzas-wave-1.mp4']
+let pizzaTapVideoIndex = 0
+
 // ---------- Pizzas (shop front + log, one scrollable page) ----------
 // Pass a friend object ({id, display_name, pizzas, avatar_url}) to view
-// someone else's page; omit it to view your own. Pass playIntro=true to
-// play the waving clip first (only used from the Home button) - the log
-// and everything else render immediately either way, so it's scrollable
-// and visible even while the intro clip is still playing.
-async function renderPizzas(friend, playIntro) {
+// someone else's page; omit it to view your own. The shop image is a still
+// picture by default - tapping it plays a short waving clip and then
+// returns to the still picture. The log renders immediately regardless.
+async function renderPizzas(friend) {
   const isSelf = !friend
   const titleText = isSelf
     ? (currentProfile?.display_name ? `${currentProfile.display_name}'s Pizzas` : 'Your Pizzas')
@@ -328,9 +334,7 @@ async function renderPizzas(friend, playIntro) {
     }
   }
 
-  const mediaHtml = playIntro
-    ? `<video class="shop-image" id="shop-media" src="${BASE}assets/pizzas-intro.mp4" playsinline autoplay muted></video>`
-    : `<img class="shop-image" id="shop-media" src="${pizzaImagePath(previousCount)}" alt="" />`
+  const mediaHtml = `<img class="shop-image" id="shop-media" src="${pizzaImagePath(previousCount)}" alt="" />`
 
   app.innerHTML = `
     <div class="home">
@@ -354,6 +358,38 @@ async function renderPizzas(friend, playIntro) {
   `
   app.querySelector('.back-arrow-btn').addEventListener('click', backAction)
 
+  let displayedCount = previousCount
+
+  function attachTapHandler(imgEl) {
+    imgEl.addEventListener('click', () => {
+      const videoSrc = PIZZA_TAP_VIDEOS[pizzaTapVideoIndex % PIZZA_TAP_VIDEOS.length]
+      pizzaTapVideoIndex++
+
+      const video = document.createElement('video')
+      video.className = 'shop-image'
+      video.id = 'shop-media'
+      video.src = `${BASE}assets/${videoSrc}`
+      video.playsInline = true
+      video.muted = true
+      imgEl.replaceWith(video)
+
+      let swapped = false
+      const swapBackToImage = () => {
+        if (swapped) return
+        swapped = true
+        const img = document.createElement('img')
+        img.className = 'shop-image'
+        img.id = 'shop-media'
+        img.alt = ''
+        img.src = pizzaImagePath(displayedCount)
+        video.replaceWith(img)
+        attachTapHandler(img)
+      }
+      video.addEventListener('ended', swapBackToImage)
+      video.play().catch(swapBackToImage)
+    })
+  }
+
   function showMilestoneIfNeeded() {
     if (!showMilestone) return
     const container = app.querySelector('.home')
@@ -370,32 +406,15 @@ async function renderPizzas(friend, playIntro) {
     overlay.querySelector('[data-action="yay"]').addEventListener('click', () => {
       state.lastSeenPizzaCount = currentCount
       save()
+      displayedCount = currentCount
       const shopImg = app.querySelector('#shop-media')
       if (shopImg) shopImg.src = pizzaImagePath(currentCount)
       overlay.remove()
     })
   }
 
-  if (playIntro) {
-    const video = app.querySelector('#shop-media')
-    let swapped = false
-    const swapToImage = () => {
-      if (swapped) return
-      swapped = true
-      const img = document.createElement('img')
-      img.className = 'shop-image'
-      img.id = 'shop-media'
-      img.alt = ''
-      img.src = pizzaImagePath(previousCount)
-      video.replaceWith(img)
-      showMilestoneIfNeeded()
-    }
-    video.addEventListener('ended', swapToImage)
-    // Decorative only - if autoplay is blocked, just skip straight to the still image.
-    video.play().catch(swapToImage)
-  } else {
-    showMilestoneIfNeeded()
-  }
+  attachTapHandler(app.querySelector('#shop-media'))
+  showMilestoneIfNeeded()
 
   const log = await fetchLog(isSelf ? currentUser?.id : friend.id)
   const listEl = app.querySelector('.log-list')
