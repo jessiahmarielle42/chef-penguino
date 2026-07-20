@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.1.4'
+const APP_VERSION = 'v2.1.5'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -850,6 +850,7 @@ async function loadFriendsList() {
 function confirmNoot(friend, btn) {
   const o = overlay(`
     <h3>Do you want to Noot ${escapeHtml(friend.display_name)}?</h3>
+    <div class="popup-emoji-xl">🐧</div>
     <div class="home-btn-col">
       <button type="button" data-action="yes">Yes</button>
       <button type="button" class="btn-secondary" data-action="no">Cancel</button>

@@ -762,7 +762,7 @@ img.avatar-circle {
   gap:0.75rem;
   width: 100%;
   max-width:13.75rem;
-  margin-top:0.25rem;
+  margin:0.25rem auto 0;
 }
 
 .home-btn-col .start-btn {
