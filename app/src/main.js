@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.1.6'
+const APP_VERSION = 'v2.1.7'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -381,8 +381,8 @@ const COPY_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 function statusBarHtml() {
   return `
     <div class="statusbar">
-      <div class="who">
-        <img class="who-avatar" src="${myAvatar()}" alt="" role="button" tabindex="0" data-action="profile" />
+      <div class="who" role="button" tabindex="0" data-action="profile">
+        <img class="who-avatar" src="${myAvatar()}" alt="" />
         <div>
           <div class="greet">${isSignedIn() ? 'Welcome back,' : 'Hello,'}</div>
           <div class="nm">${escapeHtml(myName())}</div>
@@ -493,7 +493,7 @@ function renderHome() {
   const heroSrc = pizzaImagePath(stash)
 
   const content = `
-    <div class="hero-card" id="hero-card">
+    <div class="hero-card" id="hero-card" role="button" tabindex="0">
       <img class="hero-still" src="${heroSrc}" alt="" />
       <div class="glow"></div>
       <button class="hero-tap" type="button" data-action="emote">👋 Tap to emote</button>
@@ -531,7 +531,7 @@ function renderHome() {
         }
       })
     }
-    attachEmoteTap(app.querySelector('.hero-tap'))
+    attachEmoteTap(app.querySelector('#hero-card'))
 
     loadHomeLog()
     maybeShowCoinMilestone()
@@ -768,7 +768,7 @@ async function renderFriends() {
   const content = `
     <div class="section-h" style="margin-top:6px"><h2>Leaderboard</h2></div>
     <div id="friends-list"><p class="log-empty">Loading&hellip;</p></div>
-    <div class="section-h"><h2>Add a friend</h2></div>
+    <div class="section-h" style="margin-top:1.75rem"><h2>Add a friend</h2></div>
     <div class="addfriend"><input id="friend-code-input" placeholder="Friend's code" maxlength="6" /><button type="button" data-action="add">Add</button></div>
     <p class="friends-error" id="friends-error" hidden></p>
     <p class="code-note">Your code: <b id="friend-code-val">${currentProfile?.friend_code || '…'}</b> <button class="copy-btn" type="button" data-action="copy" aria-label="Copy friend code">${COPY_SVG}</button> — share it to compare pizzas.</p>
@@ -809,26 +809,32 @@ async function loadFriendsList() {
     supabase.from('noots').select('recipient_id').eq('sender_id', currentUser.id).is('acknowledged_at', null),
   ])
 
-  const friends = (friendRows || []).map(r => r.profiles).filter(Boolean).sort((a, b) => b.pizzas - a.pizzas)
+  const friends = (friendRows || []).map(r => r.profiles).filter(Boolean)
   const pendingNootTargets = new Set((pendingRows || []).map(r => r.recipient_id))
   if (!friends.length) {
-    listEl.innerHTML = '<p class="log-empty">No friends yet. Share your code below!</p>'
+    listEl.innerHTML = `<div class="frow lonely-card">It's lonely here. Add friends to start climbing the ladder!</div>`
     return
   }
 
+  const me = { id: currentUser.id, display_name: myName(), pizzas: displayPizzas(), avatar_url: myAvatar(), friend_code: currentProfile?.friend_code, isMe: true }
+  const board = [...friends, me].sort((a, b) => b.pizzas - a.pizzas)
+
   const medals = ['🥇', '🥈', '🥉']
-  listEl.innerHTML = friends.map((f, i) => `
-    <div class="frow-wrap">
-      <button class="frow-delete" type="button" data-remove="${f.id}">🗑<span>Delete</span></button>
-      <div class="frow" data-view="${f.id}">
-        <div class="${i < 3 ? 'medal' : 'rank'}">${i < 3 ? medals[i] : (i + 1)}</div>
+  listEl.innerHTML = board.map((f, i) => {
+    const rank = i < 3 ? `<div class="medal">${medals[i]}</div>` : `<div class="rank">${i + 1}</div>`
+    const name = f.isMe ? `${escapeHtml(f.display_name)} <span class="you-tag">(you)</span>` : escapeHtml(f.display_name)
+    const noot = f.isMe ? '' : `<button class="frow-noot ${pendingNootTargets.has(f.id) ? 'disabled' : ''}" type="button" data-noot="${f.id}" aria-label="Noot ${escapeHtml(f.display_name)}">🐧</button>`
+    const row = `
+      <div class="frow ${f.isMe ? 'me' : ''}" ${f.isMe ? '' : `data-view="${f.id}" role="button" tabindex="0"`}>
+        ${rank}
         <img src="${f.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
-        <div><div class="fn">${escapeHtml(f.display_name)}</div><div class="fp">Code ${escapeHtml(f.friend_code || '')}</div></div>
+        <div><div class="fn">${name}</div><div class="fp">Code ${escapeHtml(f.friend_code || '')}</div></div>
         <div class="score">🍕 ${formatScore(f.pizzas)}</div>
-        <button class="frow-noot ${pendingNootTargets.has(f.id) ? 'disabled' : ''}" type="button" data-noot="${f.id}" aria-label="Noot ${escapeHtml(f.display_name)}">🐧</button>
+        ${noot}
       </div>
-    </div>
-  `).join('')
+    `
+    return f.isMe ? row : `<div class="frow-wrap"><button class="frow-delete" type="button" data-remove="${f.id}">🗑<span>Delete</span></button>${row}</div>`
+  }).join('')
 
   const friendsById = Object.fromEntries(friends.map(f => [f.id, f]))
   const nameById = Object.fromEntries(friends.map(f => [f.id, f.display_name]))
@@ -841,8 +847,8 @@ async function loadFriendsList() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation()
       const friend = friendsById[btn.dataset.noot]
-      if (btn.classList.contains('disabled')) { openNootCooldownInfo(friend.display_name); return }
       playNootSound()
+      if (btn.classList.contains('disabled')) { openNootCooldownInfo(friend.display_name); return }
       confirmNoot(friend, btn)
     })
   })
@@ -924,7 +930,7 @@ function renderFriendHome(friend) {
 
   const content = `
     <div class="viewing-banner">Viewing: ${escapeHtml(friend.display_name)}'s Pizzeria</div>
-    <div class="hero-card" id="hero-card">
+    <div class="hero-card" id="hero-card" role="button" tabindex="0">
       <img class="hero-still" src="${heroSrc}" alt="" />
       <div class="glow"></div>
       <button class="hero-tap" type="button" data-action="emote">👋 Tap to emote</button>
@@ -950,7 +956,7 @@ function renderFriendHome(friend) {
 
   mountScreen('friends', content, () => {
     loadHomeLog(friend.id)
-    app.querySelector('.hero-tap')?.addEventListener('click', () => {
+    app.querySelector('#hero-card')?.addEventListener('click', () => {
       const img = app.querySelector('#hero-card .hero-still')
       if (img && img.tagName === 'IMG') playEmoteInto(img, friend.equipped_emote || 'waving', heroSrc)
     })
@@ -1286,7 +1292,7 @@ function renderSettings(highlightProfile) {
       <div class="glist">
         <div class="grow">
           <div><div class="gt">On/Off all sounds</div></div>
-          <div class="right"><div class="switch ${state.muted ? 'off' : ''}" data-action="toggle-music"></div></div>
+          <div class="right"><div class="switch ${state.muted ? 'off' : ''}" role="button" tabindex="0" data-action="toggle-music"></div></div>
         </div>
         <div class="grow">
           <div><div class="gt">Volume</div></div>
@@ -1299,7 +1305,7 @@ function renderSettings(highlightProfile) {
       <div class="glist">
         <div class="grow">
           <div><div class="gt">Auto-darken screen</div><div class="gs">Dims after 5s to save battery</div></div>
-          <div class="right"><div class="switch ${state.autoDarken ? '' : 'off'}" data-action="toggle-darken"></div></div>
+          <div class="right"><div class="switch ${state.autoDarken ? '' : 'off'}" role="button" tabindex="0" data-action="toggle-darken"></div></div>
         </div>
       </div>
     </div>
@@ -1308,7 +1314,7 @@ function renderSettings(highlightProfile) {
       <div class="glist">
         <div class="grow">
           <div><div class="gt">Light mode</div></div>
-          <div class="right"><div class="switch ${state.lightMode ? '' : 'off'}" data-action="toggle-theme"></div></div>
+          <div class="right"><div class="switch ${state.lightMode ? '' : 'off'}" role="button" tabindex="0" data-action="toggle-theme"></div></div>
         </div>
       </div>
     </div>
