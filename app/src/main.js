@@ -97,7 +97,7 @@ function renderHome() {
         <img class="home-icon" src="${BASE}assets/penguin-icon.png" alt="Chef Penguino" />
         <div class="home-score">
           <span class="home-score-value">${formatScore(state.pizzas)}</span>
-          <span class="home-score-label">pizzas earned</span>
+          <span class="home-score-label">pizzas made</span>
         </div>
         <h1>Chef Penguino</h1>
         <p class="home-tag">Focus timer</p>
@@ -128,7 +128,7 @@ function renderPizzas() {
           <img class="home-icon log-icon" src="${BASE}assets/penguin-icon.png" alt="" />
           <div class="home-score">
             <span class="home-score-value">${formatScore(state.pizzas)}</span>
-            <span class="home-score-label">pizzas earned</span>
+            <span class="home-score-label">pizzas made</span>
           </div>
         </div>
         <div class="log-list">

@@ -79,18 +79,22 @@ html, body {
   position: absolute;
   top: max(16px, env(safe-area-inset-top));
   right: 16px;
-  padding: 8px 16px;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 10px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  border: none;
   border-radius: 999px;
-  border: 1px solid rgba(255,255,255,.4);
-  background: rgba(0,0,0,.35);
-  color: #fff;
-  font-size: 14px;
-  transition: transform 120ms ease, background 120ms ease;
+  background: linear-gradient(180deg, #ffcf4d, #ff9d1c);
+  color: #3a2200;
+  box-shadow: 0 4px 0 #b56e00, 0 8px 16px rgba(0,0,0,.4);
+  transition: transform 120ms ease, box-shadow 120ms ease;
 }
 
 .intro-skip:active {
-  transform: scale(0.94);
-  background: rgba(0,0,0,.55);
+  transform: translateY(3px) scale(0.97);
+  box-shadow: 0 1px 0 #b56e00, 0 3px 8px rgba(0,0,0,.4);
 }
 
 /* ---------- Home ---------- */
@@ -197,18 +201,23 @@ html, body {
   position: absolute;
   top: max(16px, env(safe-area-inset-top));
   left: 16px;
-  padding: 8px 16px;
+  z-index: 2;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 10px 22px;
+  font-size: 15px;
+  font-weight: 600;
+  border: none;
   border-radius: 999px;
-  border: 1px solid rgba(255,255,255,.4);
-  background: rgba(0,0,0,.35);
-  color: #fff;
-  font-size: 14px;
-  transition: transform 120ms ease, background 120ms ease;
+  background: linear-gradient(180deg, #ffcf4d, #ff9d1c);
+  color: #3a2200;
+  box-shadow: 0 4px 0 #b56e00, 0 8px 16px rgba(0,0,0,.4);
+  transition: transform 120ms ease, box-shadow 120ms ease;
 }
 
 .back-btn:active {
-  transform: scale(0.94);
-  background: rgba(0,0,0,.55);
+  transform: translateY(3px) scale(0.97);
+  box-shadow: 0 1px 0 #b56e00, 0 3px 8px rgba(0,0,0,.4);
 }
 
 /* ---------- Settings ---------- */
@@ -287,6 +296,7 @@ html, body {
 
 .custom-input {
   width: 140px;
+  min-height: 44px;
   padding: 12px 14px;
   border-radius: 12px;
   border: none;
@@ -313,6 +323,7 @@ html, body {
   color: #3a2200;
   font-size: 26px;
   font-weight: 700;
+  min-height: 44px;
   padding: 8px 26px;
   border: none;
   border-radius: 999px;
@@ -433,6 +444,7 @@ html, body {
 .task-input {
   width: 100%;
   max-width: 280px;
+  min-height: 44px;
   padding: 14px 16px;
   border-radius: 14px;
   border: none;
@@ -463,8 +475,8 @@ html, body {
 }
 
 .log-icon {
-  width: 56px;
-  height: 56px;
+  width: 84px;
+  height: 84px;
   margin-bottom: 0;
 }
 
@@ -540,8 +552,8 @@ html, body {
   position: absolute;
   top: max(14px, env(safe-area-inset-top));
   right: 16px;
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   border: none;
   background: rgba(0,0,0,.4);
