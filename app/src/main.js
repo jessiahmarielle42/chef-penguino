@@ -251,9 +251,13 @@ boot()
 //  Coin + emote economy (all derived from lifetime pizzas)
 // =================================================================
 const EMOTES = [
-  { id: 'waving', name: 'Waving', desc: 'Your chef waves hello', clip: 'pizzas-waving.mp4', free: true },
-  { id: 'sniffing', name: 'Sniffing', desc: 'Leans in for a big whiff', clip: 'pizzas-sniffing.mp4' },
-  { id: 'eating', name: 'Sneaky Bite', desc: 'Steals a slice for himself', clip: 'pizzas-eating.mp4' },
+  { id: 'waving', name: 'Waving', desc: 'Your chef waves hello', clip: 'waving.mp4', free: true },
+  { id: 'inspection', name: 'Inspection', desc: 'Checks pizza for quality', clip: 'inspection.mp4' },
+  { id: 'spin-wheel', name: 'Spin Wheel', desc: 'Spins a pizza like a wheel', clip: 'spin-wheel.mp4' },
+  { id: 'eating', name: 'Sneaky Bite', desc: 'Steals a slice for himself', clip: 'eating.mp4' },
+  { id: 'lovey-talk', name: 'Lovey talk', desc: 'Whispers words of love to pizza', clip: 'lovey-talk.mp4' },
+  { id: 'magic-trick', name: 'Magic Trick', desc: 'How did that happen? No one knows.', clip: 'magic-trick.mp4' },
+  { id: 'show-off', name: 'Show Off', desc: 'Juggles 2 pizzas for entertainment', clip: 'show-off.mp4' },
 ]
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
 
