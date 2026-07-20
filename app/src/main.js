@@ -95,16 +95,39 @@ function save() {
 }
 
 // ---------- App-wide background music (persists across screens) ----------
+// Volume is driven through a Web Audio gain node rather than
+// HTMLMediaElement.volume, because iOS Safari silently ignores .volume on
+// <audio>/<video> elements (it only respects the hardware volume buttons).
+// A GainNode's gain still works there since it's just math on the samples.
 const bgMusic = new Audio(`${BASE}assets/bg-music.mp3`)
 bgMusic.loop = true
 
+const AudioContextClass = window.AudioContext || window.webkitAudioContext
+const audioCtx = AudioContextClass ? new AudioContextClass() : null
+let musicGain = null
+if (audioCtx) {
+  const source = audioCtx.createMediaElementSource(bgMusic)
+  musicGain = audioCtx.createGain()
+  source.connect(musicGain).connect(audioCtx.destination)
+}
+
 function syncMusic() {
-  bgMusic.volume = state.volume
+  if (musicGain) musicGain.gain.value = state.volume
+  else bgMusic.volume = state.volume
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {})
   if (state.muted) bgMusic.pause()
   else bgMusic.play().catch(() => {})
 }
 
-document.addEventListener('click', () => syncMusic(), { once: true })
+// Re-sync on every tap rather than once - any interruption (an intro video
+// with its own sound taking over the audio focus, backgrounding the tab,
+// etc.) would otherwise leave the music paused with nothing to resume it.
+document.addEventListener('click', () => syncMusic())
+
+// Without a touch listener, iOS Safari won't apply :active CSS states on
+// quick taps, so buttons feel unresponsive - this is a no-op handler that
+// exists purely to turn that behavior on.
+document.addEventListener('touchstart', () => {}, { passive: true })
 
 function round2(n) {
   return parseFloat(n.toFixed(2))
@@ -814,7 +837,7 @@ async function loadFriendsList() {
         <span class="log-row-pizzas">🍕 ${formatScore(f.pizzas)}</span>
       </div>
       <div class="log-row-meta">
-        <button class="friend-view-btn" data-friend-id="${f.id}" type="button">View log</button>
+        <button class="friend-view-btn" data-friend-id="${f.id}" type="button">View Pizzas</button>
         <button class="friend-remove-btn" data-friend-id="${f.id}" type="button">Remove</button>
       </div>
     </div>
@@ -1017,7 +1040,6 @@ function renderTimerLoop(justStarted) {
   loopVideo.muted = true
 
   const music = bgMusic
-  music.volume = state.volume
   if (!startedPaused) syncMusic()
   const updateMuteIcon = () => { muteBtn.textContent = state.muted ? '🔇' : '🔊' }
   updateMuteIcon()
@@ -1029,9 +1051,7 @@ function renderTimerLoop(justStarted) {
     state.muted = !state.muted
     updateMuteIcon()
     save()
-    music.volume = state.volume
-    if (state.muted) music.pause()
-    else if (!isPausedNow) music.play().catch(() => {})
+    if (!isPausedNow) syncMusic()
   })
 
   const darkenOverlay = app.querySelector('.darken-overlay')
@@ -1093,7 +1113,7 @@ function renderTimerLoop(justStarted) {
   function startTicking() {
     loopVideo.play().catch(() => {})
     kitchenEl.classList.remove('paused')
-    if (!state.muted) music.play().catch(() => {})
+    syncMusic()
     clearInterval(intervalId)
     intervalId = setInterval(tick, 250)
     tick()
