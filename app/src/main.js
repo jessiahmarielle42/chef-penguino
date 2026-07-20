@@ -82,7 +82,7 @@ const DURATIONS = [
 const state = load()
 
 function load() {
-  const defaults = { pizzas: 0, muted: false, volume: 0.5, autoDarkenEnabled: true, timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null, pendingSessions: [] }
+  const defaults = { pizzas: 0, muted: false, volume: 0.5, darkenLevel: 1, timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null, pendingSessions: [] }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return { ...defaults, ...JSON.parse(raw) }
@@ -734,10 +734,6 @@ function renderSettings() {
             <span>🔊</span>
           </div>
         </div>
-        <div class="settings-row">
-          <label>Auto-darken during focus sessions</label>
-          <button class="start-btn" data-action="toggle-auto-darken" type="button">${state.autoDarkenEnabled ? 'On' : 'Off'}</button>
-        </div>
         ${currentUser ? `
         <div class="settings-row">
           <label>Profile picture</label>
@@ -776,11 +772,6 @@ function renderSettings() {
     save()
     syncMusic()
     e.target.textContent = state.muted ? 'Off' : 'On'
-  })
-  app.querySelector('[data-action="toggle-auto-darken"]').addEventListener('click', (e) => {
-    state.autoDarkenEnabled = !state.autoDarkenEnabled
-    save()
-    e.target.textContent = state.autoDarkenEnabled ? 'On' : 'Off'
   })
   app.querySelector('[data-action="sign-in"]')?.addEventListener('click', signInWithGoogle)
   app.querySelector('[data-action="sign-out"]')?.addEventListener('click', signOut)
@@ -1075,7 +1066,12 @@ function renderTimerLoop(justStarted) {
       </div>
       <button class="mute-btn" type="button" aria-label="Toggle music"></button>
       <div class="darken-overlay" hidden>
-        <p class="darken-text">Auto-darken enabled to save battery and reduce distraction. Tap anywhere to brighten. Toggle on/off in settings.</p>
+        <p class="darken-text">Auto-darken enabled to save battery and reduce distraction. Tap anywhere to brighten.</p>
+        <div class="darken-slider-row">
+          <span class="darken-slider-icon">☀️</span>
+          <input class="darken-slider" type="range" min="0" max="100" value="${Math.round(state.darkenLevel * 100)}" aria-label="Darkness level" />
+          <span class="darken-slider-icon">🌙</span>
+        </div>
       </div>
       ${justStarted ? '<div class="start-cooking">Start Cooking!</div>' : ''}
     </div>
@@ -1111,11 +1107,17 @@ function renderTimerLoop(justStarted) {
   })
 
   const darkenOverlay = app.querySelector('.darken-overlay')
+  const darkenSlider = app.querySelector('.darken-slider')
   let darkenTimeoutId = null
+
+  function applyDarkenLevel() {
+    const brightness = 1 - (state.darkenLevel * 0.85)
+    kitchenEl.style.setProperty('--darken-brightness', brightness)
+  }
+  applyDarkenLevel()
 
   function armDarkenTimer() {
     clearTimeout(darkenTimeoutId)
-    if (!state.autoDarkenEnabled) return
     darkenTimeoutId = setTimeout(() => {
       kitchenEl.classList.add('darkened')
       darkenOverlay.hidden = false
@@ -1131,6 +1133,16 @@ function renderTimerLoop(justStarted) {
   darkenOverlay.addEventListener('click', () => {
     disarmDarken()
     if (!isPausedNow) armDarkenTimer()
+  })
+
+  // The slider lives inside the tap-to-brighten overlay, so dragging it
+  // must not also count as the "tap anywhere to brighten" gesture.
+  app.querySelector('.darken-slider-row').addEventListener('click', (e) => e.stopPropagation())
+  darkenSlider.addEventListener('input', (e) => {
+    e.stopPropagation()
+    state.darkenLevel = Number(e.target.value) / 100
+    save()
+    applyDarkenLevel()
   })
 
   function formatTime(ms) {

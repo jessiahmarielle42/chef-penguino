@@ -474,7 +474,7 @@ img.avatar-circle {
 .kitchen.darkened > .session-pizza-badge,
 .kitchen.darkened > .timer-hud,
 .kitchen.darkened > .mute-btn {
-  filter: brightness(0.15);
+  filter: brightness(var(--darken-brightness, 0.15));
   transition: filter 500ms ease;
 }
 
@@ -483,8 +483,10 @@ img.avatar-circle {
   inset: 0;
   z-index: 5;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 18px;
   padding: 32px;
   background: rgba(0,0,0,.4);
   animation: overlay-fade-in 500ms ease;
@@ -501,6 +503,62 @@ img.avatar-circle {
   line-height: 1.5;
   max-width: 260px;
   opacity: .85;
+  margin: 0;
+}
+
+.darken-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 220px;
+}
+
+.darken-slider-icon {
+  font-size: 14px;
+  opacity: .85;
+  line-height: 1;
+}
+
+.darken-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 44px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.darken-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  background: rgba(255,255,255,.35);
+  border-radius: 999px;
+}
+
+.darken-slider::-moz-range-track {
+  height: 3px;
+  background: rgba(255,255,255,.35);
+  border-radius: 999px;
+}
+
+.darken-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  margin-top: -10.5px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.85);
+  border: none;
+}
+
+.darken-slider::-moz-range-thumb {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.85);
+  border: none;
 }
 
 /* ---------- Pause / confirm overlays ---------- */
