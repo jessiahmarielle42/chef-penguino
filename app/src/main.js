@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.1.7'
+const APP_VERSION = 'v2.1.8'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -141,10 +141,17 @@ function syncMusic() {
 // etc.) would otherwise leave the music paused with nothing to resume it.
 document.addEventListener('click', () => syncMusic())
 
-// Without a touch listener, iOS Safari won't apply :active CSS states on
-// quick taps, so buttons feel unresponsive - this is a no-op handler that
-// exists purely to turn that behavior on.
-document.addEventListener('touchstart', () => {}, { passive: true })
+// Tactile tap feedback (see the matching CSS rule in style.css): iOS Safari
+// can take ~300ms to apply :active on non-form elements while it waits to
+// see if the touch turns into a scroll, which reads as laggy. Toggling a
+// .pressed class straight off pointerdown/pointerup is instant instead.
+function pressTarget(e) { return e.target.closest('button:not(:disabled), [role="button"]') }
+document.addEventListener('pointerdown', (e) => { pressTarget(e)?.classList.add('pressed') }, { passive: true })
+;['pointerup', 'pointercancel'].forEach(type => {
+  document.addEventListener(type, () => {
+    document.querySelectorAll('.pressed').forEach(el => el.classList.remove('pressed'))
+  }, { passive: true })
+})
 
 function round2(n) { return parseFloat(n.toFixed(2)) }
 function round1(n) { return parseFloat(n.toFixed(1)) }
@@ -500,12 +507,14 @@ function renderHome() {
     </div>
 
     <div class="tiles">
-      <div class="tile">
+      <div class="tile" role="button" tabindex="0" data-action="pizza-info">
+        <span class="info-badge tile-info" aria-hidden="true">i</span>
         <div class="lab">🍕 Lifetime pizzas</div>
         <div class="big">${formatScore(lifetime)}</div>
         <div class="sub">All-time made</div>
       </div>
-      <div class="tile coin-tile">
+      <div class="tile coin-tile" role="button" tabindex="0" data-action="stash-info">
+        <span class="info-badge tile-info" aria-hidden="true">i</span>
         <div class="lab">Pizzas in stash</div>
         <div class="big">${stash}<span style="font-size:16px;color:var(--muted)">/12</span></div>
         <div class="sub">${toNext} more → 1 coin</div>
@@ -521,6 +530,8 @@ function renderHome() {
 
   mountScreen('home', content, () => {
     app.querySelector('.cta[data-action="cook"]').addEventListener('click', startCookingFlow)
+    app.querySelector('[data-action="pizza-info"]')?.addEventListener('click', openPizzaInfo)
+    app.querySelector('[data-action="stash-info"]')?.addEventListener('click', openStashInfo)
 
     // Tap the shopfront to play the equipped emote, then revert to the still.
     const attachEmoteTap = (btnHost) => {
@@ -717,6 +728,20 @@ function openPizzaInfo() {
     <div class="popup-emoji-xl">🍕</div>
     <h3>Lifetime Pizzas</h3>
     <p>All the Pizzas you've ever baked.<br>1 Pizza = 1 hour you worked on a task!</p>
+    <button type="button" data-action="ok">Got it</button>
+  `)
+  o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
+}
+
+// =================================================================
+//  Pizzas in stash info popup (the (i) education popup, home tile)
+// =================================================================
+function openStashInfo() {
+  const o = overlay(`
+    <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
+    <div class="popup-emoji-xl">👨‍🍳</div>
+    <h3>Pizzas In Stash</h3>
+    <p>Current pizzas Chef Penguino has yet to sell.<br>The number you have corresponds to how many you see in Chef Penguino's display shelving.</p>
     <button type="button" data-action="ok">Got it</button>
   `)
   o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
