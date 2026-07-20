@@ -599,12 +599,24 @@ img.avatar-circle {
 }
 
 .shop-header-row {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
   width: 100%;
-  padding: 0 16px;
+  min-height: 44px;
+  padding: 0 64px;
+}
+
+.shop-header-row .back-arrow-btn {
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.shop-header-row .back-arrow-btn:active {
+  transform: translateY(calc(-50% + 3px)) scale(0.94);
 }
 
 .back-arrow-btn {
