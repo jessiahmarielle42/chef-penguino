@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.1.8'
+const APP_VERSION = 'v2.1.9'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -181,8 +181,12 @@ function formatWorkedDuration(minutes) {
   return rem ? `${h}h${rem}min` : `${h}h`
 }
 
+// Kept at full precision (not rounded) so that several short sessions in a
+// row still accumulate toward the next 0.01 instead of each one's tiny
+// fraction being rounded away to 0 and lost. Rounding only happens at
+// display time, via formatScore()/formatScoreFixed2().
 function addSessionPizzas(minutes) {
-  state.pizzas = round2(state.pizzas + minutes / 60)
+  state.pizzas = state.pizzas + minutes / 60
   save()
 }
 
@@ -194,7 +198,7 @@ function logSession({ completedAt, minutes, pizzas, task }) {
 async function finalizeSession(playAlarm) {
   const t = state.timer
   const minutes = t.elapsedMs / 60000
-  const pizzasEarned = round2(minutes / 60)
+  const pizzasEarned = minutes / 60 // full precision - see addSessionPizzas
   const completedAt = Date.now()
   addSessionPizzas(minutes)
   logSession({ completedAt, minutes, pizzas: pizzasEarned, task: t.task })
@@ -524,7 +528,7 @@ function renderHome() {
 
     <button class="cta" type="button" data-action="cook">🔥 Start Cooking</button>
 
-    <div class="section-h"><h2>Recent sessions</h2></div>
+    <div class="section-h" style="margin-top:2.75rem"><h2>Recent sessions</h2></div>
     <div class="log-list" id="home-log"><p class="log-empty">Loading&hellip;</p></div>
   `
 
@@ -793,7 +797,7 @@ async function renderFriends() {
   const content = `
     <div class="section-h" style="margin-top:6px"><h2>Leaderboard</h2></div>
     <div id="friends-list"><p class="log-empty">Loading&hellip;</p></div>
-    <div class="section-h" style="margin-top:1.75rem"><h2>Add a friend</h2></div>
+    <div class="section-h" style="margin-top:2.75rem"><h2>Add a friend</h2></div>
     <div class="addfriend"><input id="friend-code-input" placeholder="Friend's code" maxlength="6" /><button type="button" data-action="add">Add</button></div>
     <p class="friends-error" id="friends-error" hidden></p>
     <p class="code-note">Your code: <b id="friend-code-val">${currentProfile?.friend_code || '…'}</b> <button class="copy-btn" type="button" data-action="copy" aria-label="Copy friend code">${COPY_SVG}</button> — share it to compare pizzas.</p>
@@ -854,8 +858,8 @@ async function loadFriendsList() {
         ${rank}
         <img src="${f.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
         <div><div class="fn">${name}</div><div class="fp">Code ${escapeHtml(f.friend_code || '')}</div></div>
-        <div class="score">🍕 ${formatScore(f.pizzas)}</div>
         ${noot}
+        <div class="score">🍕 ${formatScore(f.pizzas)}</div>
       </div>
     `
     return f.isMe ? row : `<div class="frow-wrap"><button class="frow-delete" type="button" data-remove="${f.id}">🗑<span>Delete</span></button>${row}</div>`
