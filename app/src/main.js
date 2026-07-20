@@ -208,7 +208,7 @@ function renderHome() {
     renderIntro(renderDurationPicker, false)
   })
   app.querySelector('[data-nav="pizzas"]').addEventListener('click', () => {
-    renderPizzasIntroVideo(() => renderPizzas())
+    renderPizzas(undefined, true)
   })
   app.querySelector('[data-nav="friends"]').addEventListener('click', renderFriends)
   app.querySelector('[data-nav="settings"]').addEventListener('click', renderSettings)
@@ -219,40 +219,13 @@ function pizzaImagePath(count) {
   return `${BASE}assets/display-case/${clamped}.jpg`
 }
 
-// ---------- Pizzas intro video (framed identically to the shop image so it swaps in seamlessly) ----------
-function renderPizzasIntroVideo(onEnd) {
-  app.innerHTML = `
-    <div class="home">
-      <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
-      <div class="shop-content">
-        <div class="shop-header-row">
-          <button class="back-arrow-btn" type="button" aria-label="Back">&larr;</button>
-          <div class="shop-pizza-pill">Chef Penguino's Pizzas</div>
-        </div>
-        <video class="shop-image" src="${BASE}assets/pizzas-intro.mp4" playsinline autoplay></video>
-      </div>
-    </div>
-  `
-  const video = app.querySelector('video')
-  app.querySelector('.back-arrow-btn').addEventListener('click', renderHome)
-
-  let transitioned = false
-  const goNext = () => {
-    if (transitioned) return
-    transitioned = true
-    video.pause()
-    onEnd()
-  }
-
-  video.addEventListener('ended', goNext)
-  // Decorative only - if autoplay is blocked, just skip straight to the shop page.
-  video.play().catch(goNext)
-}
-
 // ---------- Pizzas (shop front + log, one scrollable page) ----------
 // Pass a friend object ({id, display_name, pizzas, avatar_url}) to view
-// someone else's page; omit it to view your own.
-async function renderPizzas(friend) {
+// someone else's page; omit it to view your own. Pass playIntro=true to
+// play the waving clip first (only used from the Home button) - the log
+// and everything else render immediately either way, so it's scrollable
+// and visible even while the intro clip is still playing.
+async function renderPizzas(friend, playIntro) {
   const isSelf = !friend
   const titleText = isSelf
     ? (currentProfile?.display_name ? `${currentProfile.display_name}'s Pizzas` : 'Your Pizzas')
@@ -275,6 +248,10 @@ async function renderPizzas(friend) {
     }
   }
 
+  const mediaHtml = playIntro
+    ? `<video class="shop-image" id="shop-media" src="${BASE}assets/pizzas-intro.mp4" playsinline autoplay></video>`
+    : `<img class="shop-image" id="shop-media" src="${pizzaImagePath(previousCount)}" alt="" />`
+
   app.innerHTML = `
     <div class="home">
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
@@ -283,7 +260,7 @@ async function renderPizzas(friend) {
           <button class="back-arrow-btn" type="button" aria-label="Back">&larr;</button>
           <div class="shop-pizza-pill">${escapeHtml(titleText)}</div>
         </div>
-        <img class="shop-image" src="${pizzaImagePath(previousCount)}" alt="" />
+        ${mediaHtml}
         <div class="log-header">
           <img class="home-icon log-icon avatar-circle" src="${avatarSrc}" alt="" />
           <div class="home-score">
@@ -297,7 +274,8 @@ async function renderPizzas(friend) {
   `
   app.querySelector('.back-arrow-btn').addEventListener('click', backAction)
 
-  if (showMilestone) {
+  function showMilestoneIfNeeded() {
+    if (!showMilestone) return
     const container = app.querySelector('.home')
     const overlay = document.createElement('div')
     overlay.className = 'pause-overlay'
@@ -312,10 +290,31 @@ async function renderPizzas(friend) {
     overlay.querySelector('[data-action="yay"]').addEventListener('click', () => {
       state.lastSeenPizzaCount = currentCount
       save()
-      const shopImg = app.querySelector('.shop-image')
+      const shopImg = app.querySelector('#shop-media')
       if (shopImg) shopImg.src = pizzaImagePath(currentCount)
       overlay.remove()
     })
+  }
+
+  if (playIntro) {
+    const video = app.querySelector('#shop-media')
+    let swapped = false
+    const swapToImage = () => {
+      if (swapped) return
+      swapped = true
+      const img = document.createElement('img')
+      img.className = 'shop-image'
+      img.id = 'shop-media'
+      img.alt = ''
+      img.src = pizzaImagePath(previousCount)
+      video.replaceWith(img)
+      showMilestoneIfNeeded()
+    }
+    video.addEventListener('ended', swapToImage)
+    // Decorative only - if autoplay is blocked, just skip straight to the still image.
+    video.play().catch(swapToImage)
+  } else {
+    showMilestoneIfNeeded()
   }
 
   const log = await fetchLog(isSelf ? currentUser?.id : friend.id)

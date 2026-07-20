@@ -159,6 +159,8 @@ img.avatar-circle {
   position: relative;
   width: min(80vw, 340px);
   height: min(80vw, 340px);
+  overflow: hidden;
+  border-radius: 12px;
 }
 
 .crop-stage {
