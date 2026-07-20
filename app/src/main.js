@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.2.1'
+const APP_VERSION = 'v2.2.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -278,6 +278,10 @@ const EMOTES = [
   { id: 'phase-through', name: "Physics? What's that?", desc: 'Phase through the shelf, coz you can.', clip: 'phase-through.mp4' },
   { id: 'happy-feet', name: 'Happy Feet', desc: 'Chef dances in excitement', clip: 'happy-feet.mp4' },
   { id: 'fireworks', name: 'Fireworks!', desc: 'Toss a firework in the air. Totally safe.', clip: 'fireworks.mp4' },
+  { id: 'happy-birthday', name: 'Happy Birthday!', desc: 'Perfect for a celebratory occasion.', clip: 'happy-birthday.mp4' },
+  { id: 'bang-bang', name: 'Bang Bang!', desc: 'Chef fends off Pizza snatchers.', clip: 'bang-bang.mp4' },
+  { id: 'spilt-wine', name: 'Crying over spilt wine', desc: 'Chef pours a bottle of wine... on the ground?', clip: 'spilt-wine.mp4' },
+  { id: 'say-grace', name: "Let's Say Grace", desc: 'Chef prays over his meal', clip: 'say-grace.mp4' },
 ]
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
 
@@ -603,6 +607,47 @@ function pizzaImagePath(count) {
 // =================================================================
 //  Emotes Shop
 // =================================================================
+// Persists across tab switches within a session. 'newest' shows the most
+// recently-added emotes first (a natural default for a shop).
+let shopSort = 'newest'
+const SORT_LABELS = { owned: 'Owned', az: 'A-Z', newest: 'Newest' }
+
+function sortedShopEmotes() {
+  if (shopSort === 'az') {
+    return [...EMOTES].sort((a, b) => a.name.localeCompare(b.name))
+  }
+  if (shopSort === 'owned') {
+    // Only owned emotes, latest bought -> oldest. owned_emotes is stored in
+    // purchase order (appended on buy), so reversing gives newest-first. The
+    // free 'waving' isn't in that array but is always owned, so it goes last
+    // as the oldest-owned default.
+    const owned = [...ownedEmotes()].reverse().map(id => EMOTE_BY_ID[id]).filter(Boolean)
+    if (isOwned('waving')) owned.push(EMOTE_BY_ID['waving'])
+    return owned
+  }
+  // 'newest': EMOTES is ordered oldest-added -> newest, so reverse it.
+  return [...EMOTES].reverse()
+}
+
+function openSortMenu() {
+  const opts = [
+    { id: 'owned', label: 'Owned' },
+    { id: 'az', label: 'A-Z' },
+    { id: 'newest', label: 'Newest' },
+  ]
+  const o = overlay(`
+    <h3>Sort by</h3>
+    <div class="sort-options">
+      ${opts.map(op => `<button type="button" class="sort-option ${shopSort === op.id ? 'active' : ''}" data-sort="${op.id}">${op.label}</button>`).join('')}
+    </div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelectorAll('[data-sort]').forEach(b => b.addEventListener('click', () => {
+    shopSort = b.dataset.sort
+    o.remove()
+    renderShop()
+  }))
+}
+
 function renderShop() {
   if (!isSignedIn()) {
     const content = `
@@ -620,7 +665,8 @@ function renderShop() {
   }
 
   const thumb = `${BASE}assets/display-case/shop-preview.jpg`
-  const cards = EMOTES.map(e => {
+  const shopList = sortedShopEmotes()
+  const cards = shopList.length ? shopList.map(e => {
     const owned = isOwned(e.id)
     const equipped = equippedEmote() === e.id
     const label = e.free ? 'Free' : 'Owned'
@@ -648,7 +694,7 @@ function renderShop() {
         </div>
       </div>
     `
-  }).join('')
+  }).join('') : '<p class="shop-empty">No emotes to show here yet.</p>'
 
   const content = `
     <div class="shop-banner" role="button" tabindex="0" data-action="shop-coin-info">
@@ -659,12 +705,16 @@ function renderShop() {
         <div class="s">Unlock new moves for your chef.</div>
       </div>
     </div>
+    <div class="shop-sort-row">
+      <button class="sort-btn" type="button" data-action="sort">Sort by: <b>${SORT_LABELS[shopSort]}</b> <span class="chev">▼</span></button>
+    </div>
     ${cards}
     <p class="code-note" style="text-align:center">More emotes coming — earn a coin every 12 pizzas.</p>
   `
 
   mountScreen('shop', content, () => {
     app.querySelector('[data-action="shop-coin-info"]')?.addEventListener('click', openCoinInfo)
+    app.querySelector('[data-action="sort"]')?.addEventListener('click', openSortMenu)
 
     app.querySelectorAll('[data-preview]').forEach(btn => {
       btn.addEventListener('click', () => {
