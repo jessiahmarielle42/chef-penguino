@@ -136,6 +136,77 @@ html, body {
   margin-bottom: 4px;
 }
 
+img.avatar-circle {
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* ---------- Avatar cropper ---------- */
+.crop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(0,0,0,.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 24px;
+}
+
+.crop-stage-wrap {
+  position: relative;
+  width: 260px;
+  height: 260px;
+}
+
+.crop-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #000;
+  touch-action: none;
+}
+
+.crop-stage img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  user-select: none;
+  -webkit-user-drag: none;
+  max-width: none;
+}
+
+.crop-circle-guide {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 220px;
+  height: 220px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2000px rgba(0,0,0,.65);
+  border: 2px solid #fff;
+  pointer-events: none;
+}
+
+.crop-zoom-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 260px;
+  color: #fff;
+}
+
+.crop-zoom-row input[type="range"] {
+  flex: 1;
+  accent-color: #ff9d1c;
+}
+
 .home-score {
   display: flex;
   flex-direction: column;
@@ -520,6 +591,7 @@ html, body {
   min-height: 44px;
   display: flex;
   align-items: center;
+  justify-content: center;
   padding: 8px 20px;
   border-radius: 999px;
   background: linear-gradient(180deg, #ffcf4d, #ff9d1c);
@@ -527,7 +599,40 @@ html, body {
   font-size: 15px;
   font-weight: 800;
   box-shadow: 0 5px 0 #b56e00, 0 10px 20px rgba(0,0,0,.4);
-  white-space: nowrap;
+  overflow-wrap: break-word;
+  text-align: center;
+  min-width: 0;
+}
+
+.shop-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 0 16px;
+}
+
+.back-arrow-btn {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(180deg, #ffcf4d, #ff9d1c);
+  color: #3a2200;
+  font-size: 20px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 0 #b56e00, 0 8px 16px rgba(0,0,0,.4);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.back-arrow-btn:active {
+  transform: translateY(3px) scale(0.94);
+  box-shadow: 0 1px 0 #b56e00, 0 3px 8px rgba(0,0,0,.4);
 }
 
 .log-header {

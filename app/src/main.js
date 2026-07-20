@@ -208,7 +208,7 @@ function renderHome() {
     renderIntro(renderDurationPicker, false)
   })
   app.querySelector('[data-nav="pizzas"]').addEventListener('click', () => {
-    renderIntro(() => renderPizzas(), false, 'pizzas-intro.mp4')
+    renderPizzasIntroVideo(() => renderPizzas())
   })
   app.querySelector('[data-nav="friends"]').addEventListener('click', renderFriends)
   app.querySelector('[data-nav="settings"]').addEventListener('click', renderSettings)
@@ -217,6 +217,36 @@ function renderHome() {
 function pizzaImagePath(count) {
   const clamped = Math.max(0, Math.min(12, count))
   return `${BASE}assets/display-case/${clamped}.jpg`
+}
+
+// ---------- Pizzas intro video (framed identically to the shop image so it swaps in seamlessly) ----------
+function renderPizzasIntroVideo(onEnd) {
+  app.innerHTML = `
+    <div class="home">
+      <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
+      <div class="shop-content">
+        <div class="shop-header-row">
+          <button class="back-arrow-btn" type="button" aria-label="Back">&larr;</button>
+          <div class="shop-pizza-pill">Chef Penguino's Pizzas</div>
+        </div>
+        <video class="shop-image" src="${BASE}assets/pizzas-intro.mp4" playsinline autoplay></video>
+      </div>
+    </div>
+  `
+  const video = app.querySelector('video')
+  app.querySelector('.back-arrow-btn').addEventListener('click', renderHome)
+
+  let transitioned = false
+  const goNext = () => {
+    if (transitioned) return
+    transitioned = true
+    video.pause()
+    onEnd()
+  }
+
+  video.addEventListener('ended', goNext)
+  // Decorative only - if autoplay is blocked, just skip straight to the shop page.
+  video.play().catch(goNext)
 }
 
 // ---------- Pizzas (shop front + log, one scrollable page) ----------
@@ -249,11 +279,13 @@ async function renderPizzas(friend) {
     <div class="home">
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
       <div class="shop-content">
-        <button class="back-btn" type="button">&larr; Back</button>
-        <div class="shop-pizza-pill">${escapeHtml(titleText)}</div>
+        <div class="shop-header-row">
+          <button class="back-arrow-btn" type="button" aria-label="Back">&larr;</button>
+          <div class="shop-pizza-pill">${escapeHtml(titleText)}</div>
+        </div>
         <img class="shop-image" src="${pizzaImagePath(previousCount)}" alt="" />
         <div class="log-header">
-          <img class="home-icon log-icon" src="${avatarSrc}" alt="" />
+          <img class="home-icon log-icon avatar-circle" src="${avatarSrc}" alt="" />
           <div class="home-score">
             <span class="home-score-value">${formatScore(pizzas)}</span>
             <span class="home-score-label">pizzas made</span>
@@ -263,7 +295,7 @@ async function renderPizzas(friend) {
       </div>
     </div>
   `
-  app.querySelector('.back-btn').addEventListener('click', backAction)
+  app.querySelector('.back-arrow-btn').addEventListener('click', backAction)
 
   if (showMilestone) {
     const container = app.querySelector('.home')
@@ -366,6 +398,141 @@ function renderLogRow(entry) {
   `
 }
 
+// ---------- Avatar upload + crop ----------
+async function uploadAvatarBlob(blob) {
+  const errorEl = app.querySelector('#avatar-error')
+  const path = `${currentUser.id}/avatar.jpg`
+  const { error: uploadError } = await supabase.storage
+    .from('avatars')
+    .upload(path, blob, { upsert: true, contentType: 'image/jpeg' })
+  if (uploadError) {
+    if (errorEl) {
+      errorEl.textContent = uploadError.message
+      errorEl.hidden = false
+    }
+    return
+  }
+  const { data } = supabase.storage.from('avatars').getPublicUrl(path)
+  const url = `${data.publicUrl}?t=${Date.now()}`
+  await supabase.from('profiles').update({ avatar_url: url }).eq('id', currentUser.id)
+  currentProfile.avatar_url = url
+  const preview = app.querySelector('#avatar-preview')
+  if (preview) preview.src = url
+}
+
+function openAvatarCropper(file, onCropped) {
+  const STAGE = 260
+  const CIRCLE = 220
+  const objectUrl = URL.createObjectURL(file)
+
+  app.insertAdjacentHTML('beforeend', `
+    <div class="crop-overlay">
+      <div class="crop-stage-wrap">
+        <div class="crop-stage" id="crop-stage">
+          <img id="crop-img" src="${objectUrl}" draggable="false" alt="" />
+        </div>
+        <div class="crop-circle-guide"></div>
+      </div>
+      <div class="crop-zoom-row">
+        <span>&#128269;</span>
+        <input type="range" id="crop-zoom" min="100" max="300" value="100" />
+      </div>
+      <div class="home-btn-col">
+        <button class="start-btn" id="crop-confirm" type="button">Use Photo</button>
+        <button class="start-btn" id="crop-cancel" type="button">Cancel</button>
+      </div>
+    </div>
+  `)
+
+  const overlay = app.querySelector('.crop-overlay')
+  const stage = overlay.querySelector('#crop-stage')
+  const img = overlay.querySelector('#crop-img')
+  const zoomSlider = overlay.querySelector('#crop-zoom')
+
+  let naturalW = 0, naturalH = 0, baseScale = 1, scale = 1, tx = 0, ty = 0
+  let dragging = false, startX = 0, startY = 0, startTx = 0, startTy = 0
+
+  function clamp() {
+    const w = naturalW * scale
+    const h = naturalH * scale
+    const minTx = Math.min(0, STAGE - w)
+    const minTy = Math.min(0, STAGE - h)
+    tx = Math.min(0, Math.max(minTx, tx))
+    ty = Math.min(0, Math.max(minTy, ty))
+  }
+
+  function apply() {
+    img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`
+  }
+
+  img.onload = () => {
+    naturalW = img.naturalWidth
+    naturalH = img.naturalHeight
+    baseScale = Math.max(STAGE / naturalW, STAGE / naturalH)
+    scale = baseScale
+    tx = (STAGE - naturalW * scale) / 2
+    ty = (STAGE - naturalH * scale) / 2
+    clamp()
+    apply()
+  }
+
+  zoomSlider.addEventListener('input', () => {
+    const zoomFactor = Number(zoomSlider.value) / 100
+    const cx = STAGE / 2
+    const cy = STAGE / 2
+    const imgCx = (cx - tx) / scale
+    const imgCy = (cy - ty) / scale
+    scale = baseScale * zoomFactor
+    tx = cx - imgCx * scale
+    ty = cy - imgCy * scale
+    clamp()
+    apply()
+  })
+
+  stage.addEventListener('pointerdown', (e) => {
+    dragging = true
+    startX = e.clientX
+    startY = e.clientY
+    startTx = tx
+    startTy = ty
+    stage.setPointerCapture(e.pointerId)
+  })
+  stage.addEventListener('pointermove', (e) => {
+    if (!dragging) return
+    tx = startTx + (e.clientX - startX)
+    ty = startTy + (e.clientY - startY)
+    clamp()
+    apply()
+  })
+  stage.addEventListener('pointerup', () => { dragging = false })
+  stage.addEventListener('pointercancel', () => { dragging = false })
+
+  function cleanup() {
+    URL.revokeObjectURL(objectUrl)
+    overlay.remove()
+  }
+
+  overlay.querySelector('#crop-cancel').addEventListener('click', cleanup)
+  overlay.querySelector('#crop-confirm').addEventListener('click', () => {
+    const OUTPUT = 512
+    const canvas = document.createElement('canvas')
+    canvas.width = OUTPUT
+    canvas.height = OUTPUT
+    const ctx = canvas.getContext('2d')
+
+    const margin = (STAGE - CIRCLE) / 2
+    const srcX = (margin - tx) / scale
+    const srcY = (margin - ty) / scale
+    const srcSize = CIRCLE / scale
+
+    ctx.drawImage(img, srcX, srcY, srcSize, srcSize, 0, 0, OUTPUT, OUTPUT)
+    canvas.toBlob((blob) => {
+      cleanup()
+      if (blob) onCropped(blob)
+    }, 'image/jpeg', 0.9)
+  })
+}
+
 // ---------- Settings ----------
 function renderSettings() {
   const avatarSrc = currentProfile?.avatar_url || `${BASE}assets/penguin-icon.png`
@@ -387,7 +554,7 @@ function renderSettings() {
         ${currentUser ? `
         <div class="settings-row">
           <label>Profile picture</label>
-          <img class="home-icon" id="avatar-preview" src="${avatarSrc}" alt="" />
+          <img class="home-icon avatar-circle" id="avatar-preview" src="${avatarSrc}" alt="" />
           <input type="file" accept="image/*" id="avatar-input" hidden />
           <button class="start-btn" data-action="change-photo" type="button">Change Photo</button>
           <p class="friends-error" id="avatar-error" hidden></p>
@@ -422,24 +589,11 @@ function renderSettings() {
   app.querySelector('[data-action="change-photo"]')?.addEventListener('click', () => {
     app.querySelector('#avatar-input').click()
   })
-  app.querySelector('#avatar-input')?.addEventListener('change', async (e) => {
+  app.querySelector('#avatar-input')?.addEventListener('change', (e) => {
     const file = e.target.files[0]
+    e.target.value = ''
     if (!file) return
-    const errorEl = app.querySelector('#avatar-error')
-    errorEl.hidden = true
-    const ext = file.name.split('.').pop()
-    const path = `${currentUser.id}/avatar.${ext}`
-    const { error: uploadError } = await supabase.storage.from('avatars').upload(path, file, { upsert: true })
-    if (uploadError) {
-      errorEl.textContent = uploadError.message
-      errorEl.hidden = false
-      return
-    }
-    const { data } = supabase.storage.from('avatars').getPublicUrl(path)
-    const url = `${data.publicUrl}?t=${Date.now()}`
-    await supabase.from('profiles').update({ avatar_url: url }).eq('id', currentUser.id)
-    currentProfile.avatar_url = url
-    app.querySelector('#avatar-preview').src = url
+    openAvatarCropper(file, (blob) => uploadAvatarBlob(blob))
   })
 
   app.querySelector('[data-action="save-name"]')?.addEventListener('click', async () => {
