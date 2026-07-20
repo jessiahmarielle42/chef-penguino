@@ -1284,7 +1284,7 @@ function renderTimerLoop(justStarted) {
       pauseOverlay.hidden = false
     })
     confirmOverlay.querySelector('[data-action="confirm-end"]').addEventListener('click', () => {
-      finalizeSession(false)
+      finalizeSession(true)
     })
   }
 
