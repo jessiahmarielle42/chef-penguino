@@ -80,6 +80,18 @@ function save() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
 }
 
+// ---------- App-wide background music (persists across screens) ----------
+const bgMusic = new Audio(`${BASE}assets/bg-music.mp3`)
+bgMusic.loop = true
+
+function syncMusic() {
+  bgMusic.volume = state.volume
+  if (state.muted) bgMusic.pause()
+  else bgMusic.play().catch(() => {})
+}
+
+document.addEventListener('click', () => syncMusic(), { once: true })
+
 function round2(n) {
   return parseFloat(n.toFixed(2))
 }
@@ -275,7 +287,7 @@ async function renderPizzas(friend, playIntro) {
   }
 
   const mediaHtml = playIntro
-    ? `<video class="shop-image" id="shop-media" src="${BASE}assets/pizzas-intro.mp4" playsinline autoplay></video>`
+    ? `<video class="shop-image" id="shop-media" src="${BASE}assets/pizzas-intro.mp4" playsinline autoplay muted></video>`
     : `<img class="shop-image" id="shop-media" src="${pizzaImagePath(previousCount)}" alt="" />`
 
   app.innerHTML = `
@@ -622,6 +634,10 @@ function renderSettings() {
         <button class="back-arrow-btn back-arrow-fixed" type="button" aria-label="Back">&larr;</button>
         <h1>Settings</h1>
         <div class="settings-row">
+          <label>Music</label>
+          <button class="start-btn" data-action="toggle-music" type="button">${state.muted ? 'Off' : 'On'}</button>
+        </div>
+        <div class="settings-row">
           <label for="volume-slider">Music volume</label>
           <div class="volume-control">
             <span>🔈</span>
@@ -660,6 +676,13 @@ function renderSettings() {
   app.querySelector('#volume-slider').addEventListener('input', (e) => {
     state.volume = Number(e.target.value) / 100
     save()
+    syncMusic()
+  })
+  app.querySelector('[data-action="toggle-music"]').addEventListener('click', (e) => {
+    state.muted = !state.muted
+    save()
+    syncMusic()
+    e.target.textContent = state.muted ? 'Off' : 'On'
   })
   app.querySelector('[data-action="sign-in"]')?.addEventListener('click', signInWithGoogle)
   app.querySelector('[data-action="sign-out"]')?.addEventListener('click', signOut)
@@ -971,9 +994,9 @@ function renderTimerLoop(justStarted) {
 
   loopVideo.muted = true
 
-  const music = new Audio(`${BASE}assets/bg-music.mp3`)
-  music.loop = true
+  const music = bgMusic
   music.volume = state.volume
+  if (!startedPaused) syncMusic()
   const updateMuteIcon = () => { muteBtn.textContent = state.muted ? '🔇' : '🔊' }
   updateMuteIcon()
 
@@ -983,9 +1006,10 @@ function renderTimerLoop(justStarted) {
   muteBtn.addEventListener('click', () => {
     state.muted = !state.muted
     updateMuteIcon()
+    save()
+    music.volume = state.volume
     if (state.muted) music.pause()
     else if (!isPausedNow) music.play().catch(() => {})
-    save()
   })
 
   function formatTime(ms) {
