@@ -115,6 +115,14 @@ html, body {
   padding: 24px;
 }
 
+.home-icon {
+  width: 84px;
+  height: 84px;
+  border-radius: 20px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  margin-bottom: 4px;
+}
+
 .home-score {
   display: flex;
   flex-direction: column;
@@ -161,6 +169,69 @@ html, body {
 .start-btn:active, .custom-go:active {
   transform: translateY(4px);
   box-shadow: 0 2px 0 #b56e00, 0 4px 10px rgba(0,0,0,.4);
+}
+
+.home-secondary-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.secondary-btn {
+  padding: 10px 22px;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid rgba(255,255,255,.35);
+  border-radius: 999px;
+  background: rgba(0,0,0,.35);
+  color: #fff;
+}
+
+.secondary-btn:active {
+  background: rgba(0,0,0,.55);
+}
+
+.back-btn {
+  position: absolute;
+  top: max(16px, env(safe-area-inset-top));
+  left: 16px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.4);
+  background: rgba(0,0,0,.35);
+  color: #fff;
+  font-size: 14px;
+}
+
+/* ---------- Settings ---------- */
+.settings-row {
+  width: 100%;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.settings-row label {
+  font-size: 14px;
+  font-weight: 600;
+  opacity: .85;
+  letter-spacing: .5px;
+}
+
+.volume-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.volume-control input[type="range"] {
+  flex: 1;
+  accent-color: #ff9d1c;
+  height: 4px;
 }
 
 /* ---------- Duration picker ---------- */

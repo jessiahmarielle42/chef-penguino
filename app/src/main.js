@@ -14,7 +14,7 @@ const DURATIONS = [
 const state = load()
 
 function load() {
-  const defaults = { pizzas: 0, muted: false, timer: null }
+  const defaults = { pizzas: 0, muted: false, volume: 0.5, timer: null }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return { ...defaults, ...JSON.parse(raw) }
@@ -61,6 +61,7 @@ function renderHome() {
     <div class="home">
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
       <div class="home-content">
+        <img class="home-icon" src="${BASE}assets/penguin-icon.png" alt="Chef Penguino" />
         <div class="home-score">
           <span class="home-score-value">${formatScore(state.pizzas)}</span>
           <span class="home-score-label">pizzas earned</span>
@@ -68,11 +69,62 @@ function renderHome() {
         <h1>Chef Penguino</h1>
         <p class="home-tag">Focus timer</p>
         <button class="start-btn" type="button">Start</button>
+        <div class="home-secondary-row">
+          <button class="secondary-btn" data-nav="pizzas" type="button">Pizzas</button>
+          <button class="secondary-btn" data-nav="settings" type="button">Settings</button>
+        </div>
       </div>
     </div>
   `
   app.querySelector('.start-btn').addEventListener('click', () => {
     renderIntro(renderDurationPicker, false)
+  })
+  app.querySelector('[data-nav="pizzas"]').addEventListener('click', renderPizzas)
+  app.querySelector('[data-nav="settings"]').addEventListener('click', renderSettings)
+}
+
+// ---------- Pizzas ----------
+function renderPizzas() {
+  app.innerHTML = `
+    <div class="home">
+      <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
+      <div class="home-content">
+        <button class="back-btn" type="button">&larr; Back</button>
+        <img class="home-icon" src="${BASE}assets/pizza-pop.png" alt="" />
+        <div class="home-score">
+          <span class="home-score-value">${formatScore(state.pizzas)}</span>
+          <span class="home-score-label">pizzas earned</span>
+        </div>
+        <p class="home-tag">1 hour of focus = 1 pizza</p>
+      </div>
+    </div>
+  `
+  app.querySelector('.back-btn').addEventListener('click', renderHome)
+}
+
+// ---------- Settings ----------
+function renderSettings() {
+  app.innerHTML = `
+    <div class="home">
+      <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
+      <div class="home-content">
+        <button class="back-btn" type="button">&larr; Back</button>
+        <h1>Settings</h1>
+        <div class="settings-row">
+          <label for="volume-slider">Music volume</label>
+          <div class="volume-control">
+            <span>🔈</span>
+            <input id="volume-slider" type="range" min="0" max="100" value="${Math.round(state.volume * 100)}" />
+            <span>🔊</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `
+  app.querySelector('.back-btn').addEventListener('click', renderHome)
+  app.querySelector('#volume-slider').addEventListener('input', (e) => {
+    state.volume = Number(e.target.value) / 100
+    save()
   })
 }
 
@@ -180,7 +232,7 @@ function renderTimerLoop(minutes, remainingMs) {
 
   const music = new Audio(`${BASE}assets/bg-music.mp3`)
   music.loop = true
-  music.volume = 0.5
+  music.volume = state.volume
   const updateMuteIcon = () => { muteBtn.textContent = state.muted ? '🔇' : '🔊' }
   updateMuteIcon()
   if (!state.muted) music.play().catch(() => {})
