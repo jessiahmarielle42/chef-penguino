@@ -627,6 +627,8 @@
 
             <!-- ===== SHOP ===== -->
             <div class="scroll view" id="v-shop">
+              <div class="friends-gate" id="shop-gate"><img id="shop-gate-avatar" alt=""><h2>Unlock emotes</h2><p>Sign in with Google to earn Penguino Coins and unlock new emotes for your chef.</p></div>
+              <div id="shop-main">
               <div class="shop-banner">
                 <span class="coin lg" onclick="openCoinInfo()" style="cursor:pointer"></span>
                 <div class="txt">
@@ -669,6 +671,7 @@
               </div>
 
               <p class="code-note" style="text-align:center">More emotes coming — earn a coin every 12 pizzas.</p>
+              </div>
             </div>
 
             <!-- ===== FRIENDS ===== -->
@@ -1108,6 +1111,15 @@
     if (gateImg && !gateImg.src) gateImg.src = document.querySelector('.who-avatar').src;
     if (document.querySelector('#friends-gate .gbtn') === null) {
       document.getElementById('friends-gate').insertAdjacentHTML('beforeend', GOOGLE_BTN);
+    }
+
+    // emotes shop tab (gated like friends)
+    document.getElementById('shop-main').style.display = state ? '' : 'none';
+    document.getElementById('shop-gate').style.display = state ? 'none' : 'block';
+    const shopGateImg = document.getElementById('shop-gate-avatar');
+    if (shopGateImg && !shopGateImg.src) shopGateImg.src = document.querySelector('.who-avatar').src;
+    if (document.querySelector('#shop-gate .gbtn') === null) {
+      document.getElementById('shop-gate').insertAdjacentHTML('beforeend', GOOGLE_BTN);
     }
 
     // settings profile group (hide for guest)
