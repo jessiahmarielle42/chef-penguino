@@ -229,12 +229,14 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 
 /* ---------- shop ---------- */
 .shop-banner {
-  display: flex; align-items: center; gap:0.875rem;
+  position: relative; display: flex; align-items: center; gap:0.875rem; cursor: pointer;
   background: linear-gradient(160deg, rgba(246,198,75,0.18), rgba(44,33,26,0.4));
   border: 1px solid rgba(246,198,75,0.3); border-radius:1.25rem; padding:1rem; margin-top:0.375rem;
 }
+.shop-banner:active { transform: scale(0.99); }
 .shop-banner .txt .t { font-family: var(--font-display); font-weight: 800; font-size:0.9375rem; color: var(--cream); }
 .shop-banner .txt .s { font-size:0.75rem; color: var(--muted); margin-top:0.1875rem; }
+.shop-banner-info { position: absolute; top:0.75rem; right:0.75rem; }
 
 .anim-card {
   background: var(--card); border: 1px solid var(--line); border-radius:1.125rem; overflow: hidden; margin-top:0.75rem;

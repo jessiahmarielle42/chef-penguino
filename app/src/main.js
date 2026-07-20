@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.0.5'
+const APP_VERSION = 'v2.0.6'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -619,10 +619,11 @@ function renderShop() {
   }).join('')
 
   const content = `
-    <div class="shop-banner">
+    <div class="shop-banner" role="button" tabindex="0" data-action="shop-coin-info">
+      <span class="info-badge shop-banner-info" aria-hidden="true">i</span>
       ${coinImg('lg')}
       <div class="txt">
-        <div class="t">Emotes Shop <span class="info-badge" role="button" tabindex="0" data-action="coin-info">i</span></div>
+        <div class="t">Emotes Shop</div>
         <div class="s">Unlock new moves for your chef.</div>
       </div>
     </div>
@@ -631,7 +632,7 @@ function renderShop() {
   `
 
   mountScreen('shop', content, () => {
-    app.querySelector('[data-action="coin-info"]')?.addEventListener('click', openCoinInfo)
+    app.querySelector('[data-action="shop-coin-info"]')?.addEventListener('click', openCoinInfo)
 
     app.querySelectorAll('[data-preview]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -908,6 +909,13 @@ function groupLogByDate(log) {
   return groups
 }
 
+function chefSinceLabel() {
+  if (!currentUser?.created_at) return 'Chef Penguino'
+  const d = new Date(currentUser.created_at)
+  const formatted = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+  return `Chef since ${formatted}`
+}
+
 function dateLabel(ts) {
   const d = new Date(ts)
   const now = new Date()
@@ -1091,7 +1099,7 @@ function renderSettings(highlightProfile) {
               <span class="gt">${escapeHtml(myName())}</span>
               <button class="icon-btn" type="button" data-action="rename" aria-label="Edit name">${PENCIL_SVG}</button>
             </div>
-            <div class="gs">Chef Penguino</div>
+            <div class="gs">${chefSinceLabel()}</div>
           </div>
         </div>
       </div>
