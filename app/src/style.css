@@ -486,6 +486,10 @@ img.avatar-circle {
   display: none;
 }
 
+.pause-overlay.solid-bg {
+  background: rgba(12,12,16,.94);
+}
+
 .pause-content {
   display: flex;
   flex-direction: column;

@@ -205,13 +205,39 @@ function renderHome() {
     </div>
   `
   app.querySelector('[data-nav="start"]').addEventListener('click', () => {
-    renderIntro(renderDurationPicker, false)
+    if (currentUser) {
+      renderIntro(renderDurationPicker, false)
+    } else {
+      showNotSignedInWarning()
+    }
   })
   app.querySelector('[data-nav="pizzas"]').addEventListener('click', () => {
     renderPizzas(undefined, true)
   })
   app.querySelector('[data-nav="friends"]').addEventListener('click', renderFriends)
   app.querySelector('[data-nav="settings"]').addEventListener('click', renderSettings)
+}
+
+function showNotSignedInWarning() {
+  const container = app.querySelector('.home')
+  const overlay = document.createElement('div')
+  overlay.className = 'pause-overlay solid-bg'
+  overlay.innerHTML = `
+    <div class="pause-content">
+      <h2>Not signed in</h2>
+      <p class="confirm-sub">Your progress may not be saved since you're not signed in.</p>
+      <div class="home-btn-col">
+        <button class="start-btn" data-action="sign-in" type="button">Sign in with Google</button>
+        <button class="start-btn" data-action="risk-it" type="button">I'll risk it</button>
+      </div>
+    </div>
+  `
+  container.appendChild(overlay)
+  overlay.querySelector('[data-action="sign-in"]').addEventListener('click', signInWithGoogle)
+  overlay.querySelector('[data-action="risk-it"]').addEventListener('click', () => {
+    overlay.remove()
+    renderIntro(renderDurationPicker, false)
+  })
 }
 
 function pizzaImagePath(count) {
