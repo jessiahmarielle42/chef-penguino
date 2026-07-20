@@ -264,9 +264,6 @@
   }
   .shop-banner .txt .t { font-family: var(--font-display); font-weight: 800; font-size: 15px; color: var(--cream); }
   .shop-banner .txt .s { font-size: 12px; color: var(--muted); margin-top: 3px; }
-  .shop-banner .bal { margin-left: auto; text-align: right; }
-  .shop-banner .bal b { font-family: var(--font-display); font-size: 24px; color: var(--gold); font-variant-numeric: tabular-nums; }
-  .shop-banner .bal span { font-size: 11px; color: var(--muted); display: block; }
 
   .anim-card {
     background: var(--card); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; margin-top: 12px;
@@ -397,6 +394,8 @@
   .popup h3 { font-family: var(--font-display); font-weight: 800; font-size: 22px; color: var(--cream); margin: 0 0 8px; }
   .popup p { color: var(--muted); font-size: 14px; margin: 0 0 20px; line-height: 1.5; }
   .popup button { width: 100%; border: none; cursor: pointer; font-family: var(--font-display); font-weight: 800; font-size: 16px; color: #4d360a; padding: 14px; border-radius: 16px; background: linear-gradient(180deg, #FFD873, var(--gold) 60%, var(--gold-deep)); }
+  .popup .home-btn-col { display: flex; flex-direction: column; gap: 10px; }
+  .popup button.btn-secondary { background: var(--card-2); color: var(--cream); box-shadow: none; }
 
   .popup-wide { max-width: 320px; text-align: left; position: relative; }
   .popup-info-badge { position: absolute; top: 18px; left: 18px; width: 22px; height: 22px; font-size: 12px; }
@@ -522,9 +521,8 @@
                 <span class="coin lg" onclick="openCoinInfo()" style="cursor:pointer"></span>
                 <div class="txt">
                   <div class="t">Animation Shop <span class="info-badge" onclick="openCoinInfo()" role="button" tabindex="0" aria-label="What are Penguino Coins?">i</span></div>
-                  <div class="s">Unlock new moves for your chef. 1 coin each.</div>
+                  <div class="s">Unlock new moves for your chef.</div>
                 </div>
-                <div class="bal"><b id="shopBal">3</b><span>coins</span></div>
               </div>
 
               <div class="anim-card">
@@ -646,6 +644,19 @@
               </div>
             </div>
 
+            <!-- buy confirmation popup -->
+            <div class="overlay" id="confirmOverlay" onclick="if(event.target===this) cancelBuy()">
+              <div class="popup">
+                <span class="coin lg"></span>
+                <h3>Unlock <span id="confirmName">this animation</span>?</h3>
+                <p>This will spend 1 Penguino Coin.</p>
+                <div class="home-btn-col">
+                  <button onclick="confirmBuy()">Yes, unlock it</button>
+                  <button class="btn-secondary" onclick="cancelBuy()">Cancel</button>
+                </div>
+              </div>
+            </div>
+
             <!-- coin info popup — the (i) badge pattern opens this wherever coins are explained -->
             <div class="overlay" id="coinInfoOverlay" onclick="if(event.target===this) closeCoinInfo()">
               <div class="popup popup-wide">
@@ -739,11 +750,29 @@
 
   function syncCoins() {
     document.getElementById('coinChip').textContent = coins;
-    document.getElementById('shopBal').textContent = coins;
   }
+
+  let pendingBuy = null;
 
   function buy(anim, btn) {
     if (coins < 1) { toast("Not enough coins — go focus! 🍅"); return; }
+    pendingBuy = { anim, btn };
+    const name = btn.closest('.anim-card').querySelector('.nm').textContent;
+    document.getElementById('confirmName').textContent = name;
+    document.getElementById('confirmOverlay').classList.add('show');
+  }
+
+  function cancelBuy() {
+    pendingBuy = null;
+    document.getElementById('confirmOverlay').classList.remove('show');
+  }
+
+  function confirmBuy() {
+    if (!pendingBuy) return;
+    const { anim, btn } = pendingBuy;
+    pendingBuy = null;
+    document.getElementById('confirmOverlay').classList.remove('show');
+
     coins--; owned.add(anim); syncCoins();
     const card = btn.closest('.anim-card');
     card.querySelector('.badge').textContent = 'Owned';
