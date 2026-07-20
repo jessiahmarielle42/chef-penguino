@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.1.5'
+const APP_VERSION = 'v2.1.6'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -713,9 +713,10 @@ function openCoinInfo() {
 // =================================================================
 function openPizzaInfo() {
   const o = overlay(`
+    <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
     <div class="popup-emoji-xl">🍕</div>
     <h3>Lifetime Pizzas</h3>
-    <p>All the Pizzas you've ever cooked. 1 Pizza = 1 hour you worked on a task!</p>
+    <p>All the Pizzas you've ever baked.<br>1 Pizza = 1 hour you worked on a task!</p>
     <button type="button" data-action="ok">Got it</button>
   `)
   o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
@@ -765,7 +766,7 @@ async function renderFriends() {
   }
 
   const content = `
-    <div class="section-h" style="margin-top:6px"><h2>Leaderboard</h2><span class="meta">Lifetime pizzas</span></div>
+    <div class="section-h" style="margin-top:6px"><h2>Leaderboard</h2></div>
     <div id="friends-list"><p class="log-empty">Loading&hellip;</p></div>
     <div class="section-h"><h2>Add a friend</h2></div>
     <div class="addfriend"><input id="friend-code-input" placeholder="Friend's code" maxlength="6" /><button type="button" data-action="add">Add</button></div>
@@ -926,6 +927,7 @@ function renderFriendHome(friend) {
     <div class="hero-card" id="hero-card">
       <img class="hero-still" src="${heroSrc}" alt="" />
       <div class="glow"></div>
+      <button class="hero-tap" type="button" data-action="emote">👋 Tap to emote</button>
     </div>
 
     <div class="tiles">
@@ -948,8 +950,10 @@ function renderFriendHome(friend) {
 
   mountScreen('friends', content, () => {
     loadHomeLog(friend.id)
-    const img = app.querySelector('#hero-card .hero-still')
-    if (img) playEmoteInto(img, friend.equipped_emote || 'waving', heroSrc)
+    app.querySelector('.hero-tap')?.addEventListener('click', () => {
+      const img = app.querySelector('#hero-card .hero-still')
+      if (img && img.tagName === 'IMG') playEmoteInto(img, friend.equipped_emote || 'waving', heroSrc)
+    })
   }, { hideStatusBar: true })
 }
 

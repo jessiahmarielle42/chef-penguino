@@ -308,10 +308,11 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .frow-noot.disabled { opacity: 0.4; }
 
 .viewing-banner {
-  background: linear-gradient(160deg, rgba(246,198,75,0.22), var(--banner-wash));
-  border: 1px solid rgba(246,198,75,0.35); border-radius:1.25rem; padding:1rem;
+  background: linear-gradient(180deg, #FFB25E, var(--fire) 55%, var(--fire-deep));
+  box-shadow: 0 12px 26px -10px rgba(251,122,46,0.8), inset 0 1px 0 rgba(255,255,255,0.4);
+  border: none; border-radius:1.25rem; padding:1.125rem;
   margin-top:2.25rem; margin-bottom:0.875rem; text-align: center;
-  font-family: var(--font-display); font-weight: 800; font-size:1rem; color: var(--cream);
+  font-family: var(--font-display); font-weight: 800; font-size:1.1875rem; color: #2a1405;
 }
 .frow.me { border-color: rgba(251,122,46,0.4); background: linear-gradient(160deg, rgba(251,122,46,0.12), var(--card)); }
 
@@ -463,9 +464,11 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 }
 .overlay.show { display: flex; }
 .popup {
+  position: relative;
   background: linear-gradient(180deg, var(--card-2), var(--card));
   border: 1px solid rgba(246,198,75,0.4); border-radius:1.625rem; padding:1.75rem 1.5rem; text-align: center;
-  box-shadow: var(--shadow); max-width:18.75rem; animation: pop 0.35s cubic-bezier(.2,.9,.3,1.2);
+  box-shadow: var(--shadow); width:100%; max-width:21rem; box-sizing: border-box;
+  animation: pop 0.35s cubic-bezier(.2,.9,.3,1.2);
 }
 @keyframes pop { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .popup .spin { margin:0 auto 1rem; animation: spin 1.6s ease-in-out infinite; }
@@ -482,7 +485,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   border-radius:0.8125rem; padding:0.75rem 0.875rem; font-size:0.9375rem; font-family: var(--font-body); margin-bottom:1rem;
 }
 
-.popup-wide { max-width:20rem; text-align: left; position: relative; }
+.popup-wide { text-align: left; }
 .popup-info-badge { position: absolute; top:1.125rem; left:1.125rem; width:1.375rem; height:1.375rem; font-size:0.75rem; }
 
 /* profile popup */
