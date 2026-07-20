@@ -30,8 +30,16 @@ function round2(n) {
   return parseFloat(n.toFixed(2))
 }
 
+function round1(n) {
+  return parseFloat(n.toFixed(1))
+}
+
 function formatScore(n) {
   return String(round2(n))
+}
+
+function formatScore1(n) {
+  return String(round1(n))
 }
 
 function escapeHtml(str) {
@@ -347,6 +355,10 @@ function renderTimerLoop(justStarted) {
   app.innerHTML = `
     <div class="kitchen">
       <video class="kitchen-loop" src="${BASE}assets/gameplay-loop.mp4" playsinline autoplay loop muted></video>
+      <div class="session-pizza-badge">
+        <img src="${BASE}assets/pizza-pop.png" alt="" />
+        <span class="session-pizza-value">0</span>
+      </div>
       <div class="timer-hud">
         <button class="timer-value" type="button">--:--</button>
         <span class="timer-caption">Cook with Chef Penguino!</span>
@@ -366,6 +378,7 @@ function renderTimerLoop(justStarted) {
   const loopVideo = app.querySelector('.kitchen-loop')
   const muteBtn = app.querySelector('.mute-btn')
   const timerBtn = app.querySelector('.timer-value')
+  const sessionPizzaValue = app.querySelector('.session-pizza-value')
 
   loopVideo.muted = true
 
@@ -398,9 +411,19 @@ function renderTimerLoop(justStarted) {
     return state.timer.segmentPlannedMs - (Date.now() - state.timer.segmentStartedAt)
   }
 
+  function sessionElapsedMs() {
+    if (state.timer.segmentStartedAt == null) return state.timer.elapsedMs
+    return state.timer.elapsedMs + (Date.now() - state.timer.segmentStartedAt)
+  }
+
+  function updateSessionPizzaBadge() {
+    sessionPizzaValue.textContent = formatScore1(sessionElapsedMs() / 3600000)
+  }
+
   function tick() {
     const remaining = currentRemaining()
     timerBtn.textContent = formatTime(remaining)
+    updateSessionPizzaBadge()
     if (remaining <= 0) {
       clearInterval(intervalId)
       music.pause()
@@ -507,6 +530,7 @@ function renderTimerLoop(justStarted) {
     loopVideo.pause()
     kitchenEl.classList.add('paused')
     timerBtn.textContent = formatTime(currentRemaining())
+    updateSessionPizzaBadge()
     showPausedOverlay()
   } else {
     startTicking()

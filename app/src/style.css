@@ -348,6 +348,34 @@ html, body {
   text-shadow: 0 2px 4px rgba(0,0,0,.7);
 }
 
+.session-pizza-badge {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  left: 16px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 6px 16px 6px 8px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ffcf4d, #ff9d1c);
+  box-shadow: 0 5px 0 #b56e00, 0 10px 20px rgba(0,0,0,.4);
+}
+
+.session-pizza-badge img {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+}
+
+.session-pizza-value {
+  color: #3a2200;
+  font-size: 19px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
 .start-cooking {
   position: absolute;
   inset: 0;
