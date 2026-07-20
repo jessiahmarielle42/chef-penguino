@@ -73,7 +73,11 @@ html, body {
   height: 100vh;
   height: 100dvh;
   width: 100%;
+  max-width: 460px;      /* keep the phone-app column on tablet/desktop */
+  margin: 0 auto;        /* centre it, with the body gradient as the surround */
   position: relative;
+  overflow: hidden;
+  box-shadow: 0 0 80px rgba(0, 0, 0, 0.55);
 }
 
 /* ============================================================
