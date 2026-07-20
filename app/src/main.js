@@ -947,19 +947,29 @@ function renderIntro(onEnd, isAlarm, videoSrc = 'intro.mp4', sessionSummary) {
   const skipBtn = app.querySelector('.intro-skip')
 
   let transitioned = false
-  const goNext = () => {
+  // A session-completion alarm must always land on the results screen after
+  // the clip plays through or gets skipped - a plain intro just continues.
+  const continueAfterPlaythrough = () => {
     if (transitioned) return
     transitioned = true
     video.pause()
-    onEnd()
+    if (isAlarm) renderTapToContinue(onEnd, isAlarm, sessionSummary)
+    else onEnd()
+  }
+  // Autoplay-with-sound is often blocked with no fresh user gesture - fall
+  // back to a tap prompt either way (it also carries the results text when
+  // this is the alarm flow).
+  const onAutoplayBlocked = () => {
+    if (transitioned) return
+    transitioned = true
+    video.pause()
+    renderTapToContinue(onEnd, isAlarm, sessionSummary)
   }
 
-  video.addEventListener('ended', goNext)
-  skipBtn.addEventListener('click', goNext)
+  video.addEventListener('ended', continueAfterPlaythrough)
+  skipBtn.addEventListener('click', continueAfterPlaythrough)
 
-  // A session-completion alarm usually fires with no fresh user gesture, so
-  // autoplay-with-sound is often blocked - fall back to a tap prompt.
-  video.play().catch(() => renderTapToContinue(goNext, isAlarm, sessionSummary))
+  video.play().catch(onAutoplayBlocked)
 }
 
 function renderTapToContinue(onContinue, isAlarm, sessionSummary) {
