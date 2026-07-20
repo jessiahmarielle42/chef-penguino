@@ -68,7 +68,7 @@ const DURATIONS = [
 const state = load()
 
 function load() {
-  const defaults = { pizzas: 0, muted: false, volume: 0.5, timer: null, log: [], cloudSynced: false }
+  const defaults = { pizzas: 0, muted: false, volume: 0.5, timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return { ...defaults, ...JSON.parse(raw) }
@@ -140,7 +140,7 @@ function finalizeSession(playAlarm) {
     }).then(() => refreshProfile())
   }
 
-  if (playAlarm) renderIntro(renderHome, true)
+  if (playAlarm) renderIntro(() => renderPizzas(), true)
   else renderHome()
 }
 
@@ -207,39 +207,55 @@ function renderHome() {
   app.querySelector('[data-nav="start"]').addEventListener('click', () => {
     renderIntro(renderDurationPicker, false)
   })
-  app.querySelector('[data-nav="pizzas"]').addEventListener('click', renderPizzas)
+  app.querySelector('[data-nav="pizzas"]').addEventListener('click', () => {
+    renderIntro(() => renderPizzas(), false, 'pizzas-intro.mp4')
+  })
   app.querySelector('[data-nav="friends"]').addEventListener('click', renderFriends)
   app.querySelector('[data-nav="settings"]').addEventListener('click', renderSettings)
 }
 
-// ---------- Pizzas (shop front) ----------
-function renderPizzas() {
+function pizzaImagePath(count) {
+  const clamped = Math.max(0, Math.min(12, count))
+  return `${BASE}assets/display-case/${clamped}.jpg`
+}
+
+// ---------- Pizzas (shop front + log, one scrollable page) ----------
+// Pass a friend object ({id, display_name, pizzas, avatar_url}) to view
+// someone else's page; omit it to view your own.
+async function renderPizzas(friend) {
+  const isSelf = !friend
+  const titleText = isSelf
+    ? (currentProfile?.display_name ? `${currentProfile.display_name}'s Pizzas` : 'Your Pizzas')
+    : `${friend.display_name}'s Pizzas`
+  const pizzas = isSelf ? displayPizzas() : friend.pizzas
+  const avatarSrc = (isSelf ? currentProfile?.avatar_url : friend.avatar_url) || `${BASE}assets/penguin-icon.png`
+  const backAction = isSelf ? renderHome : renderFriends
+
+  const currentCount = Math.floor(pizzas)
+  let previousCount = currentCount
+  let showMilestone = false
+
+  if (isSelf) {
+    if (state.lastSeenPizzaCount === null) {
+      state.lastSeenPizzaCount = currentCount
+      save()
+    } else if (currentCount > state.lastSeenPizzaCount) {
+      previousCount = state.lastSeenPizzaCount
+      showMilestone = true
+    }
+  }
+
   app.innerHTML = `
     <div class="home">
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
       <div class="shop-content">
         <button class="back-btn" type="button">&larr; Back</button>
-        <div class="shop-pizza-pill">${formatScore(displayPizzas())} pizzas made</div>
-        <img class="shop-image" src="${BASE}assets/pizza-shop.png" alt="Chef Penguino's pizza shop" />
-        <button class="start-btn" data-nav="log" type="button">See Log</button>
-      </div>
-    </div>
-  `
-  app.querySelector('.back-btn').addEventListener('click', renderHome)
-  app.querySelector('[data-nav="log"]').addEventListener('click', renderPizzaLog)
-}
-
-// ---------- Pizza log ----------
-async function renderPizzaLog() {
-  app.innerHTML = `
-    <div class="home">
-      <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
-      <div class="log-content">
-        <button class="back-btn" type="button">&larr; Back</button>
+        <div class="shop-pizza-pill">${escapeHtml(titleText)}</div>
+        <img class="shop-image" src="${pizzaImagePath(previousCount)}" alt="" />
         <div class="log-header">
-          <img class="home-icon log-icon" src="${BASE}assets/penguin-icon.png" alt="" />
+          <img class="home-icon log-icon" src="${avatarSrc}" alt="" />
           <div class="home-score">
-            <span class="home-score-value">${formatScore(displayPizzas())}</span>
+            <span class="home-score-value">${formatScore(pizzas)}</span>
             <span class="home-score-label">pizzas made</span>
           </div>
         </div>
@@ -247,9 +263,30 @@ async function renderPizzaLog() {
       </div>
     </div>
   `
-  app.querySelector('.back-btn').addEventListener('click', renderPizzas)
+  app.querySelector('.back-btn').addEventListener('click', backAction)
 
-  const log = await fetchLog(currentUser?.id)
+  if (showMilestone) {
+    const container = app.querySelector('.home')
+    const overlay = document.createElement('div')
+    overlay.className = 'pause-overlay'
+    overlay.innerHTML = `
+      <div class="pause-content">
+        <h2>New Pizza Baked!</h2>
+        <img class="home-icon" src="${BASE}assets/penguin-icon.png" alt="" />
+        <button class="start-btn" data-action="yay" type="button">Yay!</button>
+      </div>
+    `
+    container.appendChild(overlay)
+    overlay.querySelector('[data-action="yay"]').addEventListener('click', () => {
+      state.lastSeenPizzaCount = currentCount
+      save()
+      const shopImg = app.querySelector('.shop-image')
+      if (shopImg) shopImg.src = pizzaImagePath(currentCount)
+      overlay.remove()
+    })
+  }
+
+  const log = await fetchLog(isSelf ? currentUser?.id : friend.id)
   const listEl = app.querySelector('.log-list')
   if (!listEl) return
   const groups = groupLogByDate(log)
@@ -447,7 +484,7 @@ async function loadFriendsList() {
         <span class="log-row-pizzas">🍕 ${formatScore(f.pizzas)}</span>
       </div>
       <div class="log-row-meta">
-        <button class="friend-view-btn" data-friend-id="${f.id}" data-friend-name="${escapeHtml(f.display_name)}" type="button">View log</button>
+        <button class="friend-view-btn" data-friend-id="${f.id}" type="button">View log</button>
         <button class="friend-remove-btn" data-friend-id="${f.id}" type="button">Remove</button>
       </div>
     </div>
@@ -455,7 +492,8 @@ async function loadFriendsList() {
 
   listEl.querySelectorAll('.friend-view-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      renderFriendLog(btn.dataset.friendId, btn.dataset.friendName)
+      const friend = friends.find(f => f.id === btn.dataset.friendId)
+      if (friend) renderPizzas(friend)
     })
   })
 
@@ -488,37 +526,11 @@ function showRemoveFriendConfirm(friendId) {
   })
 }
 
-async function renderFriendLog(friendId, friendName) {
-  app.innerHTML = `
-    <div class="home">
-      <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
-      <div class="log-content">
-        <button class="back-btn" type="button">&larr; Back</button>
-        <div class="log-header">
-          <img class="home-icon log-icon" src="${BASE}assets/penguin-icon.png" alt="" />
-          <div class="home-score">
-            <span class="home-score-value">${escapeHtml(friendName)}</span>
-            <span class="home-score-label">pizzas made</span>
-          </div>
-        </div>
-        <div class="log-list"><p class="log-empty">Loading&hellip;</p></div>
-      </div>
-    </div>
-  `
-  app.querySelector('.back-btn').addEventListener('click', renderFriends)
-
-  const log = await fetchLog(friendId)
-  const listEl = app.querySelector('.log-list')
-  if (!listEl) return
-  const groups = groupLogByDate(log)
-  listEl.innerHTML = groups.length ? groups.map(renderDateGroup).join('') : '<p class="log-empty">No sessions yet.</p>'
-}
-
 // ---------- Intro (used both to start a session and as the completion alarm) ----------
-function renderIntro(onEnd, isAlarm) {
+function renderIntro(onEnd, isAlarm, videoSrc = 'intro.mp4') {
   app.innerHTML = `
     <div class="intro">
-      <video class="intro-video" src="${BASE}assets/intro.mp4" playsinline autoplay></video>
+      <video class="intro-video" src="${BASE}assets/${videoSrc}" playsinline autoplay></video>
       <button class="intro-skip" type="button">Skip</button>
     </div>
   `
@@ -546,7 +558,7 @@ function renderTapToContinue(onContinue, isAlarm) {
   app.innerHTML = `
     <div class="intro-start">
       <img src="${BASE}assets/penguin-icon.png" alt="Chef Penguino" />
-      <h1>${isAlarm ? "Time's up!" : 'Chef Penguino'}</h1>
+      <h1>${isAlarm ? `Hooray! ${formatScore(displayPizzas())} Pizzas made` : 'Chef Penguino'}</h1>
       <button type="button">${isAlarm ? 'Tap for Results' : 'Tap to Continue'}</button>
     </div>
   `
