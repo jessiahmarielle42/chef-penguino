@@ -178,6 +178,17 @@
   }
   .chip .ic { font-size: 15px; line-height: 1; }
   .coin-chip { border-color: rgba(246,198,75,0.45); background: linear-gradient(180deg, rgba(246,198,75,0.16), rgba(246,198,75,0.05)); }
+  button.chip { font-family: inherit; appearance: none; cursor: pointer; }
+
+  /* (i) info affordance — used wherever the app is explaining a mechanic to the player */
+  .info-badge {
+    width: 15px; height: 15px; border-radius: 50%;
+    display: inline-grid; place-items: center;
+    font-family: var(--font-display); font-size: 9px; font-weight: 800; font-style: italic;
+    color: var(--muted); background: rgba(247,237,223,0.1); border: 1px solid var(--line);
+    flex: none;
+  }
+  .coin-chip .info-badge { color: var(--gold); border-color: rgba(246,198,75,0.4); background: rgba(246,198,75,0.12); }
   .coin {
     width: 19px; height: 19px;
     background: var(--coin-img) center / contain no-repeat;
@@ -185,6 +196,7 @@
     filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));
   }
   .coin.lg { width: 76px; height: 76px; filter: drop-shadow(0 6px 14px rgba(246,198,75,0.55)); }
+  .coin.xl { width: 120px; height: 120px; margin: 0 auto 16px; filter: drop-shadow(0 10px 20px rgba(246,198,75,0.6)); }
 
   .scroll { flex: 1; overflow-y: auto; padding: 4px 16px 16px; -webkit-overflow-scrolling: touch; }
   .scroll::-webkit-scrollbar { width: 0; }
@@ -340,10 +352,10 @@
   .tab .ti { font-size: 20px; line-height: 1; filter: grayscale(0.4); opacity: 0.7; }
   .tab.active { color: var(--fire); }
 
-  .tab-fab-wrap { position: relative; display: flex; justify-content: center; }
+  .tab-fab-wrap { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; }
   .tab-fab {
     position: relative; z-index: 2;
-    width: 58px; height: 58px; margin-top: -30px;
+    width: 56px; height: 56px; margin-top: -38px;
     border-radius: 50%; border: none; cursor: pointer;
     background: radial-gradient(circle at 35% 28%, #FFC98A, var(--fire) 48%, var(--fire-deep) 100%);
     box-shadow:
@@ -352,14 +364,15 @@
       inset 0 -6px 10px rgba(140,40,10,0.35),
       0 0 0 5px var(--ink-2);
     display: grid; place-items: center;
-    font-size: 26px; line-height: 1;
+    font-size: 24px; line-height: 1;
     transition: transform 0.15s ease;
   }
   .tab-fab::before {
-    content: ""; position: absolute; z-index: -1; inset: -20px; border-radius: 50%;
+    content: ""; position: absolute; z-index: -1; inset: -18px; border-radius: 50%;
     background: radial-gradient(circle, rgba(251,122,46,0.45), rgba(251,122,46,0) 70%);
   }
   .tab-fab:active { transform: scale(0.93); }
+  .tab-fab-label { font-size: 10px; font-weight: 800; color: var(--fire); letter-spacing: 0.02em; }
   .tab.active .ti { filter: none; opacity: 1; transform: translateY(-1px); }
 
   .view { display: none; }
@@ -384,6 +397,17 @@
   .popup h3 { font-family: var(--font-display); font-weight: 800; font-size: 22px; color: var(--cream); margin: 0 0 8px; }
   .popup p { color: var(--muted); font-size: 14px; margin: 0 0 20px; line-height: 1.5; }
   .popup button { width: 100%; border: none; cursor: pointer; font-family: var(--font-display); font-weight: 800; font-size: 16px; color: #4d360a; padding: 14px; border-radius: 16px; background: linear-gradient(180deg, #FFD873, var(--gold) 60%, var(--gold-deep)); }
+
+  .popup-wide { max-width: 320px; text-align: left; }
+  .popup-wide h3 { text-align: center; }
+  .popup-wide .coin.xl { display: block; }
+  .popup-facts { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
+  .fact { display: flex; gap: 10px; align-items: baseline; }
+  .fact-k {
+    flex: none; font-family: var(--font-display); font-weight: 800; font-size: 11px; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--gold); width: 52px;
+  }
+  .fact-v { font-size: 13px; color: var(--cream); line-height: 1.5; }
 
   .toast {
     position: absolute; left: 50%; bottom: 92px; transform: translateX(-50%) translateY(12px);
@@ -450,7 +474,9 @@
               </div>
               <div class="stats">
                 <span class="chip"><span class="ic">🍕</span><span id="pizzaChip">248</span></span>
-                <span class="chip coin-chip"><span class="coin"></span><span id="coinChip">3</span></span>
+                <button class="chip coin-chip" type="button" onclick="openCoinInfo()" aria-label="Coin balance — tap to learn about Penguino Coins">
+                  <span class="coin"></span><span id="coinChip">3</span><span class="info-badge" aria-hidden="true">i</span>
+                </button>
               </div>
             </div>
 
@@ -492,9 +518,9 @@
             <!-- ===== SHOP ===== -->
             <div class="scroll view" id="v-shop">
               <div class="shop-banner">
-                <span class="coin lg"></span>
+                <span class="coin lg" onclick="openCoinInfo()" style="cursor:pointer"></span>
                 <div class="txt">
-                  <div class="t">Animation Shop</div>
+                  <div class="t">Animation Shop <span class="info-badge" onclick="openCoinInfo()" role="button" tabindex="0" aria-label="What are Penguino Coins?">i</span></div>
                   <div class="s">Unlock new moves for your chef. 1 coin each.</div>
                 </div>
                 <div class="bal"><b id="shopBal">3</b><span>coins</span></div>
@@ -601,6 +627,7 @@
               <button class="tab" data-tab="shop" onclick="go('shop')"><span class="ti">🛍️</span>Shop</button>
               <div class="tab-fab-wrap">
                 <button class="tab-fab" type="button" aria-label="Start cooking" onclick="startFab()">🔥</button>
+                <span class="tab-fab-label">Cook</span>
               </div>
               <button class="tab" data-tab="friends" onclick="go('friends')"><span class="ti">🐧</span>Friends</button>
               <button class="tab" data-tab="settings" onclick="go('settings')"><span class="ti">⚙️</span>Settings</button>
@@ -615,6 +642,20 @@
                 <h3>Cha-ching!</h3>
                 <p>You sold 12 pizzas for a gold coin! Spend it in the shop on new animations.</p>
                 <button onclick="closePopup()">Collect coin</button>
+              </div>
+            </div>
+
+            <!-- coin info popup — the (i) badge pattern opens this wherever coins are explained -->
+            <div class="overlay" id="coinInfoOverlay" onclick="if(event.target===this) closeCoinInfo()">
+              <div class="popup popup-wide">
+                <span class="coin xl"></span>
+                <h3>Penguino Coins</h3>
+                <div class="popup-facts">
+                  <div class="fact"><span class="fact-k">Earn</span><span class="fact-v">Bake 12 pizzas and Chef Penguino sells the batch for 1 gold coin — automatically, no selling required.</span></div>
+                  <div class="fact"><span class="fact-k">Spend</span><span class="fact-v">Use coins in the Animation Shop to unlock new tap animations for your chef, like Sniffing and Eating.</span></div>
+                  <div class="fact"><span class="fact-k">Cost</span><span class="fact-v">Every animation costs 1 coin. Waving is free and always yours.</span></div>
+                </div>
+                <button onclick="closeCoinInfo()">Got it</button>
               </div>
             </div>
 
@@ -743,4 +784,7 @@
     document.querySelector('.tile.coin-tile .sub').textContent = '12 more → 1 coin';
     toast('🪙 Coin collected!');
   }
+
+  function openCoinInfo() { document.getElementById('coinInfoOverlay').classList.add('show'); }
+  function closeCoinInfo() { document.getElementById('coinInfoOverlay').classList.remove('show'); }
 </script>
