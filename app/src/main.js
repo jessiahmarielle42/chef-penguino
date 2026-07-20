@@ -219,10 +219,8 @@ function renderPizzas() {
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
       <div class="shop-content">
         <button class="back-btn" type="button">&larr; Back</button>
-        <div class="shop-image-wrap">
-          <img class="shop-image" src="${BASE}assets/pizza-shop.png" alt="Chef Penguino's pizza shop" />
-          <div class="shop-pizza-pill">${formatScore(displayPizzas())} pizzas made</div>
-        </div>
+        <div class="shop-pizza-pill">${formatScore(displayPizzas())} pizzas made</div>
+        <img class="shop-image" src="${BASE}assets/pizza-shop.png" alt="Chef Penguino's pizza shop" />
         <button class="start-btn" data-nav="log" type="button">See Log</button>
       </div>
     </div>
