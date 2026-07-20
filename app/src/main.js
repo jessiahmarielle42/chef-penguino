@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.0.3'
+const APP_VERSION = 'v2.0.4'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -89,6 +89,7 @@ function load() {
     pizzas: 0, muted: false, volume: 0.5, darkenLevel: 1, autoDarken: true,
     timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null,
     pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', lastSeenCoins: null,
+    lightMode: false,
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -100,6 +101,11 @@ function load() {
 function save() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
 }
+
+function applyTheme() {
+  document.documentElement.setAttribute('data-theme', state.lightMode ? 'light' : 'dark')
+}
+applyTheme()
 
 // ---------- App-wide background music (persists across screens) ----------
 // Volume is driven through a Web Audio gain node rather than
@@ -247,7 +253,7 @@ boot()
 const EMOTES = [
   { id: 'waving', name: 'Waving', desc: 'Your chef waves hello', clip: 'pizzas-waving.mp4', free: true },
   { id: 'sniffing', name: 'Sniffing', desc: 'Leans in for a big whiff', clip: 'pizzas-sniffing.mp4' },
-  { id: 'eating', name: 'Eating', desc: 'Sneaks a slice for himself', clip: 'pizzas-eating.mp4' },
+  { id: 'eating', name: 'Sneaky Bite', desc: 'Steals a slice for himself', clip: 'pizzas-eating.mp4' },
 ]
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
 
@@ -426,7 +432,7 @@ function wireTabBar() {
       else if (id === 'settings') renderSettings()
     })
   })
-  app.querySelector('[data-action="cook"]')?.addEventListener('click', startCookingFlow)
+  app.querySelector('.tab-fab[data-action="cook"]')?.addEventListener('click', startCookingFlow)
 }
 
 function startCookingFlow() {
@@ -492,19 +498,12 @@ function renderHome() {
 
     <button class="cta" type="button" data-action="cook">🔥 Start Cooking</button>
 
-    <div class="quicklinks">
-      <div class="qlink" data-go="shop"><span class="qic">🛍️</span> Emotes Shop</div>
-      <div class="qlink" data-go="friends"><span class="qic">🐧</span> Friends</div>
-    </div>
-
     <div class="section-h"><h2>Recent sessions</h2></div>
     <div class="log-list" id="home-log"><p class="log-empty">Loading&hellip;</p></div>
   `
 
   mountScreen('home', content, () => {
-    app.querySelector('[data-action="cook"]').addEventListener('click', startCookingFlow)
-    app.querySelector('[data-go="shop"]').addEventListener('click', renderShop)
-    app.querySelector('[data-go="friends"]').addEventListener('click', renderFriends)
+    app.querySelector('.cta[data-action="cook"]').addEventListener('click', startCookingFlow)
 
     // Tap the shopfront to play the equipped emote, then revert to the still.
     const attachEmoteTap = (btnHost) => {
@@ -588,16 +587,15 @@ function renderShop() {
   const cards = EMOTES.map(e => {
     const owned = isOwned(e.id)
     const equipped = equippedEmote() === e.id
+    const label = e.free ? 'Free' : 'Owned'
+
     let badge
-    if (e.free) badge = '<span class="badge">Free</span>'
-    else if (owned) badge = '<span class="badge">Owned</span>'
+    if (equipped) badge = `<button class="badge badge-equip equipped" type="button" data-equip="${e.id}">✓ Equipped</button>`
+    else if (owned) badge = `<button class="badge badge-equip" type="button" data-equip="${e.id}">${label}</button>`
     else badge = '<span class="badge">Locked</span>'
     const lock = (!owned) ? '<div class="lock">🔒</div>' : ''
 
-    let action
-    if (equipped) action = `<button class="btn btn-equipped" type="button" data-equip="${e.id}">✓ Equipped</button>`
-    else if (owned) action = `<button class="btn btn-equip" type="button" data-equip="${e.id}">Equip</button>`
-    else action = `<button class="btn btn-buy" type="button" data-buy="${e.id}">${coinImg()}1</button>`
+    const action = owned ? '' : `<button class="btn btn-buy" type="button" data-buy="${e.id}">${coinImg()}1</button>`
 
     return `
       <div class="anim-card">
@@ -608,8 +606,8 @@ function renderShop() {
         <div class="anim-body">
           <div class="anim-info"><div class="nm">${escapeHtml(e.name)}</div><div class="ds">${escapeHtml(e.desc)}</div></div>
           <div class="act">
-            <button class="btn btn-preview" type="button" data-preview="${e.id}">▶ Preview</button>
             ${action}
+            <button class="btn btn-preview" type="button" data-preview="${e.id}">▶ Preview</button>
           </div>
         </div>
       </div>
@@ -1133,6 +1131,15 @@ function renderSettings(highlightProfile) {
         </div>
       </div>
     </div>
+    <div class="group">
+      <p class="glab">Appearance</p>
+      <div class="glist">
+        <div class="grow">
+          <div><div class="gt">Light mode</div></div>
+          <div class="right"><div class="switch ${state.lightMode ? '' : 'off'}" data-action="toggle-theme"></div></div>
+        </div>
+      </div>
+    </div>
     ${accountGroup}
     <div class="group">
       <p class="glab">About</p>
@@ -1152,6 +1159,9 @@ function renderSettings(highlightProfile) {
     })
     app.querySelector('[data-action="toggle-darken"]').addEventListener('click', (e) => {
       state.autoDarken = !state.autoDarken; save(); e.currentTarget.classList.toggle('off', !state.autoDarken)
+    })
+    app.querySelector('[data-action="toggle-theme"]').addEventListener('click', (e) => {
+      state.lightMode = !state.lightMode; save(); applyTheme(); e.currentTarget.classList.toggle('off', !state.lightMode)
     })
     app.querySelector('[data-action="google"]')?.addEventListener('click', signInWithGoogle)
     app.querySelector('[data-action="sign-out"]')?.addEventListener('click', signOut)
