@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.0.2'
+const APP_VERSION = 'v2.0.3'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -800,7 +800,6 @@ async function loadFriendsList() {
   listEl.querySelectorAll('.frow-wrap').forEach(wrap => wireSwipeRow(wrap, nameById))
 }
 
-const SWIPE_OPEN_X = -84
 function closeAllSwipes(except) {
   app.querySelectorAll('.frow-wrap').forEach(w => {
     if (w === except) return
@@ -814,10 +813,14 @@ function wireSwipeRow(wrap, nameById) {
   const delBtn = wrap.querySelector('.frow-delete')
   const friendId = delBtn.dataset.remove
   let startX = 0, startY = 0, currentX = 0, dragging = false, axis = null, suppressClick = false
+  // Read the delete button's actual rendered width so the swipe reveal matches
+  // whatever the CSS renders (it scales with the fluid rem sizing).
+  let openX = -84
 
   row.addEventListener('pointerdown', (e) => {
+    openX = -(delBtn.offsetWidth || 84)
     startX = e.clientX; startY = e.clientY
-    currentX = wrap.classList.contains('open') ? SWIPE_OPEN_X : 0
+    currentX = wrap.classList.contains('open') ? openX : 0
     dragging = true; axis = null
     wrap.classList.add('dragging')
     try { row.setPointerCapture(e.pointerId) } catch {}
@@ -827,18 +830,18 @@ function wireSwipeRow(wrap, nameById) {
     const dx = e.clientX - startX, dy = e.clientY - startY
     if (axis === null && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y'
     if (axis !== 'x') return
-    row.style.transform = `translateX(${Math.min(0, Math.max(SWIPE_OPEN_X, currentX + dx))}px)`
+    row.style.transform = `translateX(${Math.min(0, Math.max(openX, currentX + dx))}px)`
   })
   const end = (e) => {
     if (!dragging) return
     dragging = false
     wrap.classList.remove('dragging')
     if (axis !== 'x') { axis = null; return }
-    const finalX = Math.min(0, Math.max(SWIPE_OPEN_X, currentX + (e.clientX - startX)))
-    const open = finalX < SWIPE_OPEN_X / 2
+    const finalX = Math.min(0, Math.max(openX, currentX + (e.clientX - startX)))
+    const open = finalX < openX / 2
     const wasOpen = wrap.classList.contains('open')
     closeAllSwipes(wrap)
-    row.style.transform = open ? `translateX(${SWIPE_OPEN_X}px)` : ''
+    row.style.transform = open ? `translateX(${openX}px)` : ''
     wrap.classList.toggle('open', open)
     if (open && !wasOpen) suppressClick = true
     axis = null
