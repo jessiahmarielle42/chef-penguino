@@ -159,6 +159,14 @@ function formatDuration(minutes) {
   return rem ? `${h}h ${rem}m` : `${h}h`
 }
 
+function formatWorkedDuration(minutes) {
+  const m = Math.round(minutes)
+  if (m < 60) return `${m}min`
+  const h = Math.floor(m / 60)
+  const rem = m % 60
+  return rem ? `${h}h${rem}min` : `${h}h`
+}
+
 function addSessionPizzas(minutes) {
   state.pizzas = round2(state.pizzas + minutes / 60)
   save()
@@ -194,7 +202,7 @@ async function finalizeSession(playAlarm) {
     await refreshProfile()
   }
 
-  if (playAlarm) renderIntro(() => renderPizzas(), true)
+  if (playAlarm) renderIntro(() => renderPizzas(), true, undefined, { minutes, pizzas: pizzasEarned })
   else renderHome()
 }
 
@@ -305,7 +313,7 @@ function pizzaImagePath(count) {
 // rather than claiming to be a pixel-perfect match at every pizza count.
 // Kept preloaded and off-screen (rather than created fresh per tap) so
 // tapping starts playback instantly instead of showing a blank loading gap.
-const PIZZA_TAP_VIDEOS = ['pizzas-waving.mp4', 'pizzas-sniffing.mp4']
+const PIZZA_TAP_VIDEOS = ['pizzas-waving.mp4', 'pizzas-sniffing.mp4', 'pizzas-eating.mp4']
 let pizzaTapVideoIndex = 0
 const preloadedPizzaVideos = PIZZA_TAP_VIDEOS.map(src => {
   const v = document.createElement('video')
@@ -927,7 +935,7 @@ function showRemoveFriendConfirm(friendId) {
 }
 
 // ---------- Intro (used both to start a session and as the completion alarm) ----------
-function renderIntro(onEnd, isAlarm, videoSrc = 'intro.mp4') {
+function renderIntro(onEnd, isAlarm, videoSrc = 'intro.mp4', sessionSummary) {
   app.innerHTML = `
     <div class="intro">
       <video class="intro-video" src="${BASE}assets/${videoSrc}" playsinline autoplay></video>
@@ -951,14 +959,17 @@ function renderIntro(onEnd, isAlarm, videoSrc = 'intro.mp4') {
 
   // A session-completion alarm usually fires with no fresh user gesture, so
   // autoplay-with-sound is often blocked - fall back to a tap prompt.
-  video.play().catch(() => renderTapToContinue(goNext, isAlarm))
+  video.play().catch(() => renderTapToContinue(goNext, isAlarm, sessionSummary))
 }
 
-function renderTapToContinue(onContinue, isAlarm) {
+function renderTapToContinue(onContinue, isAlarm, sessionSummary) {
+  const resultText = isAlarm && sessionSummary
+    ? `Worked for ${formatWorkedDuration(sessionSummary.minutes)}, ${formatScore(sessionSummary.pizzas)} pizzas made`
+    : ''
   app.innerHTML = `
     <div class="intro-start">
       <img src="${BASE}assets/penguin-icon.png" alt="Chef Penguino" />
-      <h1>${isAlarm ? `Hooray! ${formatScore(displayPizzas())} Pizzas made` : 'Chef Penguino'}</h1>
+      <h1>${isAlarm ? resultText : 'Chef Penguino'}</h1>
       <button type="button">${isAlarm ? 'Tap for Results' : 'Tap to Continue'}</button>
     </div>
   `
