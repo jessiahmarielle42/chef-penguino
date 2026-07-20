@@ -78,6 +78,12 @@ html, body {
   position: relative;
   overflow: hidden;
   box-shadow: 0 0 80px rgba(0, 0, 0, 0.55);
+  /* #app must itself be the flex column so .app (flex:1) fills the viewport
+     height and .scroll (flex:1 + overflow) actually scrolls; otherwise .app
+     grows to content height, overflows #app, and the tab bar gets clipped
+     with no way to reach it. */
+  display: flex;
+  flex-direction: column;
 }
 
 /* ============================================================
