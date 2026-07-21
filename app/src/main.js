@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.6.2'
+const APP_VERSION = 'v2.6.3'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -1258,7 +1258,7 @@ async function fetchLog(userId) {
   // (migration_session_edit.sql hasn't been run), so the log still loads.
   let { data, error } = await supabase
     .from('sessions')
-    .select('id, completed_at, minutes, pizzas, task, icon, coins')
+    .select('id, completed_at, minutes, pizzas, task, icon')
     .eq('user_id', userId)
     .order('completed_at', { ascending: false })
   if (error) {
@@ -1276,7 +1276,6 @@ async function fetchLog(userId) {
     pizzas: r.pizzas,
     task: r.task,
     icon: r.icon,
-    coins: r.coins,
   }))
 }
 
@@ -1351,19 +1350,25 @@ function renderDateGroup(group, editable) {
 // Right-side metric for a log row. Admin coin adjustments show a coin + signed
 // amount; admin pizza adjustments show a signed pizza amount; normal sessions
 // show their earned pizzas as before.
+// Admin coin adjustments are stored as a session whose task carries the signed
+// amount, e.g. "Admin Edit (+1 coin)" - no dedicated DB column needed, so it
+// works without any migration. Detect + parse that here.
+const COIN_TASK_RE = / \(([+-]?\d+(?:\.\d+)?) coins?\)$/
+
 function logRowMetric(entry) {
-  if (typeof entry.coins === 'number' && entry.coins !== 0) {
-    return `<i class="adm-coin-dot"></i> ${signedScore(entry.coins)}`
-  }
-  if (entry.task === 'Admin Edit') {
-    return `🍕 ${signedScore(entry.pizzas)}`
-  }
+  const m = COIN_TASK_RE.exec(entry.task || '')
+  if (m) return `<i class="adm-coin-dot"></i> ${m[1]}`
+  // Older coin-adjustment rows carried the coin marker only in the icon, with
+  // no stored amount - still show a coin, never a misleading "pizza 0".
+  if (entry.icon === '🪙') return `<i class="adm-coin-dot"></i>`
+  if (entry.task === 'Admin Edit') return `🍕 ${signedScore(entry.pizzas)}`
   return `🍕 ${formatScore(entry.pizzas)}`
 }
 
 function renderLogRow(entry, editable) {
   const time = new Date(entry.completedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
-  const task = escapeHtml(entry.task) || 'Focus session'
+  // Strip the "(+1 coin)" storage suffix from the title - the amount shows on the right.
+  const task = escapeHtml((entry.task || '').replace(COIN_TASK_RE, '')) || 'Focus session'
   const icon = stableIconFor(entry)
   if (editable && entry.id) logEntriesById.set(entry.id, { entry, icon })
 
@@ -2163,9 +2168,10 @@ async function applyAdminEdit(profile, pizzaDelta, coinDelta) {
     if (!ok) return false
   }
   if (coinDelta) {
-    // pizzas:0 so the bump_pizzas trigger is a no-op; the coins column carries
-    // the change so the user's log shows a coin, not a pizza.
-    const ok = await insertSessionRow({ user_id: profile.id, completed_at: new Date().toISOString(), minutes: 0, pizzas: 0, coins: coinDelta, task: 'Admin Edit', icon: '🪙' })
+    // pizzas:0 so the bump_pizzas trigger is a no-op; the signed amount lives in
+    // the task text so the user's log shows a coin (not a pizza), no migration needed.
+    const label = `Admin Edit (${signedScore(coinDelta)} ${Math.abs(coinDelta) === 1 ? 'coin' : 'coins'})`
+    const ok = await insertSessionRow({ user_id: profile.id, completed_at: new Date().toISOString(), minutes: 0, pizzas: 0, task: label, icon: '🪙' })
     if (!ok) return false
     const nextAdjustment = (profile.coin_adjustment || 0) + coinDelta
     const { error } = await supabase.from('profiles').update({ coin_adjustment: nextAdjustment }).eq('id', profile.id)
@@ -2176,14 +2182,7 @@ async function applyAdminEdit(profile, pizzaDelta, coinDelta) {
 
 async function insertSessionRow(row) {
   let { error } = await supabase.from('sessions').insert(row)
-  if (error && 'coins' in row) {
-    const { coins, ...noCoins } = row
-    ;({ error } = await supabase.from('sessions').insert(noCoins))
-    if (error && 'icon' in noCoins) {
-      const { icon, ...base } = noCoins
-      ;({ error } = await supabase.from('sessions').insert(base))
-    }
-  } else if (error && 'icon' in row) {
+  if (error && 'icon' in row) {
     const { icon, ...base } = row
     ;({ error } = await supabase.from('sessions').insert(base))
   }
