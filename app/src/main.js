@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.3.1'
+const APP_VERSION = 'v2.3.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -547,7 +547,7 @@ function renderHome() {
     </div>
 
     <div class="tiles">
-      <div class="tile" role="button" tabindex="0" data-action="pizza-info">
+      <div class="tile" role="button" tabindex="0" data-action="tile-pizza-info">
         <span class="info-badge tile-info" aria-hidden="true">i</span>
         <div class="lab">🍕 Lifetime pizzas</div>
         <div class="big">${formatScore(lifetime)}</div>
@@ -570,7 +570,7 @@ function renderHome() {
 
   mountScreen('home', content, () => {
     app.querySelector('.cta[data-action="cook"]').addEventListener('click', startCookingFlow)
-    app.querySelector('[data-action="pizza-info"]')?.addEventListener('click', openPizzaInfo)
+    app.querySelector('[data-action="tile-pizza-info"]')?.addEventListener('click', openPizzaInfo)
     app.querySelector('[data-action="stash-info"]')?.addEventListener('click', openStashInfo)
 
     // Tap the shopfront to play the equipped emote, then revert to the still.
