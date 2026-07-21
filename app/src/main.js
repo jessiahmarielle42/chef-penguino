@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.6.1'
+const APP_VERSION = 'v2.6.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -186,6 +186,7 @@ document.addEventListener('pointerdown', (e) => { pressTarget(e)?.classList.add(
 function round2(n) { return parseFloat(n.toFixed(2)) }
 function round1(n) { return parseFloat(n.toFixed(1)) }
 function formatScore(n) { return String(round2(n)) }
+function signedScore(n) { return (n > 0 ? '+' : '') + formatScore(n) }
 function formatScore1(n) { return String(round1(n)) }
 function formatScoreFixed2(n) { return round2(n).toFixed(2) }
 
@@ -1257,7 +1258,7 @@ async function fetchLog(userId) {
   // (migration_session_edit.sql hasn't been run), so the log still loads.
   let { data, error } = await supabase
     .from('sessions')
-    .select('id, completed_at, minutes, pizzas, task, icon')
+    .select('id, completed_at, minutes, pizzas, task, icon, coins')
     .eq('user_id', userId)
     .order('completed_at', { ascending: false })
   if (error) {
@@ -1275,6 +1276,7 @@ async function fetchLog(userId) {
     pizzas: r.pizzas,
     task: r.task,
     icon: r.icon,
+    coins: r.coins,
   }))
 }
 
@@ -1346,6 +1348,19 @@ function renderDateGroup(group, editable) {
   `
 }
 
+// Right-side metric for a log row. Admin coin adjustments show a coin + signed
+// amount; admin pizza adjustments show a signed pizza amount; normal sessions
+// show their earned pizzas as before.
+function logRowMetric(entry) {
+  if (typeof entry.coins === 'number' && entry.coins !== 0) {
+    return `<i class="adm-coin-dot"></i> ${signedScore(entry.coins)}`
+  }
+  if (entry.task === 'Admin Edit') {
+    return `🍕 ${signedScore(entry.pizzas)}`
+  }
+  return `🍕 ${formatScore(entry.pizzas)}`
+}
+
 function renderLogRow(entry, editable) {
   const time = new Date(entry.completedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
   const task = escapeHtml(entry.task) || 'Focus session'
@@ -1370,7 +1385,7 @@ function renderLogRow(entry, editable) {
         </div>
         <div class="log-row-meta">
           <span>${formatDuration(entry.minutes)}</span>
-          <span class="log-row-pizzas">🍕 ${formatScore(entry.pizzas)}</span>
+          <span class="log-row-pizzas">${logRowMetric(entry)}</span>
         </div>
       </div>
     </div>
@@ -2115,22 +2130,26 @@ async function runAdminSearch() {
 }
 
 function openAdminAdjustPopup(profile) {
+  const curPizzas = Number(profile.pizzas) || 0
+  const curCoins = adminCoinBalance(profile)
   const o = overlay(`
     <h3>Edit ${escapeHtml(profile.display_name)}</h3>
-    <p class="confirm-sub">Currently: 🍕 ${formatScore(profile.pizzas)} &middot; <span class="adm-stat"><i class="adm-coin-dot"></i> ${adminCoinBalance(profile)}</span></p>
-    <label class="field-label" for="admin-pizza-delta">Pizzas +/-</label>
-    <input id="admin-pizza-delta" class="rename-input" type="number" step="0.01" value="0" />
-    <label class="field-label" for="admin-coin-delta">Coins +/-</label>
-    <input id="admin-coin-delta" class="rename-input" type="number" step="1" value="0" />
+    <label class="field-label" for="admin-pizzas">Pizzas</label>
+    <input id="admin-pizzas" class="rename-input" type="number" step="0.01" value="${curPizzas}" />
+    <label class="field-label" for="admin-coins">Coins</label>
+    <input id="admin-coins" class="rename-input" type="number" step="1" value="${curCoins}" />
     <div class="home-btn-col" style="margin-top:0.25rem">
-      <button type="button" data-action="apply">Apply</button>
+      <button type="button" data-action="apply">Save changes</button>
       <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
     </div>
   `, { popupClass: 'popup-wide' })
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="apply"]').addEventListener('click', async () => {
-    const pizzaDelta = Number(o.querySelector('#admin-pizza-delta').value) || 0
-    const coinDelta = Number(o.querySelector('#admin-coin-delta').value) || 0
+    const newPizzas = Number(o.querySelector('#admin-pizzas').value)
+    const newCoins = Number(o.querySelector('#admin-coins').value)
+    if (Number.isNaN(newPizzas) || Number.isNaN(newCoins)) { toast('Enter valid numbers'); return }
+    const pizzaDelta = Math.round((newPizzas - curPizzas) * 100) / 100
+    const coinDelta = Math.round(newCoins - curCoins)
     if (!pizzaDelta && !coinDelta) { o.remove(); return }
     const ok = await applyAdminEdit(profile, pizzaDelta, coinDelta)
     o.remove()
@@ -2138,21 +2157,16 @@ function openAdminAdjustPopup(profile) {
   })
 }
 
-// Rides the same bump_pizzas trigger a normal completed session uses (see
-// schema.sql) by inserting an "Admin Edit" session row for the target user,
-// rather than writing profiles.pizzas directly - keeps a single source of
-// truth for how that column changes, and gives the user a visible log entry.
 async function applyAdminEdit(profile, pizzaDelta, coinDelta) {
-  const inserted = await insertSessionRow({
-    user_id: profile.id,
-    completed_at: new Date().toISOString(),
-    minutes: 0,
-    pizzas: pizzaDelta,
-    task: 'Admin Edit',
-  })
-  if (!inserted) return false
-
+  if (pizzaDelta) {
+    const ok = await insertSessionRow({ user_id: profile.id, completed_at: new Date().toISOString(), minutes: 0, pizzas: pizzaDelta, task: 'Admin Edit', icon: '🛠️' })
+    if (!ok) return false
+  }
   if (coinDelta) {
+    // pizzas:0 so the bump_pizzas trigger is a no-op; the coins column carries
+    // the change so the user's log shows a coin, not a pizza.
+    const ok = await insertSessionRow({ user_id: profile.id, completed_at: new Date().toISOString(), minutes: 0, pizzas: 0, coins: coinDelta, task: 'Admin Edit', icon: '🪙' })
+    if (!ok) return false
     const nextAdjustment = (profile.coin_adjustment || 0) + coinDelta
     const { error } = await supabase.from('profiles').update({ coin_adjustment: nextAdjustment }).eq('id', profile.id)
     if (error) { toast(error.message); return false }
@@ -2160,11 +2174,19 @@ async function applyAdminEdit(profile, pizzaDelta, coinDelta) {
   return true
 }
 
-// Falls back to the pre-migration column set if `icon` doesn't exist yet,
-// same resilience as fetchLog's select fallback.
 async function insertSessionRow(row) {
-  let { error } = await supabase.from('sessions').insert({ ...row, icon: '🛠️' })
-  if (error) ({ error } = await supabase.from('sessions').insert(row))
+  let { error } = await supabase.from('sessions').insert(row)
+  if (error && 'coins' in row) {
+    const { coins, ...noCoins } = row
+    ;({ error } = await supabase.from('sessions').insert(noCoins))
+    if (error && 'icon' in noCoins) {
+      const { icon, ...base } = noCoins
+      ;({ error } = await supabase.from('sessions').insert(base))
+    }
+  } else if (error && 'icon' in row) {
+    const { icon, ...base } = row
+    ;({ error } = await supabase.from('sessions').insert(base))
+  }
   if (error) { toast(error.message); return false }
   return true
 }
