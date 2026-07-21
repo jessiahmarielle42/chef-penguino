@@ -297,22 +297,28 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .shop-banner .txt .s { font-size:0.75rem; color: var(--muted); margin-top:0.1875rem; }
 .shop-banner-info { position: absolute; top:0.75rem; right:0.75rem; }
 
-/* sort control row under the shop banner */
-.shop-sort-row { display: flex; justify-content: flex-end; margin-top:1.25rem; }
+/* sort + type control row under the shop banner */
+.shop-sort-row { display: flex; justify-content: flex-end; gap:0.5rem; margin-top:1.25rem; }
 .sort-btn {
   display: inline-flex; align-items: center; gap:0.375rem; cursor: pointer;
   background: var(--card); border: 1px solid var(--line); border-radius:0.75rem;
   padding:0.5rem 0.75rem; font-family: var(--font-body); font-weight: 700; font-size:0.8125rem; color: var(--cream);
 }
 .sort-btn b { color: var(--fire); }
-.sort-btn .chev { font-size:0.625rem; color: var(--muted); }
+.sort-btn .chev { font-size:0.625rem; color: var(--muted); line-height: 1; display: inline-flex; align-items: center; }
+/* '⌄' sits high in its own glyph box in most fonts (unlike '▼'); nudge it
+   down so it optically centers with the button's text baseline. */
+.sort-btn .chev-caron { font-size:1.0625rem; font-weight: 800; position: relative; top:0.125rem; }
 .sort-options { display: flex; flex-direction: column; gap:0.5rem; }
-.sort-option {
-  width: 100%; cursor: pointer; text-align: left;
+/* Scoped under .popup: the generic ".popup button" rule (gold gradient fill)
+   otherwise outranks a bare ".sort-option" by specificity, so every
+   unselected option rendered gold-filled instead of only the active one. */
+.popup .sort-option {
+  width: 100%; cursor: pointer; text-align: left; box-shadow: none;
   background: var(--card-2); border: 1px solid var(--line); border-radius:0.875rem;
   padding:0.875rem 1rem; font-family: var(--font-display); font-weight: 800; font-size:0.9375rem; color: var(--cream);
 }
-.sort-option.active { border-color: rgba(251,122,46,0.5); background: linear-gradient(160deg, rgba(251,122,46,0.14), var(--card-2)); color: var(--fire); }
+.popup .sort-option.active { border-color: rgba(251,122,46,0.5); background: linear-gradient(160deg, rgba(251,122,46,0.14), var(--card-2)); color: var(--fire); }
 .shop-empty { text-align: center; color: var(--muted); font-size:0.875rem; padding:2rem 1rem; }
 
 .anim-card {
@@ -469,6 +475,30 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   background: radial-gradient(circle at 32% 28%, #FFE9AE, var(--gold) 55%, var(--gold-deep));
   box-shadow: inset 0 1px 1px rgba(255,255,255,0.6), 0 1px 2px rgba(0,0,0,0.3);
 }
+
+/* ---------- admin: emote type tags ---------- */
+.adm-tags { display: flex; flex-wrap: wrap; gap:0.5rem; margin-top:0.75rem; }
+.adm-tag-chip {
+  display: inline-flex; align-items: center; gap:0.375rem;
+  background: var(--card); border: 1px solid var(--line); border-radius:62.4375rem; padding:0.375rem 0.375rem 0.375rem 0.75rem;
+}
+.adm-tag-name { background: none; border: none; color: var(--cream); font-weight: 700; font-size:0.8125rem; cursor: pointer; padding: 0; width: auto; }
+.adm-tag-del {
+  width:1.25rem; height:1.25rem; border-radius: 50%; flex: none;
+  background: var(--card-2); border: none; color: var(--muted); font-size:0.625rem; cursor: pointer;
+  display: grid; place-items: center; padding: 0;
+}
+.adm-emote-row { display: flex; align-items: center; gap:0.75rem; padding:0.75rem 0.9375rem; cursor: pointer; }
+.adm-emote-row + .adm-emote-row { border-top: 1px solid var(--line); }
+.adm-emote-info { min-width: 0; flex: 1; }
+.adm-emote-name { font-weight: 800; color: var(--cream); font-size:0.9375rem; }
+.adm-emote-sub { font-size:0.75rem; color: var(--muted); margin-top:0.125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adm-emote-right { flex: none; display: flex; align-items: center; gap:0.5rem; }
+.adm-emote-type {
+  font-size:0.75rem; font-weight: 800; color: var(--fire); background: rgba(251,122,46,0.14);
+  border: 1px solid rgba(251,122,46,0.3); border-radius:62.4375rem; padding:0.25rem 0.625rem; white-space: nowrap;
+}
+.adm-emote-type.none { color: var(--muted); background: var(--card-2); border-color: var(--line); }
 
 /* ---------- lore ---------- */
 .lore-list { display: flex; flex-direction: column; gap:0.875rem; margin-top:0.875rem; }
