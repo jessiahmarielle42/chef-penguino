@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.5.1'
+const APP_VERSION = 'v2.5.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -314,6 +314,7 @@ const EMOTES = [
   { id: 'bang-bang', name: 'Bang Bang!', desc: 'Chef fends off Pizza snatchers.', clip: 'bang-bang.mp4' },
   { id: 'spilt-wine', name: 'Crying over spilt wine', desc: 'Chef pours a bottle of wine... on the ground?', clip: 'spilt-wine.mp4' },
   { id: 'say-grace', name: "Let's Say Grace", desc: 'Chef prays over his meal', clip: 'say-grace.mp4' },
+  { id: 'whack-a-meelo', name: 'Whack-a-Meelo', desc: 'An excellent stress-reliever', clip: 'whack-a-meelo.mp4' },
 ]
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
 
