@@ -1206,6 +1206,9 @@ img.avatar-circle {
   color: #fff;
   text-align: center;
   padding:1.5rem;
+  width: 100%;
+  max-width:21rem;
+  box-sizing: border-box;
   animation: content-pop-in 260ms cubic-bezier(.34, 1.56, .64, 1);
 }
 
