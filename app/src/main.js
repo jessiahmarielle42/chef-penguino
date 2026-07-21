@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.3.2'
+const APP_VERSION = 'v2.3.3'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -839,7 +839,8 @@ function openStashInfo() {
 function openProfilePopup() {
   const signed = isSignedIn()
   const editOrGuest = signed
-    ? `<button class="btn-edit-profile" type="button" data-action="edit-profile">${PENCIL_SVG}<span style="margin-left:8px">Edit Profile</span></button>`
+    ? `<button class="btn-edit-profile" type="button" data-action="edit-profile">${PENCIL_SVG}<span style="margin-left:8px">Edit Profile</span></button>
+       <button class="btn-danger" type="button" data-action="sign-out" style="margin-top:0.625rem">Sign Out</button>`
     : `<p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 16px">Sign in to save your progress and customise your profile.</p>${googleBtn()}`
 
   const o = overlay(`
@@ -854,6 +855,10 @@ function openProfilePopup() {
   o.querySelector('[data-action="edit-profile"]')?.addEventListener('click', () => {
     o.remove()
     renderSettings(true)
+  })
+  o.querySelector('[data-action="sign-out"]')?.addEventListener('click', () => {
+    o.remove()
+    signOut()
   })
 }
 
@@ -1027,7 +1032,7 @@ function confirmGiftCoin(friend) {
       <button type="button" data-action="yes">Yes, gift 1 coin</button>
       <button type="button" class="btn-secondary" data-action="no">Cancel</button>
     </div>
-  `, { popupClass: 'popup-wide' })
+  `)
   o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
     o.remove()
@@ -1125,7 +1130,7 @@ function showCoinGiftReceivedPopup(gift) {
   const o = overlay(`
     <img class="popup-profile-avatar" src="${gift.sender?.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
     <h3>${escapeHtml(gift.sender?.display_name || 'A friend')} gifted you a Penguino Coin! 🎁</h3>
-    ${coinImg('lg')}
+    <div class="gift-coin-wrap">${coinImg('lg')}</div>
     <button type="button" data-action="ok">Got it!</button>
   `, { popupClass: 'popup-profile', dismissable: false })
   o.querySelector('[data-action="ok"]').addEventListener('click', async () => {
