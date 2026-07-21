@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.3.4'
+const APP_VERSION = 'v2.3.5'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -698,11 +698,10 @@ function renderShop() {
   const cards = shopList.length ? shopList.map(e => {
     const owned = isOwned(e.id)
     const equipped = equippedEmote() === e.id
-    const label = e.free ? 'Free' : 'Owned'
 
     let badge
     if (equipped) badge = `<button class="badge badge-equip equipped" type="button" data-equip="${e.id}">✓ Equipped</button>`
-    else if (owned) badge = `<button class="badge badge-equip" type="button" data-equip="${e.id}">${label}</button>`
+    else if (owned) badge = `<button class="badge badge-equip" type="button" data-equip="${e.id}">Equip</button>`
     else badge = '<span class="badge">Locked</span>'
     const lock = (!owned) ? '<div class="lock">🔒</div>' : ''
 
@@ -783,6 +782,7 @@ function confirmBuy(id) {
     o.remove()
     await buyEmote(id)
     equipEmote(id)
+    shopSort = 'owned'
     renderShop()
     toast(`Unlocked! ${coinImg('toast-coin')} −1`)
   })
@@ -884,7 +884,7 @@ async function renderFriends() {
   const content = `
     <div class="friend-swipe-hint" style="margin-top:6px">
       <span class="info-badge" aria-hidden="true">i</span>
-      <p>Tap a friend to view their Pizzeria. Tap and hold a friend to see more actions.</p>
+      <p>Tap a friend to view their Pizzeria. Tap the 3 dots to view more friend actions.</p>
     </div>
     <div class="section-h" style="margin-top:1.75rem"><h2>Leaderboard</h2></div>
     <div id="friends-list"><p class="log-empty">Loading&hellip;</p></div>
@@ -945,46 +945,26 @@ async function loadFriendsList() {
         <img src="${f.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
         <div><div class="fn">${name}</div><div class="fp">Code ${escapeHtml(f.friend_code || '')}</div></div>
         <div class="score">🍕 ${formatScore(f.pizzas)}</div>
+        <button type="button" class="frow-more" data-more="${f.id}" aria-label="More actions">⋮</button>
       </div>
     `
   }).join('')
 
   const friendsById = Object.fromEntries(friends.map(f => [f.id, f]))
-  // Tap = visit Pizzeria (fast path); press-and-hold = the full action menu.
+  // Tap the row = visit Pizzeria; tap the 3 dots = the full action menu.
   listEl.querySelectorAll('.frow[data-friend]').forEach(row => {
     const friend = friendsById[row.dataset.friend]
     wireFriendRow(row, friend, pendingNootTargets)
   })
 }
 
-// A single friend row: quick tap opens their Pizzeria, a ~450ms press-and-hold
-// opens the action menu. A drag beyond a small threshold is treated as a scroll
-// and cancels both, so the list still scrolls normally.
 function wireFriendRow(row, friend, pendingNootTargets) {
-  let timer = null, startX = 0, startY = 0, longFired = false, active = false
-  const clear = () => { if (timer) { clearTimeout(timer); timer = null } }
-  row.addEventListener('pointerdown', (e) => {
-    active = true; longFired = false
-    startX = e.clientX; startY = e.clientY
-    clear()
-    timer = setTimeout(() => {
-      longFired = true
-      openFriendActions(friend, pendingNootTargets.has(friend.id))
-    }, 450)
+  row.addEventListener('click', () => renderFriendHome(friend))
+  const moreBtn = row.querySelector('.frow-more')
+  moreBtn?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    openFriendActions(friend, pendingNootTargets.has(friend.id))
   })
-  row.addEventListener('pointermove', (e) => {
-    if (!active) return
-    if (Math.abs(e.clientX - startX) > 10 || Math.abs(e.clientY - startY) > 10) { clear(); active = false }
-  })
-  row.addEventListener('pointerup', () => {
-    if (!active) return
-    active = false
-    clear()
-    if (!longFired) renderFriendHome(friend)
-  })
-  row.addEventListener('pointercancel', () => { active = false; clear() })
-  // Suppress the iOS long-press callout / context menu on the row.
-  row.addEventListener('contextmenu', (e) => e.preventDefault())
 }
 
 // Press-and-hold action menu for a friend: every friend action lives here.
@@ -1162,7 +1142,7 @@ function renderFriendHome(friend) {
   const heroSrc = pizzaImagePath(stash)
 
   const content = `
-    <div class="viewing-banner">Viewing: ${escapeHtml(friend.display_name)}'s Pizzeria</div>
+    <div class="viewing-banner" id="viewing-banner" role="button" tabindex="0">Viewing: ${escapeHtml(friend.display_name)}'s Pizzeria</div>
     <div class="hero-card" id="hero-card" role="button" tabindex="0">
       <img class="hero-still" src="${heroSrc}" alt="" />
       <div class="glow"></div>
@@ -1192,6 +1172,10 @@ function renderFriendHome(friend) {
     app.querySelector('#hero-card')?.addEventListener('click', () => {
       const img = app.querySelector('#hero-card .hero-still')
       if (img && img.tagName === 'IMG') playEmoteInto(img, friend.equipped_emote || 'waving', heroSrc)
+    })
+    app.querySelector('#viewing-banner')?.addEventListener('click', () => renderFriends())
+    app.querySelector('#viewing-banner')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); renderFriends() }
     })
   }, { hideStatusBar: true })
 }
