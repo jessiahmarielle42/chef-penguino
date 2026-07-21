@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.3.0'
+const APP_VERSION = 'v2.3.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -19,6 +19,7 @@ async function signInWithGoogle() {
 }
 
 async function signOut() {
+  unsubscribeFromSocial()
   await supabase.auth.signOut()
   currentUser = null
   currentProfile = null
@@ -57,6 +58,29 @@ async function handleSignedIn(user) {
   await migrateLocalDataIfNeeded()
   await flushPendingSessions()
   await refreshProfile()
+  subscribeToSocial()
+}
+
+// Live push (Supabase Realtime) for incoming Noots and coin gifts, so they
+// appear near-instantly instead of only on app reload. On (re)subscribe we
+// also run a catch-up check, which covers anything inserted while the socket
+// was down (backgrounded, network blip). Requires the noots + coin_gifts
+// tables to be in the supabase_realtime publication (see migration_realtime.sql).
+let socialChannel = null
+function subscribeToSocial() {
+  if (!currentUser) return
+  unsubscribeFromSocial()
+  const uid = currentUser.id
+  socialChannel = supabase
+    .channel(`social-${uid}`)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'noots', filter: `recipient_id=eq.${uid}` }, () => checkPendingNoots())
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'coin_gifts', filter: `recipient_id=eq.${uid}` }, () => checkPendingCoinGifts())
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') { checkPendingNoots(); checkPendingCoinGifts() }
+    })
+}
+function unsubscribeFromSocial() {
+  if (socialChannel) { supabase.removeChannel(socialChannel); socialChannel = null }
 }
 
 // Sessions that failed to reach Supabase (offline, dropped connection, etc.)
@@ -239,6 +263,7 @@ async function boot() {
         checkPendingCoinGifts()
       })
     } else if (event === 'SIGNED_OUT') {
+      unsubscribeFromSocial()
       currentUser = null
       currentProfile = null
     }
@@ -964,9 +989,9 @@ function openFriendActions(friend, alreadyNooted) {
     <img class="popup-profile-avatar" src="${friend.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
     <div class="popup-profile-name">${escapeHtml(friend.display_name)}</div>
     <div class="home-btn-col">
-      <button type="button" data-action="gift">🎁 Gift Coins</button>
       <button type="button" class="btn-secondary" data-action="visit">🏠 Visit Pizzeria</button>
       <button type="button" class="btn-secondary" data-action="noot">🐧 Noot</button>
+      <button type="button" data-action="gift">🎁 Gift Coins</button>
       <button type="button" class="btn-danger" data-action="remove">🗑 Remove</button>
     </div>
   `, { popupClass: 'popup-profile' })
@@ -1041,8 +1066,13 @@ function playNootSound() {
   try { nootSound.currentTime = 0; nootSound.play().catch(() => {}) } catch {}
 }
 
+// Guards so a Realtime event + the boot/subscribe catch-up check can't stack
+// two copies of the same popup on top of each other.
+let nootPopupOpen = false
+let coinGiftPopupOpen = false
+
 async function checkPendingNoots() {
-  if (!currentUser) return
+  if (!currentUser || nootPopupOpen) return
   const { data: noot } = await supabase
     .from('noots')
     .select('id, created_at, sender:sender_id(display_name, avatar_url)')
@@ -1051,11 +1081,12 @@ async function checkPendingNoots() {
     .order('created_at', { ascending: true })
     .limit(1)
     .maybeSingle()
-  if (!noot) return
+  if (!noot || nootPopupOpen) return
   showNootReceivedPopup(noot)
 }
 
 function showNootReceivedPopup(noot) {
+  nootPopupOpen = true
   playNootSound()
   const when = new Date(noot.created_at).toLocaleString(undefined, {
     day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit',
@@ -1069,12 +1100,13 @@ function showNootReceivedPopup(noot) {
   o.querySelector('[data-action="ok"]').addEventListener('click', async () => {
     await supabase.rpc('acknowledge_noot', { noot_id: noot.id })
     o.remove()
+    nootPopupOpen = false
     checkPendingNoots()
   })
 }
 
 async function checkPendingCoinGifts() {
-  if (!currentUser) return
+  if (!currentUser || coinGiftPopupOpen) return
   const { data: gift } = await supabase
     .from('coin_gifts')
     .select('id, created_at, sender:sender_id(display_name, avatar_url)')
@@ -1083,11 +1115,12 @@ async function checkPendingCoinGifts() {
     .order('created_at', { ascending: true })
     .limit(1)
     .maybeSingle()
-  if (!gift) return
+  if (!gift || coinGiftPopupOpen) return
   showCoinGiftReceivedPopup(gift)
 }
 
 function showCoinGiftReceivedPopup(gift) {
+  coinGiftPopupOpen = true
   playNootSound()
   const o = overlay(`
     <img class="popup-profile-avatar" src="${gift.sender?.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
@@ -1098,6 +1131,7 @@ function showCoinGiftReceivedPopup(gift) {
   o.querySelector('[data-action="ok"]').addEventListener('click', async () => {
     await supabase.rpc('acknowledge_coin_gift', { gift_id: gift.id })
     o.remove()
+    coinGiftPopupOpen = false
     await refreshProfile()
     const chip = app.querySelector('.coin-chip span:last-child')
     if (chip) chip.textContent = coinBalance()
@@ -1450,8 +1484,8 @@ function renderSettings(highlightProfile) {
       <p class="glab">Appearance</p>
       <div class="glist">
         <div class="grow">
-          <div><div class="gt">Light mode</div></div>
-          <div class="right"><div class="switch ${state.lightMode ? '' : 'off'}" role="button" tabindex="0" data-action="toggle-theme"></div></div>
+          <div><div class="gt">Dark mode</div></div>
+          <div class="right"><div class="switch ${state.lightMode ? 'off' : ''}" role="button" tabindex="0" data-action="toggle-theme"></div></div>
         </div>
       </div>
     </div>
@@ -1486,7 +1520,7 @@ function renderSettings(highlightProfile) {
       state.autoDarken = !state.autoDarken; save(); e.currentTarget.classList.toggle('off', !state.autoDarken)
     })
     app.querySelector('[data-action="toggle-theme"]').addEventListener('click', (e) => {
-      state.lightMode = !state.lightMode; save(); applyTheme(); e.currentTarget.classList.toggle('off', !state.lightMode)
+      state.lightMode = !state.lightMode; save(); applyTheme(); e.currentTarget.classList.toggle('off', state.lightMode)
     })
     app.querySelector('[data-action="google"]')?.addEventListener('click', signInWithGoogle)
     app.querySelector('[data-action="sign-out"]')?.addEventListener('click', signOut)

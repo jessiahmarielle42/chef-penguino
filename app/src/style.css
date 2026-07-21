@@ -34,6 +34,8 @@
   --gold-ink: #F6C64B;
   --scrim-text: #F7EDDF;
   --banner-wash: rgba(44,33,26,0.4);
+  --badge-bg: #F7EDDF;
+  --badge-fg: #2a1d13;
 }
 :root[data-theme="light"] {
   --card: #FFFFFF;
@@ -56,6 +58,8 @@
   --fab-ring: #FFFBF4;
   --gold-ink: #6B4400;
   --banner-wash: rgba(255,255,255,0.55);
+  --badge-bg: #2a1d13;
+  --badge-fg: #F4ECE0;
 }
 :root[data-theme="dark"] {
   --card: #2c211a;
@@ -78,6 +82,8 @@
   --fab-ring: #241a13;
   --gold-ink: #F6C64B;
   --banner-wash: rgba(44,33,26,0.4);
+  --badge-bg: #F7EDDF;
+  --badge-fg: #2a1d13;
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
@@ -101,6 +107,8 @@
     --fab-ring: #FFFBF4;
     --gold-ink: #6B4400;
     --banner-wash: rgba(255,255,255,0.55);
+    --badge-bg: #2a1d13;
+    --badge-fg: #F4ECE0;
   }
 }
 
@@ -201,7 +209,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   width:0.9375rem; height:0.9375rem; border-radius: 50%;
   display: inline-grid; place-items: center;
   font-family: var(--font-display); font-size:0.5625rem; font-weight: 800; font-style: italic;
-  color: var(--muted); background: var(--card-2); border: 1px solid var(--line);
+  color: var(--badge-fg); background: var(--badge-bg); border: 1px solid var(--line);
   flex: none;
 }
 .coin-chip .info-badge { color: var(--gold-ink); border-color: rgba(246,198,75,0.4); background: rgba(246,198,75,0.16); }
@@ -222,8 +230,11 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 
 /* ---------- home ---------- */
 .hero-card {
+  /* Square (1/1) to match the actual assets - the display-case stills and
+     emote videos are all square (1024x1024 / 960x960), same as the shop
+     card previews. A shorter box here cropped the top/bottom of the scene. */
   position: relative; border-radius:1.5rem; overflow: hidden;
-  aspect-ratio: 16 / 11; box-shadow: var(--shadow);
+  aspect-ratio: 1 / 1; box-shadow: var(--shadow);
   border: 1px solid var(--line); cursor: pointer;
 }
 .hero-card img, .hero-card video { width: 100%; height: 100%; object-fit: cover; display: block; }
