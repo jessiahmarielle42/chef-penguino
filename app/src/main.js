@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.6.4'
+const APP_VERSION = 'v2.7.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -319,6 +319,31 @@ const EMOTES = [
   { id: 'my-favourite', name: 'My Favourite!', desc: 'Chef hugs Meelo the monkey plush toy', clip: 'my-favourite.mp4' },
 ]
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
+
+// Admin-managed emote metadata: a single Type tag plus optional Title/
+// Description overrides per emote, loaded from Supabase (see
+// migration_emote_tags.sql). Empty until loadEmoteData() runs; the accessors
+// below always fall back to the hardcoded EMOTES defaults, so the app works
+// unchanged before the migration is run or if the fetch fails.
+let emoteTags = []      // [{ id, name }] - the master list of Type tags
+let emoteMeta = {}      // emote_id -> { tag_id, title, description }
+let emoteDataLoaded = false
+
+async function loadEmoteData(force = false) {
+  if (emoteDataLoaded && !force) return
+  const [tagsRes, metaRes] = await Promise.all([
+    supabase.from('emote_tags').select('id, name').order('created_at', { ascending: true }),
+    supabase.from('emote_meta').select('emote_id, tag_id, title, description'),
+  ])
+  if (!tagsRes.error) emoteTags = tagsRes.data || []
+  if (!metaRes.error) emoteMeta = Object.fromEntries((metaRes.data || []).map(m => [m.emote_id, m]))
+  emoteDataLoaded = true
+}
+
+function emoteName(e) { return (emoteMeta[e.id]?.title) || e.name }
+function emoteDesc(e) { return (emoteMeta[e.id]?.description) || e.desc }
+function emoteTagId(e) { return emoteMeta[e.id]?.tag_id || null }
+function tagNameById(id) { return emoteTags.find(t => t.id === id)?.name || null }
 
 const LORE_VIDEOS = [
   { title: 'Who Is Chef Penguino', clip: 'lore/who-is-chef-penguino.mp4', thumb: 'lore/who-is-chef-penguino.jpg' },
@@ -664,24 +689,30 @@ function pizzaImagePath(count) {
 // Persists across tab switches within a session. 'newest' shows the most
 // recently-added emotes first (a natural default for a shop).
 let shopSort = 'newest'
+let shopType = 'all'   // 'all' or an emote_tags id
 const SORT_LABELS = { owned: 'Owned', az: 'A-Z', newest: 'Newest' }
 
 function sortedShopEmotes() {
+  let list
   if (shopSort === 'az') {
-    return [...EMOTES].sort((a, b) => a.name.localeCompare(b.name))
-  }
-  if (shopSort === 'owned') {
+    // Sort by the effective (possibly admin-overridden) name.
+    list = [...EMOTES].sort((a, b) => emoteName(a).localeCompare(emoteName(b)))
+  } else if (shopSort === 'owned') {
     // Only owned emotes, latest bought -> oldest. owned_emotes is stored in
     // purchase order (appended on buy), so reversing gives newest-first. The
     // free 'waving' isn't in that array but is always owned, so it goes last
     // as the oldest-owned default.
-    const owned = [...ownedEmotes()].reverse().map(id => EMOTE_BY_ID[id]).filter(Boolean)
-    if (isOwned('waving')) owned.push(EMOTE_BY_ID['waving'])
-    return owned
+    list = [...ownedEmotes()].reverse().map(id => EMOTE_BY_ID[id]).filter(Boolean)
+    if (isOwned('waving')) list.push(EMOTE_BY_ID['waving'])
+  } else {
+    // 'newest': EMOTES is ordered oldest-added -> newest, so reverse it.
+    list = [...EMOTES].reverse()
   }
-  // 'newest': EMOTES is ordered oldest-added -> newest, so reverse it.
-  return [...EMOTES].reverse()
+  if (shopType !== 'all') list = list.filter(e => emoteTagId(e) === shopType)
+  return list
 }
+
+function typeLabel() { return shopType === 'all' ? 'All' : (tagNameById(shopType) || 'All') }
 
 function openSortMenu() {
   const opts = [
@@ -702,7 +733,23 @@ function openSortMenu() {
   }))
 }
 
-function renderShop(scrollTop) {
+function openTypeMenu() {
+  const opts = [{ id: 'all', label: 'All' }, ...emoteTags.map(t => ({ id: t.id, label: t.name }))]
+  const o = overlay(`
+    <h3>Filter by type</h3>
+    <div class="sort-options">
+      ${opts.map(op => `<button type="button" class="sort-option ${shopType === op.id ? 'active' : ''}" data-type="${op.id}">${escapeHtml(op.label)}</button>`).join('')}
+      ${emoteTags.length ? '' : '<p class="editpic-empty">No types yet.</p>'}
+    </div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelectorAll('[data-type]').forEach(b => b.addEventListener('click', () => {
+    shopType = b.dataset.type
+    o.remove()
+    renderShop()
+  }))
+}
+
+async function renderShop(scrollTop) {
   if (!isSignedIn()) {
     const content = `
       <div class="friends-gate" style="display:block">
@@ -717,6 +764,10 @@ function renderShop(scrollTop) {
     })
     return
   }
+
+  // Pull the admin-managed Type tags + title/description overrides so cards,
+  // the Type filter, and the A-Z sort all reflect them. Falls back silently.
+  await loadEmoteData()
 
   const thumb = `${BASE}assets/display-case/shop-preview.jpg`
   const shopList = sortedShopEmotes()
@@ -735,11 +786,11 @@ function renderShop(scrollTop) {
     return `
       <div class="anim-card">
         <div class="anim-top" data-emote="${e.id}">
-          <img class="anim-still" src="${thumb}" alt="${escapeHtml(e.name)}" />
+          <img class="anim-still" src="${thumb}" alt="${escapeHtml(emoteName(e))}" />
           ${badge}${lock}
         </div>
         <div class="anim-body">
-          <div class="anim-info"><div class="nm">${escapeHtml(e.name)}</div><div class="ds">${escapeHtml(e.desc)}</div></div>
+          <div class="anim-info"><div class="nm">${escapeHtml(emoteName(e))}</div><div class="ds">${escapeHtml(emoteDesc(e))}</div></div>
           <div class="act">
             ${action}
             <button class="btn btn-preview" type="button" data-preview="${e.id}">▶ Preview</button>
@@ -760,6 +811,7 @@ function renderShop(scrollTop) {
     </div>
     <div class="shop-sort-row">
       <button class="sort-btn" type="button" data-action="sort">Sort by: <b>${SORT_LABELS[shopSort]}</b> <span class="chev">▼</span></button>
+      <button class="sort-btn" type="button" data-action="type">Type: <b>${escapeHtml(typeLabel())}</b> <span class="chev chev-caron">⌄</span></button>
     </div>
     ${cards}
     <p class="code-note" style="text-align:center">More emotes coming — earn a coin every 12 pizzas.</p>
@@ -770,6 +822,7 @@ function renderShop(scrollTop) {
 
     app.querySelector('[data-action="shop-coin-info"]')?.addEventListener('click', openCoinInfo)
     app.querySelector('[data-action="sort"]')?.addEventListener('click', openSortMenu)
+    app.querySelector('[data-action="type"]')?.addEventListener('click', openTypeMenu)
 
     app.querySelectorAll('[data-preview]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -779,7 +832,7 @@ function renderShop(scrollTop) {
         if (img && img.tagName === 'IMG') {
           top.classList.remove('previewing'); void top.offsetWidth; top.classList.add('previewing')
           playEmoteInto(img, id, thumb)
-          toast(`▶ Previewing ${EMOTE_BY_ID[id].name}…`)
+          toast(`▶ Previewing ${emoteName(EMOTE_BY_ID[id])}…`)
         }
       })
     })
@@ -801,7 +854,7 @@ function confirmBuy(id) {
   const e = EMOTE_BY_ID[id]
   if (coinBalance() < 1) { toast('Not enough coins — go focus! 🍅'); return }
   const o = overlay(`
-    <h3>Unlock ${escapeHtml(e.name)}?</h3>
+    <h3>Unlock ${escapeHtml(emoteName(e))}?</h3>
     <p>This will spend 1 Penguino Coin.</p>
     <div class="home-btn-col">
       <button type="button" data-action="yes">Yes, unlock it</button>
@@ -1356,13 +1409,18 @@ function renderDateGroup(group, editable) {
 // works without any migration. Detect + parse that here.
 const COIN_TASK_RE = / \(([+-]?\d+(?:\.\d+)?) coins?\)$/
 
+// True for any admin-authored row (pizza or coin adjustment), including ones
+// stored before this labeling existed (task === plain 'Admin Edit').
+function isAdminEditEntry(entry) { return /^Admin Edit\b/.test(entry.task || '') }
+
 function logRowMetric(entry) {
   const m = COIN_TASK_RE.exec(entry.task || '')
   if (m) return `${coinImg('log-coin')} ${m[1]}`
   // Older coin-adjustment rows carried the coin marker only in the icon, with
-  // no stored amount - still show a coin, never a misleading "pizza 0".
+  // no stored amount - still show a coin, never a misleading "pizza 0". The
+  // exact delta wasn't recorded for these, so it can't be shown retroactively.
   if (entry.icon === '🪙') return `${coinImg('log-coin')}`
-  if (entry.task === 'Admin Edit') return `🍕 ${signedScore(entry.pizzas)}`
+  if (isAdminEditEntry(entry)) return `🍕 ${signedScore(entry.pizzas)}`
   return `🍕 ${formatScore(entry.pizzas)}`
 }
 
@@ -1370,10 +1428,17 @@ function renderLogRow(entry, editable) {
   const time = new Date(entry.completedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
   // Strip the "(+1 coin)" storage suffix from the title - the amount shows on the right.
   const task = escapeHtml((entry.task || '').replace(COIN_TASK_RE, '')) || 'Focus session'
-  const icon = stableIconFor(entry)
-  if (editable && entry.id) logEntriesById.set(entry.id, { entry, icon })
+  const isAdminEdit = isAdminEditEntry(entry)
+  // Always the tools icon for an admin-edit row, regardless of what icon (if
+  // any) got stored for it - guarantees a consistent, unambiguous glyph even
+  // for rows written before this rule existed.
+  const icon = isAdminEdit ? '🛠️' : stableIconFor(entry)
+  // Admin-edit rows are an audit trail, not a session the user created - they
+  // can't be renamed, re-iconed, or deleted.
+  const canEdit = editable && entry.id && !isAdminEdit
+  if (canEdit) logEntriesById.set(entry.id, { entry, icon })
 
-  const actions = editable && entry.id ? `
+  const actions = canEdit ? `
     <div class="log-row-actions2">
       <button class="log-action2 edit" type="button" data-action="edit-log" aria-label="Edit session">${PENCIL_SVG}<span>Edit</span></button>
       <button class="log-action2 delete" type="button" data-action="delete-log" aria-label="Delete session">${TRASH_SVG}<span>Delete</span></button>
@@ -1381,7 +1446,7 @@ function renderLogRow(entry, editable) {
   ` : ''
 
   return `
-    <div class="log-row-wrap" ${editable && entry.id ? `data-log-id="${entry.id}"` : ''}>
+    <div class="log-row-wrap" ${canEdit ? `data-log-id="${entry.id}"` : ''}>
       ${actions}
       <div class="log-row">
         <div class="log-row-main">
@@ -2006,6 +2071,17 @@ function renderAdminDashboard() {
       </div>
       <div id="admin-search-results" style="margin-top:0.875rem"></div>
     </div>
+
+    <div class="group">
+      <p class="glab">Emote Types</p>
+      <div class="adm-tags" id="adm-tags"><p class="editpic-empty">Loading&hellip;</p></div>
+      <div class="adm-search-card" style="margin-top:0.75rem">
+        <input id="adm-new-tag" type="text" placeholder="New type name" maxlength="20" />
+        <button type="button" data-action="add-tag">Add</button>
+      </div>
+      <p class="glab" style="margin-top:1.5rem">Tag Emotes</p>
+      <div class="glist" id="adm-emote-list"></div>
+    </div>
     <div style="height:8px"></div>
   `
 
@@ -2024,6 +2100,145 @@ function renderAdminDashboard() {
     app.querySelector('#admin-search-input').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') runAdminSearch()
     })
+
+    loadEmoteData(true).then(renderAdminEmoteTypes)
+    app.querySelector('[data-action="add-tag"]').addEventListener('click', addEmoteTag)
+    app.querySelector('#adm-new-tag').addEventListener('keydown', (e) => { if (e.key === 'Enter') addEmoteTag() })
+  })
+}
+
+// ---------- admin: emote type tags + per-emote overrides ----------
+function renderAdminEmoteTypes() {
+  const tagsEl = app.querySelector('#adm-tags')
+  if (tagsEl) {
+    tagsEl.innerHTML = emoteTags.length
+      ? emoteTags.map(t => `
+          <span class="adm-tag-chip" data-tag-id="${t.id}">
+            <button type="button" class="adm-tag-name" data-action="rename-tag">${escapeHtml(t.name)}</button>
+            <button type="button" class="adm-tag-del" data-action="delete-tag" aria-label="Delete type">✕</button>
+          </span>`).join('')
+      : '<p class="editpic-empty">No types yet. Add one below.</p>'
+    tagsEl.querySelectorAll('[data-action="rename-tag"]').forEach(b => b.addEventListener('click', () => {
+      const chip = b.closest('.adm-tag-chip'); openRenameTagPopup(chip.dataset.tagId, b.textContent)
+    }))
+    tagsEl.querySelectorAll('[data-action="delete-tag"]').forEach(b => b.addEventListener('click', () => {
+      const chip = b.closest('.adm-tag-chip'); confirmDeleteTag(chip.dataset.tagId, chip.querySelector('.adm-tag-name').textContent)
+    }))
+  }
+
+  const listEl = app.querySelector('#adm-emote-list')
+  if (listEl) {
+    listEl.innerHTML = EMOTES.map(e => {
+      const tagId = emoteTagId(e)
+      const typeChip = tagId
+        ? `<span class="adm-emote-type">${escapeHtml(tagNameById(tagId) || '—')}</span>`
+        : `<span class="adm-emote-type none">No type</span>`
+      return `
+        <div class="adm-emote-row" data-emote-id="${e.id}" role="button" tabindex="0">
+          <div class="adm-emote-info"><div class="adm-emote-name">${escapeHtml(emoteName(e))}</div><div class="adm-emote-sub">${escapeHtml(emoteDesc(e))}</div></div>
+          <div class="adm-emote-right">${typeChip}<span class="chevron" aria-hidden="true">›</span></div>
+        </div>`
+    }).join('')
+    listEl.querySelectorAll('[data-emote-id]').forEach(row => {
+      row.addEventListener('click', () => openEmoteEditPopup(EMOTE_BY_ID[row.dataset.emoteId]))
+    })
+  }
+}
+
+async function addEmoteTag() {
+  const input = app.querySelector('#adm-new-tag')
+  const name = input.value.trim().slice(0, 20)
+  if (!name) return
+  const { error } = await supabase.from('emote_tags').insert({ name })
+  if (error) { toast(error.message); return }
+  input.value = ''
+  await loadEmoteData(true)
+  renderAdminEmoteTypes()
+}
+
+function openRenameTagPopup(id, current) {
+  const o = overlay(`
+    <h3>Rename type</h3>
+    <input id="rename-tag-input" class="rename-input" type="text" maxlength="20" value="${escapeHtml(current)}" />
+    <div class="home-btn-col">
+      <button type="button" data-action="save">Save</button>
+      <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+    </div>
+  `)
+  const input = o.querySelector('#rename-tag-input')
+  setTimeout(() => input.focus(), 50)
+  o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="save"]').addEventListener('click', async () => {
+    const name = input.value.trim().slice(0, 20)
+    if (!name) return
+    const { error } = await supabase.from('emote_tags').update({ name }).eq('id', id)
+    if (error) { toast(error.message); return }
+    o.remove()
+    await loadEmoteData(true)
+    renderAdminEmoteTypes()
+  })
+}
+
+function confirmDeleteTag(id, name) {
+  const o = overlay(`
+    <h3>Delete "${escapeHtml(name)}"?</h3>
+    <p>This type will be removed from any emotes using it. The emotes themselves aren't affected.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Yes, delete</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    o.remove()
+    const { error } = await supabase.from('emote_tags').delete().eq('id', id)
+    if (error) { toast(error.message); return }
+    await loadEmoteData(true)
+    renderAdminEmoteTypes()
+  })
+}
+
+function openEmoteEditPopup(emote) {
+  let selectedTag = emoteTagId(emote)   // tag id or null
+  const typeOpts = [{ id: '', label: 'No type' }, ...emoteTags.map(t => ({ id: t.id, label: t.name }))]
+  const o = overlay(`
+    <h3>Edit Emote</h3>
+    <label class="field-label" for="em-title">Title</label>
+    <input id="em-title" class="rename-input" type="text" maxlength="40" value="${escapeHtml(emoteName(emote))}" />
+    <label class="field-label" for="em-desc">Description</label>
+    <input id="em-desc" class="rename-input" type="text" maxlength="80" value="${escapeHtml(emoteDesc(emote))}" />
+    <label class="field-label">Type</label>
+    <div class="sort-options">
+      ${typeOpts.map(op => `<button type="button" class="sort-option ${(selectedTag || '') === op.id ? 'active' : ''}" data-type="${op.id}">${escapeHtml(op.label)}</button>`).join('')}
+    </div>
+    <div class="home-btn-col" style="margin-top:1.25rem">
+      <button type="button" data-action="save">Save</button>
+      <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelectorAll('[data-type]').forEach(b => b.addEventListener('click', () => {
+    selectedTag = b.dataset.type || null
+    o.querySelectorAll('[data-type]').forEach(x => x.classList.toggle('active', x === b))
+  }))
+  o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="save"]').addEventListener('click', async () => {
+    // Store null for a field left equal to the hardcoded default, so defaults
+    // keep flowing through if they're later changed in code.
+    const titleVal = o.querySelector('#em-title').value.trim()
+    const descVal = o.querySelector('#em-desc').value.trim()
+    const row = {
+      emote_id: emote.id,
+      tag_id: selectedTag,
+      title: (titleVal && titleVal !== emote.name) ? titleVal : null,
+      description: (descVal && descVal !== emote.desc) ? descVal : null,
+      updated_at: new Date().toISOString(),
+    }
+    const { error } = await supabase.from('emote_meta').upsert(row)
+    if (error) { toast(error.message); return }
+    o.remove()
+    await loadEmoteData(true)
+    renderAdminEmoteTypes()
+    toast('Saved')
   })
 }
 
