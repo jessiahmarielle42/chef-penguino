@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.3.6'
+const APP_VERSION = 'v2.3.7'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -835,7 +835,7 @@ function openEmoteInfo() {
     <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
     <div class="popup-emoji-xl">💃</div>
     <h3>About Emotes</h3>
-    <p>Emotes are cool animations that lets your Chef Penguino express himself. Get more from the shop!</p>
+    <p>Emotes are cool animations that lets your Chef Penguino express himself.<br>Get more from the shop!</p>
     <button type="button" data-action="ok">Got it</button>
   `)
   o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
@@ -962,7 +962,7 @@ async function loadFriendsList() {
     const rank = i < 3 ? `<div class="medal">${medals[i]}</div>` : `<div class="rank">${i + 1}</div>`
     const name = f.isMe ? `${escapeHtml(f.display_name)} <span class="you-tag">(you)</span>` : escapeHtml(f.display_name)
     return `
-      <div class="frow ${f.isMe ? 'me' : ''}" ${f.isMe ? '' : `data-friend="${f.id}" role="button" tabindex="0"`}>
+      <div class="frow ${f.isMe ? 'me' : ''}" ${f.isMe ? 'role="button" tabindex="0"' : `data-friend="${f.id}" role="button" tabindex="0"`}>
         ${rank}
         <img src="${f.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
         <div><div class="fn">${name}</div><div class="fp">Code ${escapeHtml(f.friend_code || '')}</div></div>
@@ -978,6 +978,9 @@ async function loadFriendsList() {
     const friend = friendsById[row.dataset.friend]
     wireFriendRow(row, friend, pendingNootTargets)
   })
+  // Your own row opens your profile popup instead (same as tapping your avatar/name up top).
+  const meRow = listEl.querySelector('.frow.me')
+  meRow?.addEventListener('click', openProfilePopup)
 }
 
 function wireFriendRow(row, friend, pendingNootTargets) {
