@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.3.3'
+const APP_VERSION = 'v2.3.4'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
