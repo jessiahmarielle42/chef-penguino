@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.6.3'
+const APP_VERSION = 'v2.6.4'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -316,6 +316,7 @@ const EMOTES = [
   { id: 'spilt-wine', name: 'Crying over spilt wine', desc: 'Chef pours a bottle of wine... on the ground?', clip: 'spilt-wine.mp4' },
   { id: 'say-grace', name: "Let's Say Grace", desc: 'Chef prays over his meal', clip: 'say-grace.mp4' },
   { id: 'whack-a-meelo', name: 'Whack-a-Meelo', desc: 'An excellent stress-reliever', clip: 'whack-a-meelo.mp4' },
+  { id: 'my-favourite', name: 'My Favourite!', desc: 'Chef hugs Meelo the monkey plush toy', clip: 'my-favourite.mp4' },
 ]
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
 
@@ -1357,10 +1358,10 @@ const COIN_TASK_RE = / \(([+-]?\d+(?:\.\d+)?) coins?\)$/
 
 function logRowMetric(entry) {
   const m = COIN_TASK_RE.exec(entry.task || '')
-  if (m) return `<i class="adm-coin-dot"></i> ${m[1]}`
+  if (m) return `${coinImg('log-coin')} ${m[1]}`
   // Older coin-adjustment rows carried the coin marker only in the icon, with
   // no stored amount - still show a coin, never a misleading "pizza 0".
-  if (entry.icon === '🪙') return `<i class="adm-coin-dot"></i>`
+  if (entry.icon === '🪙') return `${coinImg('log-coin')}`
   if (entry.task === 'Admin Edit') return `🍕 ${signedScore(entry.pizzas)}`
   return `🍕 ${formatScore(entry.pizzas)}`
 }
@@ -2171,7 +2172,7 @@ async function applyAdminEdit(profile, pizzaDelta, coinDelta) {
     // pizzas:0 so the bump_pizzas trigger is a no-op; the signed amount lives in
     // the task text so the user's log shows a coin (not a pizza), no migration needed.
     const label = `Admin Edit (${signedScore(coinDelta)} ${Math.abs(coinDelta) === 1 ? 'coin' : 'coins'})`
-    const ok = await insertSessionRow({ user_id: profile.id, completed_at: new Date().toISOString(), minutes: 0, pizzas: 0, task: label, icon: '🪙' })
+    const ok = await insertSessionRow({ user_id: profile.id, completed_at: new Date().toISOString(), minutes: 0, pizzas: 0, task: label, icon: '🛠️' })
     if (!ok) return false
     const nextAdjustment = (profile.coin_adjustment || 0) + coinDelta
     const { error } = await supabase.from('profiles').update({ coin_adjustment: nextAdjustment }).eq('id', profile.id)

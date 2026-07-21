@@ -222,6 +222,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 }
 .coin.lg { width:3.875rem; height:3.875rem; filter: drop-shadow(0 6px 14px rgba(246,198,75,0.55)); }
 .coin.xl { width:7.5rem; height:7.5rem; margin:0 auto 1rem; filter: drop-shadow(0 10px 20px rgba(246,198,75,0.6)); }
+.coin.log-coin { width:1rem; height:1rem; vertical-align:-0.15em; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.3)); }
 
 /* bottom padding clears the fire FAB, which pokes ~56px above the tab bar's own box via its
    negative margin + glow — flex layout alone only reserves space up to the bar's normal edge */
