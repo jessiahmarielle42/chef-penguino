@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.3.7'
+const APP_VERSION = 'v2.3.8'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -310,6 +310,13 @@ const EMOTES = [
   { id: 'say-grace', name: "Let's Say Grace", desc: 'Chef prays over his meal', clip: 'say-grace.mp4' },
 ]
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
+
+const LORE_VIDEOS = [
+  { title: 'Who Is Chef Penguino', clip: 'lore/who-is-chef-penguino.mp4' },
+  { title: 'Ghost Orders Pizza', clip: 'lore/ghost-orders-pizza.mp4' },
+  { title: 'Pizza Poisoning', clip: 'lore/pizza-poisoning.mp4' },
+  { title: 'Chef Penguino Goes Crazy', clip: 'lore/chef-penguino-goes-crazy.mp4' },
+]
 
 function ownedEmotes() {
   return (currentProfile ? currentProfile.owned_emotes : state.ownedEmotes) || []
@@ -1507,6 +1514,10 @@ function renderSettings(highlightProfile) {
     <div class="group">
       <p class="glab">About</p>
       <div class="glist">
+        <div class="grow" role="button" tabindex="0" data-action="lore">
+          <div><div class="gt">Lore</div><div class="gs">Click to learn about Chef Penguino lore</div></div>
+          <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
+        </div>
         <div class="grow"><div><div class="gt">Version</div><div class="gs">${APP_VERSION}</div></div></div>
       </div>
     </div>
@@ -1514,6 +1525,7 @@ function renderSettings(highlightProfile) {
   `
 
   mountScreen('settings', content, () => {
+    app.querySelector('[data-action="lore"]')?.addEventListener('click', renderLore)
     app.querySelector('#volume-slider').addEventListener('input', (e) => {
       const v = Number(e.target.value) / 100
       state.volume = v
@@ -1554,6 +1566,79 @@ function renderSettings(highlightProfile) {
       }
     }
   })
+}
+
+// =================================================================
+//  Lore
+// =================================================================
+function renderLore() {
+  const content = `
+    <div class="section-h" style="margin-top:6px"><h2>Lore</h2></div>
+    <div class="lore-list">
+      ${LORE_VIDEOS.map((v, i) => `
+        <div class="lore-card" data-lore="${i}" role="button" tabindex="0">
+          <video class="lore-thumb" src="${BASE}assets/${v.clip}" muted playsinline preload="metadata"></video>
+          <span class="lore-play" aria-hidden="true">▶</span>
+          <div class="lore-title">${escapeHtml(v.title)}</div>
+        </div>
+      `).join('')}
+    </div>
+  `
+
+  mountScreen('settings', content, () => {
+    app.querySelectorAll('[data-lore]').forEach(card => {
+      card.addEventListener('click', () => playLoreVideo(LORE_VIDEOS[Number(card.dataset.lore)]))
+    })
+  })
+}
+
+// Plays a lore video fullscreen with sound, ducking the bg music for the
+// duration. iOS Safari only supports fullscreen via the video element's own
+// webkitEnterFullscreen (the generic Fullscreen API doesn't work there), so
+// both paths are wired; the overlay itself is also a full-viewport fallback
+// in case neither fullscreen API is available.
+function playLoreVideo(entry) {
+  const wasMusicPlaying = !bgMusic.paused
+  bgMusic.pause()
+
+  const wrap = document.createElement('div')
+  wrap.className = 'lore-player'
+  wrap.innerHTML = `
+    <button class="lore-player-close" type="button" aria-label="Close">✕</button>
+    <video class="lore-player-video" src="${BASE}assets/${entry.clip}" playsinline controls></video>
+  `
+  document.body.appendChild(wrap)
+  const video = wrap.querySelector('video')
+
+  let cleaned = false
+  const cleanup = () => {
+    if (cleaned) return
+    cleaned = true
+    document.removeEventListener('fullscreenchange', onFullscreenChange)
+    video.removeEventListener('webkitendfullscreen', onWebkitEnd)
+    video.removeEventListener('ended', onEnded)
+    video.pause()
+    wrap.remove()
+    if (wasMusicPlaying && !state.muted) bgMusic.play().catch(() => {})
+  }
+  const onFullscreenChange = () => { if (!document.fullscreenElement) cleanup() }
+  const onWebkitEnd = () => cleanup()
+  const exitFullscreen = () => {
+    if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(cleanup)
+    else if (video.webkitDisplayingFullscreen && video.webkitExitFullscreen) video.webkitExitFullscreen()
+    else cleanup()
+  }
+  const onEnded = () => exitFullscreen()
+
+  document.addEventListener('fullscreenchange', onFullscreenChange)
+  video.addEventListener('webkitendfullscreen', onWebkitEnd)
+  video.addEventListener('ended', onEnded)
+  wrap.querySelector('.lore-player-close').addEventListener('click', exitFullscreen)
+
+  video.play().catch(() => {})
+  if (video.requestFullscreen) video.requestFullscreen().catch(() => {})
+  else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen()
+  else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen()
 }
 
 function openRenamePopup() {
