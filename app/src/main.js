@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.6.0'
+const APP_VERSION = 'v2.6.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -1596,10 +1596,10 @@ function openEditPicturePopup() {
     o.remove()
     app.querySelector('#avatar-input')?.click()
   })
-  loadEditPicPresets()
+  loadEditPicPresets(o)
 }
 
-async function loadEditPicPresets() {
+async function loadEditPicPresets(editPopupEl) {
   const grid = app.querySelector('#editpic-presets')
   if (!grid) return
   const { data, error } = await supabase.from('preset_avatars').select('id, url').order('created_at', { ascending: false })
@@ -1612,15 +1612,35 @@ async function loadEditPicPresets() {
     </button>
   `).join('')
   grid.querySelectorAll('[data-url]').forEach(btn => {
-    btn.addEventListener('click', () => selectPresetAvatar(btn.dataset.url))
+    btn.addEventListener('click', () => confirmPresetSelection(btn.dataset.url, editPopupEl))
+  })
+}
+
+// Shows a preview + Confirm/Cancel before actually applying the picked
+// preset, rather than committing on first tap.
+function confirmPresetSelection(url, editPopupEl) {
+  const o = overlay(`
+    <h3>Use this picture?</h3>
+    <img class="editpic-preview" src="${url}" alt="" />
+    <div class="home-btn-col">
+      <button type="button" data-action="confirm">Confirm</button>
+      <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="confirm"]').addEventListener('click', async () => {
+    const ok = await selectPresetAvatar(url)
+    o.remove()
+    if (ok) editPopupEl.remove()
   })
 }
 
 async function selectPresetAvatar(url) {
   const { error } = await supabase.from('profiles').update({ avatar_url: url }).eq('id', currentUser.id)
-  if (error) { toast(error.message); return }
+  if (error) { toast(error.message); return false }
   currentProfile.avatar_url = url
   renderSettings()
+  return true
 }
 
 function openAvatarCropper(file, onCropped) {
@@ -1952,6 +1972,7 @@ function renderAdminDashboard() {
     <div class="group">
       <p class="glab">Preset Profile Pictures</p>
       <div class="adm-preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
+      <button class="admin-upload-btn" type="button" data-action="toggle-preset-edit">Edit Pictures</button>
       <input type="file" accept="image/*" id="preset-input" hidden />
     </div>
 
@@ -1967,11 +1988,16 @@ function renderAdminDashboard() {
     <div style="height:8px"></div>
   `
 
+  presetEditMode = false
   mountScreen('settings', content, () => {
     loadPresetAvatars()
     app.querySelector('#preset-input').addEventListener('change', (e) => {
       const file = e.target.files[0]; e.target.value = ''
       if (file) openAvatarCropper(file, (blob) => uploadPresetAvatar(blob))
+    })
+    app.querySelector('[data-action="toggle-preset-edit"]').addEventListener('click', () => {
+      presetEditMode = !presetEditMode
+      renderPresetGrid()
     })
     app.querySelector('[data-action="admin-search"]').addEventListener('click', runAdminSearch)
     app.querySelector('#admin-search-input').addEventListener('keydown', (e) => {
@@ -1980,22 +2006,36 @@ function renderAdminDashboard() {
   })
 }
 
+// Whether the preset grid shows the remove/add controls - gated behind the
+// "Edit Pictures" button so a stray tap can't land on a delete affordance.
+let presetEditMode = false
+let presetAvatarsCache = []
+
 async function loadPresetAvatars() {
   const grid = app.querySelector('#preset-grid')
   if (!grid) return
   const { data, error } = await supabase.from('preset_avatars').select('id, path, url').order('created_at', { ascending: false })
   if (error) { grid.innerHTML = `<p class="log-empty">${escapeHtml(error.message)}</p>`; return }
-  const items = (data || []).map(p => `
+  presetAvatarsCache = data || []
+  renderPresetGrid()
+}
+
+function renderPresetGrid() {
+  const grid = app.querySelector('#preset-grid')
+  if (!grid) return
+  const items = presetAvatarsCache.map(p => `
     <div class="adm-preset-item" data-preset-id="${p.id}" data-preset-path="${escapeHtml(p.path)}">
       <img src="${p.url}" alt="" />
-      <button class="adm-preset-remove" type="button" data-action="remove-preset" aria-label="Remove preset">✕</button>
+      ${presetEditMode ? `<button class="adm-preset-remove" type="button" data-action="remove-preset" aria-label="Remove preset">✕</button>` : ''}
     </div>
   `).join('')
-  grid.innerHTML = items + `<button class="adm-preset-add" type="button" data-action="upload-preset" aria-label="Upload new preset">+</button>`
-  grid.querySelector('[data-action="upload-preset"]').addEventListener('click', () => app.querySelector('#preset-input').click())
+  grid.innerHTML = items + (presetEditMode ? `<button class="adm-preset-add" type="button" data-action="upload-preset" aria-label="Upload new preset">+</button>` : '')
+  grid.querySelector('[data-action="upload-preset"]')?.addEventListener('click', () => app.querySelector('#preset-input').click())
   grid.querySelectorAll('[data-action="remove-preset"]').forEach(btn => {
-    btn.addEventListener('click', () => removePresetAvatar(btn.closest('.adm-preset-item')))
+    btn.addEventListener('click', () => confirmRemovePreset(btn.closest('.adm-preset-item')))
   })
+  const toggleBtn = app.querySelector('[data-action="toggle-preset-edit"]')
+  if (toggleBtn) toggleBtn.textContent = presetEditMode ? 'Done Editing' : 'Edit Pictures'
 }
 
 async function uploadPresetAvatar(blob) {
@@ -2008,9 +2048,27 @@ async function uploadPresetAvatar(blob) {
   loadPresetAvatars()
 }
 
-async function removePresetAvatar(el) {
+function confirmRemovePreset(el) {
   const id = el.dataset.presetId
   const path = el.dataset.presetPath
+  const imgSrc = el.querySelector('img')?.src || ''
+  const o = overlay(`
+    <h3>Remove this picture?</h3>
+    <img class="editpic-preview" src="${imgSrc}" alt="" />
+    <p>Users will no longer be able to pick this preset. This can't be undone.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Yes, remove</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    o.remove()
+    await removePresetAvatar(id, path)
+  })
+}
+
+async function removePresetAvatar(id, path) {
   const { error } = await supabase.from('preset_avatars').delete().eq('id', id)
   if (error) { toast(error.message); return }
   await supabase.storage.from('avatars').remove([path])
