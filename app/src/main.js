@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.3.8'
+const APP_VERSION = 'v2.3.9'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -312,10 +312,10 @@ const EMOTES = [
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
 
 const LORE_VIDEOS = [
-  { title: 'Who Is Chef Penguino', clip: 'lore/who-is-chef-penguino.mp4' },
-  { title: 'Ghost Orders Pizza', clip: 'lore/ghost-orders-pizza.mp4' },
-  { title: 'Pizza Poisoning', clip: 'lore/pizza-poisoning.mp4' },
-  { title: 'Chef Penguino Goes Crazy', clip: 'lore/chef-penguino-goes-crazy.mp4' },
+  { title: 'Who Is Chef Penguino', clip: 'lore/who-is-chef-penguino.mp4', thumb: 'lore/who-is-chef-penguino.jpg' },
+  { title: 'Ghost Orders Pizza', clip: 'lore/ghost-orders-pizza.mp4', thumb: 'lore/ghost-orders-pizza.jpg' },
+  { title: 'Pizza Poisoning', clip: 'lore/pizza-poisoning.mp4', thumb: 'lore/pizza-poisoning.jpg' },
+  { title: 'Chef Penguino Goes Crazy', clip: 'lore/chef-penguino-goes-crazy.mp4', thumb: 'lore/chef-penguino-goes-crazy.jpg' },
 ]
 
 function ownedEmotes() {
@@ -1577,7 +1577,7 @@ function renderLore() {
     <div class="lore-list">
       ${LORE_VIDEOS.map((v, i) => `
         <div class="lore-card" data-lore="${i}" role="button" tabindex="0">
-          <video class="lore-thumb" src="${BASE}assets/${v.clip}" muted playsinline preload="metadata"></video>
+          <img class="lore-thumb" src="${BASE}assets/${v.thumb}" alt="" />
           <span class="lore-play" aria-hidden="true">▶</span>
           <div class="lore-title">${escapeHtml(v.title)}</div>
         </div>
