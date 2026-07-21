@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.5.2'
+const APP_VERSION = 'v2.6.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -1580,6 +1580,49 @@ async function uploadAvatarBlob(blob) {
   renderSettings()
 }
 
+function openEditPicturePopup() {
+  const o = overlay(`
+    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
+    <h3>Edit Picture</h3>
+    <div class="editpic-avatar-wrap">
+      <img class="editpic-avatar" src="${myAvatar()}" alt="" />
+      <button class="editpic-cam" type="button" data-action="camera" aria-label="Take or upload photo">${CAMERA_SVG}</button>
+    </div>
+    <label class="field-label">Or pick a preset</label>
+    <div class="editpic-presets" id="editpic-presets"><p class="editpic-empty">Loading&hellip;</p></div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="camera"]').addEventListener('click', () => {
+    o.remove()
+    app.querySelector('#avatar-input')?.click()
+  })
+  loadEditPicPresets()
+}
+
+async function loadEditPicPresets() {
+  const grid = app.querySelector('#editpic-presets')
+  if (!grid) return
+  const { data, error } = await supabase.from('preset_avatars').select('id, url').order('created_at', { ascending: false })
+  if (error) { grid.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
+  if (!data || !data.length) { grid.innerHTML = '<p class="editpic-empty">No presets available yet.</p>'; return }
+  const current = myAvatar()
+  grid.innerHTML = data.map(p => `
+    <button class="editpic-preset ${p.url === current ? 'selected' : ''}" type="button" data-url="${escapeHtml(p.url)}">
+      <img src="${p.url}" alt="" />
+    </button>
+  `).join('')
+  grid.querySelectorAll('[data-url]').forEach(btn => {
+    btn.addEventListener('click', () => selectPresetAvatar(btn.dataset.url))
+  })
+}
+
+async function selectPresetAvatar(url) {
+  const { error } = await supabase.from('profiles').update({ avatar_url: url }).eq('id', currentUser.id)
+  if (error) { toast(error.message); return }
+  currentProfile.avatar_url = url
+  renderSettings()
+}
+
 function openAvatarCropper(file, onCropped) {
   const objectUrl = URL.createObjectURL(file)
 
@@ -1808,7 +1851,7 @@ function renderSettings(highlightProfile) {
     app.querySelector('[data-action="sign-out"]')?.addEventListener('click', signOut)
     app.querySelector('[data-action="rename"]')?.addEventListener('click', openRenamePopup)
 
-    app.querySelector('[data-action="change-photo"]')?.addEventListener('click', () => app.querySelector('#avatar-input').click())
+    app.querySelector('[data-action="change-photo"]')?.addEventListener('click', openEditPicturePopup)
     app.querySelector('#avatar-input')?.addEventListener('change', (e) => {
       const file = e.target.files[0]; e.target.value = ''
       if (file) openAvatarCropper(file, (blob) => uploadAvatarBlob(blob))
