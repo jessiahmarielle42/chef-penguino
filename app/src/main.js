@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.7.0'
+const APP_VERSION = 'v2.7.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -811,7 +811,7 @@ async function renderShop(scrollTop) {
     </div>
     <div class="shop-sort-row">
       <button class="sort-btn" type="button" data-action="sort">Sort by: <b>${SORT_LABELS[shopSort]}</b> <span class="chev">▼</span></button>
-      <button class="sort-btn" type="button" data-action="type">Type: <b>${escapeHtml(typeLabel())}</b> <span class="chev chev-caron">⌄</span></button>
+      <button class="sort-btn" type="button" data-action="type">Type: <b>${escapeHtml(typeLabel())}</b> <span class="chev">▼</span></button>
     </div>
     ${cards}
     <p class="code-note" style="text-align:center">More emotes coming — earn a coin every 12 pizzas.</p>

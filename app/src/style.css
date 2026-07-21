@@ -306,9 +306,6 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 }
 .sort-btn b { color: var(--fire); }
 .sort-btn .chev { font-size:0.625rem; color: var(--muted); line-height: 1; display: inline-flex; align-items: center; }
-/* '⌄' sits high in its own glyph box in most fonts (unlike '▼'); nudge it
-   down so it optically centers with the button's text baseline. */
-.sort-btn .chev-caron { font-size:1.0625rem; font-weight: 800; position: relative; top:0.125rem; }
 .sort-options { display: flex; flex-direction: column; gap:0.5rem; }
 /* Scoped under .popup: the generic ".popup button" rule (gold gradient fill)
    otherwise outranks a bare ".sort-option" by specificity, so every
