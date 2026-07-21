@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.3.5'
+const APP_VERSION = 'v2.3.6'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -543,7 +543,8 @@ function renderHome() {
     <div class="hero-card" id="hero-card" role="button" tabindex="0">
       <img class="hero-still" src="${heroSrc}" alt="" />
       <div class="glow"></div>
-      <button class="hero-tap" type="button" data-action="emote">👋 Tap to emote</button>
+      <button class="hero-info" type="button" data-action="emote-info" aria-label="About emotes">i</button>
+      <button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>
     </div>
 
     <div class="tiles">
@@ -572,6 +573,7 @@ function renderHome() {
     app.querySelector('.cta[data-action="cook"]').addEventListener('click', startCookingFlow)
     app.querySelector('[data-action="tile-pizza-info"]')?.addEventListener('click', openPizzaInfo)
     app.querySelector('[data-action="stash-info"]')?.addEventListener('click', openStashInfo)
+    app.querySelector('[data-action="emote-info"]')?.addEventListener('click', (e) => { e.stopPropagation(); openEmoteInfo() })
 
     // Tap the shopfront to play the equipped emote, then revert to the still.
     const attachEmoteTap = (btnHost) => {
@@ -677,7 +679,7 @@ function openSortMenu() {
   }))
 }
 
-function renderShop() {
+function renderShop(scrollTop) {
   if (!isSignedIn()) {
     const content = `
       <div class="friends-gate" style="display:block">
@@ -741,6 +743,8 @@ function renderShop() {
   `
 
   mountScreen('shop', content, () => {
+    if (scrollTop) app.querySelector('.scroll').scrollTop = scrollTop
+
     app.querySelector('[data-action="shop-coin-info"]')?.addEventListener('click', openCoinInfo)
     app.querySelector('[data-action="sort"]')?.addEventListener('click', openSortMenu)
 
@@ -761,7 +765,11 @@ function renderShop() {
       btn.addEventListener('click', () => confirmBuy(btn.dataset.buy))
     })
     app.querySelectorAll('[data-equip]').forEach(btn => {
-      btn.addEventListener('click', async () => { await equipEmote(btn.dataset.equip); renderShop() })
+      btn.addEventListener('click', async () => {
+        const y = app.querySelector('.scroll')?.scrollTop
+        await equipEmote(btn.dataset.equip)
+        renderShop(y)
+      })
     })
   })
 }
@@ -814,6 +822,20 @@ function openPizzaInfo() {
     <div class="popup-emoji-xl">🍕</div>
     <h3>Lifetime Pizzas</h3>
     <p>All the Pizzas you've ever baked.<br>1 Pizza = 1 hour you worked on a task!</p>
+    <button type="button" data-action="ok">Got it</button>
+  `)
+  o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
+}
+
+// =================================================================
+//  Emotes info popup (the (i) education popup, home hero card)
+// =================================================================
+function openEmoteInfo() {
+  const o = overlay(`
+    <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
+    <div class="popup-emoji-xl">💃</div>
+    <h3>About Emotes</h3>
+    <p>Emotes are cool animations that lets your Chef Penguino express himself. Get more from the shop!</p>
     <button type="button" data-action="ok">Got it</button>
   `)
   o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
