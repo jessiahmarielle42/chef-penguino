@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.5.0'
+const APP_VERSION = 'v2.5.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -437,6 +437,7 @@ function googleBtn() {
 const PENCIL_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3Z"/><path d="M13.5 7.5 16.5 10.5"/></svg>`
 const CAMERA_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13.5" r="3.2"/></svg>`
 const COPY_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`
+const TRASH_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"/><path d="M10 11v6M14 11v6"/></svg>`
 
 function statusBarHtml() {
   return `
@@ -579,7 +580,7 @@ function renderHome() {
     <button class="cta" type="button" data-action="cook">🔥 Start Cooking</button>
 
     <div class="section-h" style="margin-top:2.75rem"><h2>Recent sessions</h2></div>
-    <div class="friend-swipe-hint" style="margin-top:0.625rem">
+    <div class="friend-swipe-hint" style="margin-top:0.625rem;margin-bottom:1.375rem">
       <span class="info-badge" aria-hidden="true">i</span>
       <p>Swipe left on a session to edit</p>
     </div>
@@ -616,9 +617,8 @@ async function loadHomeLog(userId) {
   const recent = log.slice(0, 6)
   const groups = groupLogByDate(recent)
   logEntriesById.clear()
-  let rowIndex = 0
   listEl.innerHTML = groups.length
-    ? groups.map(g => renderDateGroup(g, () => rowIndex++, editable)).join('')
+    ? groups.map(g => renderDateGroup(g, editable)).join('')
     : '<p class="log-empty">No sessions yet. Start cooking!</p>'
   if (editable) wireLogSwipe(listEl)
 }
@@ -1316,31 +1316,45 @@ function dateLabel(ts) {
 }
 
 const LOG_ROW_ICONS = ['🍅', '🥦', '🍄‍🟫', '🧀', '🥖']
+const LOG_ICON_NAMES = { '🍅': 'Tomato', '🥦': 'Broccoli', '🍄‍🟫': 'Mushroom', '🧀': 'Cheese', '🥖': 'Baguette' }
+
+// The row icon must stay faithful to what a session was originally shown as -
+// so it's derived deterministically from the entry's own identity (its id, or
+// completedAt as a fallback), NOT from its position in the list. Position-based
+// icons shifted every row when a session above was deleted. An explicit
+// entry.icon (set via edit or admin) always wins.
+function stableIconFor(entry) {
+  if (entry.icon) return entry.icon
+  const key = String(entry.id || entry.completedAt || '')
+  let h = 0
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0
+  return LOG_ROW_ICONS[h % LOG_ROW_ICONS.length]
+}
 
 // entry.id -> { entry, icon } for the currently-rendered home log, so the
 // swipe actions (edit/delete) can look up full session data without
 // round-tripping it through HTML attributes.
 const logEntriesById = new Map()
 
-function renderDateGroup(group, nextIndex, editable) {
+function renderDateGroup(group, editable) {
   return `
     <div class="log-date-group">
       <div class="log-date-heading">${group.label}</div>
-      ${group.entries.map(entry => renderLogRow(entry, nextIndex(), editable)).join('')}
+      ${group.entries.map(entry => renderLogRow(entry, editable)).join('')}
     </div>
   `
 }
 
-function renderLogRow(entry, index, editable) {
+function renderLogRow(entry, editable) {
   const time = new Date(entry.completedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
   const task = escapeHtml(entry.task) || 'Focus session'
-  const icon = entry.icon || LOG_ROW_ICONS[index % LOG_ROW_ICONS.length]
+  const icon = stableIconFor(entry)
   if (editable && entry.id) logEntriesById.set(entry.id, { entry, icon })
 
   const actions = editable && entry.id ? `
-    <div class="log-row-actions">
-      <button class="log-action edit" type="button" data-action="edit-log" aria-label="Edit session">✏️</button>
-      <button class="log-action delete" type="button" data-action="delete-log" aria-label="Delete session">❌</button>
+    <div class="log-row-actions2">
+      <button class="log-action2 edit" type="button" data-action="edit-log" aria-label="Edit session">${PENCIL_SVG}<span>Edit</span></button>
+      <button class="log-action2 delete" type="button" data-action="delete-log" aria-label="Delete session">${TRASH_SVG}<span>Delete</span></button>
     </div>
   ` : ''
 
@@ -1365,8 +1379,6 @@ function renderLogRow(entry, index, editable) {
 // =================================================================
 //  Recent-session swipe actions (edit / delete)
 // =================================================================
-const LOG_SWIPE_REVEAL = 112 // px — 2 action buttons at 3.5rem each
-
 let openSwipeRow = null
 function closeOpenSwipe() {
   if (openSwipeRow) {
@@ -1379,6 +1391,9 @@ function closeOpenSwipe() {
 function wireLogSwipe(listEl) {
   listEl.querySelectorAll('.log-row-wrap[data-log-id]').forEach(wrap => {
     const row = wrap.querySelector('.log-row')
+    const actionsEl = wrap.querySelector('.log-row-actions2')
+    // Reveal distance is the actual rendered width of the action buttons, so
+    // it stays correct under the app's dynamic (viewport-scaled) rem sizing.
     let startX = 0, startY = 0, dx = 0, active = false, decided = false, dragging = false
 
     row.addEventListener('pointerdown', (e) => {
@@ -1388,6 +1403,7 @@ function wireLogSwipe(listEl) {
     })
     row.addEventListener('pointermove', (e) => {
       if (!active) return
+      const reveal = actionsEl ? actionsEl.offsetWidth : 112
       const deltaX = e.clientX - startX
       const deltaY = e.clientY - startY
       if (!decided) {
@@ -1397,8 +1413,8 @@ function wireLogSwipe(listEl) {
         if (!dragging) { active = false; return }
         if (openSwipeRow && openSwipeRow !== row) closeOpenSwipe()
       }
-      const base = row.classList.contains('open') ? -LOG_SWIPE_REVEAL : 0
-      dx = Math.min(0, Math.max(-LOG_SWIPE_REVEAL, base + deltaX))
+      const base = row.classList.contains('open') ? -reveal : 0
+      dx = Math.min(0, Math.max(-reveal, base + deltaX))
       row.style.transform = `translateX(${dx}px)`
     })
     const endDrag = () => {
@@ -1406,8 +1422,9 @@ function wireLogSwipe(listEl) {
       active = false
       row.style.transition = ''
       if (!dragging) return
-      if (dx <= -LOG_SWIPE_REVEAL / 2) {
-        row.style.transform = `translateX(-${LOG_SWIPE_REVEAL}px)`
+      const reveal = actionsEl ? actionsEl.offsetWidth : 112
+      if (dx <= -reveal / 2) {
+        row.style.transform = `translateX(-${reveal}px)`
         row.classList.add('open')
         openSwipeRow = row
       } else {
@@ -1439,6 +1456,8 @@ function wireLogSwipe(listEl) {
   })
 }
 
+const iconName = (ic) => LOG_ICON_NAMES[ic] || 'Custom'
+
 function openEditLogPopup(id) {
   const rec = logEntriesById.get(id)
   if (!rec) return
@@ -1448,8 +1467,15 @@ function openEditLogPopup(id) {
     <label class="field-label" for="edit-log-name">Name:</label>
     <input id="edit-log-name" class="rename-input" type="text" maxlength="30" value="${escapeHtml(rec.entry.task || '')}" placeholder="Focus session" />
     <label class="field-label">Icon:</label>
-    <div class="icon-picker">
-      ${LOG_ROW_ICONS.map(ic => `<button type="button" class="icon-pick ${ic === selectedIcon ? 'selected' : ''}" data-icon="${ic}">${ic}</button>`).join('')}
+    <div class="icon-field" id="icon-field">
+      <div class="icon-collapsed" data-action="toggle-icons" role="button" tabindex="0">
+        <span class="icon-current-chip">${selectedIcon}</span>
+        <span class="icon-collapsed-label">${iconName(selectedIcon)}</span>
+        <span class="chevron" aria-hidden="true">›</span>
+      </div>
+      <div class="icon-options-row" hidden>
+        ${LOG_ROW_ICONS.map(ic => `<button type="button" class="icon-pick2 ${ic === selectedIcon ? 'selected' : ''}" data-icon="${ic}">${ic}</button>`).join('')}
+      </div>
     </div>
     <div class="home-btn-col" style="margin-top:1.25rem">
       <button type="button" data-action="save">Save</button>
@@ -1457,10 +1483,23 @@ function openEditLogPopup(id) {
     </div>
   `, { popupClass: 'popup-wide' })
 
-  o.querySelectorAll('.icon-pick').forEach(btn => {
+  const field = o.querySelector('#icon-field')
+  const optionsRow = o.querySelector('.icon-options-row')
+  const chip = o.querySelector('.icon-current-chip')
+  const label = o.querySelector('.icon-collapsed-label')
+  o.querySelector('[data-action="toggle-icons"]').addEventListener('click', () => {
+    const expand = optionsRow.hidden
+    optionsRow.hidden = !expand
+    field.classList.toggle('expanded', expand)
+  })
+  o.querySelectorAll('.icon-pick2').forEach(btn => {
     btn.addEventListener('click', () => {
       selectedIcon = btn.dataset.icon
-      o.querySelectorAll('.icon-pick').forEach(b => b.classList.toggle('selected', b === btn))
+      chip.textContent = selectedIcon
+      label.textContent = iconName(selectedIcon)
+      o.querySelectorAll('.icon-pick2').forEach(b => b.classList.toggle('selected', b === btn))
+      optionsRow.hidden = true
+      field.classList.remove('expanded')
     })
   })
 
@@ -1868,25 +1907,24 @@ function renderAdminDashboard() {
 
     <div class="group">
       <p class="glab">Preset Profile Pictures</p>
-      <div class="preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
+      <div class="adm-preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
       <input type="file" accept="image/*" id="preset-input" hidden />
-      <button class="btn-secondary admin-upload-btn" type="button" data-action="upload-preset">+ Upload New Preset</button>
     </div>
 
     <div class="group">
       <p class="glab">Edit User Pizzas &amp; Coins</p>
-      <div class="admin-search-row">
+      <div class="adm-search-card">
+        <span class="adm-search-ic" aria-hidden="true">🔍</span>
         <input id="admin-search-input" type="text" placeholder="Name or friend code" />
         <button type="button" data-action="admin-search">Search</button>
       </div>
-      <div id="admin-search-results" style="margin-top:0.625rem"></div>
+      <div id="admin-search-results" style="margin-top:0.875rem"></div>
     </div>
     <div style="height:8px"></div>
   `
 
   mountScreen('settings', content, () => {
     loadPresetAvatars()
-    app.querySelector('[data-action="upload-preset"]').addEventListener('click', () => app.querySelector('#preset-input').click())
     app.querySelector('#preset-input').addEventListener('change', (e) => {
       const file = e.target.files[0]; e.target.value = ''
       if (file) openAvatarCropper(file, (blob) => uploadPresetAvatar(blob))
@@ -1903,15 +1941,16 @@ async function loadPresetAvatars() {
   if (!grid) return
   const { data, error } = await supabase.from('preset_avatars').select('id, path, url').order('created_at', { ascending: false })
   if (error) { grid.innerHTML = `<p class="log-empty">${escapeHtml(error.message)}</p>`; return }
-  if (!data || !data.length) { grid.innerHTML = '<p class="log-empty">No presets yet.</p>'; return }
-  grid.innerHTML = data.map(p => `
-    <div class="preset-thumb" data-preset-id="${p.id}" data-preset-path="${escapeHtml(p.path)}">
+  const items = (data || []).map(p => `
+    <div class="adm-preset-item" data-preset-id="${p.id}" data-preset-path="${escapeHtml(p.path)}">
       <img src="${p.url}" alt="" />
-      <button class="preset-remove" type="button" data-action="remove-preset" aria-label="Remove preset">✕</button>
+      <button class="adm-preset-remove" type="button" data-action="remove-preset" aria-label="Remove preset">✕</button>
     </div>
   `).join('')
+  grid.innerHTML = items + `<button class="adm-preset-add" type="button" data-action="upload-preset" aria-label="Upload new preset">+</button>`
+  grid.querySelector('[data-action="upload-preset"]').addEventListener('click', () => app.querySelector('#preset-input').click())
   grid.querySelectorAll('[data-action="remove-preset"]').forEach(btn => {
-    btn.addEventListener('click', () => removePresetAvatar(btn.closest('.preset-thumb')))
+    btn.addEventListener('click', () => removePresetAvatar(btn.closest('.adm-preset-item')))
   })
 }
 
@@ -1956,12 +1995,17 @@ async function runAdminSearch() {
     .limit(10)
   if (error) { resultsEl.innerHTML = `<p class="log-empty">${escapeHtml(error.message)}</p>`; return }
   if (!data || !data.length) { resultsEl.innerHTML = '<p class="log-empty">No users found.</p>'; return }
-  resultsEl.innerHTML = data.map(p => `
-    <div class="frow" data-admin-user="${p.id}" role="button" tabindex="0">
+  resultsEl.innerHTML = `<div class="glist">${data.map(p => `
+    <div class="adm-userrow" data-admin-user="${p.id}" role="button" tabindex="0">
       <img src="${p.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
-      <div><div class="fn">${escapeHtml(p.display_name)}</div><div class="fp">Code ${escapeHtml(p.friend_code || '')} &middot; 🍕 ${formatScore(p.pizzas)} &middot; ${coinImg()} ${adminCoinBalance(p)}</div></div>
+      <div class="adm-u-info"><div class="adm-u-name">${escapeHtml(p.display_name)}</div><div class="adm-u-code">Code ${escapeHtml(p.friend_code || '')}</div></div>
+      <div class="adm-u-stats">
+        <span class="adm-stat">🍕 ${formatScore(p.pizzas)}</span>
+        <span class="adm-stat"><i class="adm-coin-dot"></i> ${adminCoinBalance(p)}</span>
+        <span class="chevron" aria-hidden="true">›</span>
+      </div>
     </div>
-  `).join('')
+  `).join('')}</div>`
   const byId = Object.fromEntries(data.map(p => [p.id, p]))
   resultsEl.querySelectorAll('[data-admin-user]').forEach(row => {
     row.addEventListener('click', () => openAdminAdjustPopup(byId[row.dataset.adminUser]))
@@ -1971,7 +2015,7 @@ async function runAdminSearch() {
 function openAdminAdjustPopup(profile) {
   const o = overlay(`
     <h3>Edit ${escapeHtml(profile.display_name)}</h3>
-    <p class="confirm-sub">Currently: 🍕 ${formatScore(profile.pizzas)} &middot; ${coinImg()} ${adminCoinBalance(profile)}</p>
+    <p class="confirm-sub">Currently: 🍕 ${formatScore(profile.pizzas)} &middot; <span class="adm-stat"><i class="adm-coin-dot"></i> ${adminCoinBalance(profile)}</span></p>
     <label class="field-label" for="admin-pizza-delta">Pizzas +/-</label>
     <input id="admin-pizza-delta" class="rename-input" type="number" step="0.01" value="0" />
     <label class="field-label" for="admin-coin-delta">Coins +/-</label>
