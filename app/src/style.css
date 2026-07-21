@@ -368,6 +368,12 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .frow .fn { font-weight: 800; color: var(--cream); font-size:0.9375rem; }
 .frow .fp { font-size:0.75rem; color: var(--muted); margin-top:0.125rem; }
 .frow .score { margin-left: auto; font-family: var(--font-display); font-weight: 800; color: var(--fire); font-variant-numeric: tabular-nums; }
+.frow .frow-more {
+  flex: none; width:2rem; height:2rem; margin-left:0.375rem; border: none; background: transparent;
+  color: var(--muted); font-size:1.125rem; font-weight: 800; display: grid; place-items: center;
+  border-radius:0.5rem; cursor: pointer; line-height: 1;
+}
+.frow .frow-more:active { background: var(--soft-fill); }
 
 .viewing-banner {
   background: linear-gradient(180deg, #FFB25E, var(--fire) 55%, var(--fire-deep));
@@ -375,6 +381,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   border: none; border-radius:1.25rem; padding:1.125rem;
   margin-top:2.25rem; margin-bottom:0.875rem; text-align: center;
   font-family: var(--font-display); font-weight: 800; font-size:1.1875rem; color: #2a1405;
+  cursor: pointer;
 }
 .frow.me { border-color: rgba(251,122,46,0.4); background: linear-gradient(160deg, rgba(251,122,46,0.12), var(--card)); cursor: default; }
 .you-tag { color: var(--muted); font-weight: 700; font-size:0.75rem; text-transform: none; letter-spacing: normal; }
@@ -567,7 +574,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 
 .toast {
   position: absolute; left: 50%; bottom:7.25rem; transform:translateX(-50%) translateY(0.75rem);
-  z-index: 45; background: rgba(16,10,7,0.95); border: 1px solid var(--line); color: var(--cream);
+  z-index: 45; background: rgba(16,10,7,0.95); border: 1px solid rgba(247,237,223,0.09); color: #F7EDDF;
   padding:0.6875rem 1rem; border-radius:62.4375rem; font-size:0.8125rem; font-weight: 700; opacity: 0; pointer-events: none;
   transition: opacity 0.2s, transform 0.2s; white-space: nowrap;
   display: inline-flex; align-items: center; gap:0.375rem;
