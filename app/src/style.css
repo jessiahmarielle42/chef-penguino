@@ -433,7 +433,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .lore-list { display: flex; flex-direction: column; gap:0.875rem; margin-top:0.875rem; }
 .lore-card {
   position: relative; border-radius:1.125rem; overflow: hidden; cursor: pointer;
-  aspect-ratio: 16/9; box-shadow: var(--shadow); border: 1px solid var(--line);
+  aspect-ratio: 1/1; box-shadow: var(--shadow); border: 1px solid var(--line);
 }
 .lore-thumb { width: 100%; height: 100%; object-fit: cover; display: block; background: #000; }
 .lore-card::after {
