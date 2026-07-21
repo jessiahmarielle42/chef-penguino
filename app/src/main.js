@@ -3,9 +3,15 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.4.0'
+const APP_VERSION = 'v2.5.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
+
+// Client-side hiding of the Admin Dashboard entry point only - real
+// enforcement lives in Supabase RLS (see migration_admin.sql), which checks
+// auth.email() server-side and can't be spoofed from here.
+const ADMIN_EMAIL = 'keefefons@gmail.com'
+function isAdmin() { return currentUser?.email === ADMIN_EMAIL }
 
 let currentUser = null
 let currentProfile = null
@@ -215,7 +221,7 @@ function addSessionPizzas(minutes) {
 }
 
 function logSession({ completedAt, minutes, pizzas, task }) {
-  state.log.unshift({ completedAt, minutes, pizzas, task })
+  state.log.unshift({ id: crypto.randomUUID(), completedAt, minutes, pizzas, task })
   save()
 }
 
@@ -573,6 +579,10 @@ function renderHome() {
     <button class="cta" type="button" data-action="cook">🔥 Start Cooking</button>
 
     <div class="section-h" style="margin-top:2.75rem"><h2>Recent sessions</h2></div>
+    <div class="friend-swipe-hint" style="margin-top:0.625rem">
+      <span class="info-badge" aria-hidden="true">i</span>
+      <p>Swipe left on a session to edit</p>
+    </div>
     <div class="log-list" id="home-log"><p class="log-empty">Loading&hellip;</p></div>
   `
 
@@ -599,15 +609,18 @@ function renderHome() {
 }
 
 async function loadHomeLog(userId) {
+  const editable = userId === undefined
   const log = await fetchLog(userId ?? currentUser?.id)
   const listEl = app.querySelector('#home-log')
   if (!listEl) return
   const recent = log.slice(0, 6)
   const groups = groupLogByDate(recent)
+  logEntriesById.clear()
   let rowIndex = 0
   listEl.innerHTML = groups.length
-    ? groups.map(g => renderDateGroup(g, () => rowIndex++)).join('')
+    ? groups.map(g => renderDateGroup(g, () => rowIndex++, editable)).join('')
     : '<p class="log-empty">No sessions yet. Start cooking!</p>'
+  if (editable) wireLogSwipe(listEl)
 }
 
 function maybeShowCoinMilestone() {
@@ -1232,18 +1245,35 @@ function confirmRemoveFriend(friendId, name) {
 }
 
 async function fetchLog(userId) {
-  if (!userId) return state.log
-  const { data } = await supabase
+  if (!userId) {
+    // Backfill ids on older local sessions logged before edit/delete existed.
+    let changed = false
+    for (const e of state.log) { if (!e.id) { e.id = crypto.randomUUID(); changed = true } }
+    if (changed) save()
+    return state.log
+  }
+  // Falls back to the pre-migration column set if `icon` doesn't exist yet
+  // (migration_session_edit.sql hasn't been run), so the log still loads.
+  let { data, error } = await supabase
     .from('sessions')
-    .select('completed_at, minutes, pizzas, task')
+    .select('id, completed_at, minutes, pizzas, task, icon')
     .eq('user_id', userId)
     .order('completed_at', { ascending: false })
+  if (error) {
+    ({ data } = await supabase
+      .from('sessions')
+      .select('id, completed_at, minutes, pizzas, task')
+      .eq('user_id', userId)
+      .order('completed_at', { ascending: false }))
+  }
   if (!data) return []
   return data.map(r => ({
+    id: r.id,
     completedAt: new Date(r.completed_at).getTime(),
     minutes: r.minutes,
     pizzas: r.pizzas,
     task: r.task,
+    icon: r.icon,
   }))
 }
 
@@ -1287,32 +1317,211 @@ function dateLabel(ts) {
 
 const LOG_ROW_ICONS = ['🍅', '🥦', '🍄‍🟫', '🧀', '🥖']
 
-function renderDateGroup(group, nextIndex) {
+// entry.id -> { entry, icon } for the currently-rendered home log, so the
+// swipe actions (edit/delete) can look up full session data without
+// round-tripping it through HTML attributes.
+const logEntriesById = new Map()
+
+function renderDateGroup(group, nextIndex, editable) {
   return `
     <div class="log-date-group">
       <div class="log-date-heading">${group.label}</div>
-      ${group.entries.map(entry => renderLogRow(entry, nextIndex())).join('')}
+      ${group.entries.map(entry => renderLogRow(entry, nextIndex(), editable)).join('')}
     </div>
   `
 }
 
-function renderLogRow(entry, index) {
+function renderLogRow(entry, index, editable) {
   const time = new Date(entry.completedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
   const task = escapeHtml(entry.task) || 'Focus session'
-  const icon = LOG_ROW_ICONS[index % LOG_ROW_ICONS.length]
+  const icon = entry.icon || LOG_ROW_ICONS[index % LOG_ROW_ICONS.length]
+  if (editable && entry.id) logEntriesById.set(entry.id, { entry, icon })
+
+  const actions = editable && entry.id ? `
+    <div class="log-row-actions">
+      <button class="log-action edit" type="button" data-action="edit-log" aria-label="Edit session">✏️</button>
+      <button class="log-action delete" type="button" data-action="delete-log" aria-label="Delete session">❌</button>
+    </div>
+  ` : ''
+
   return `
-    <div class="log-row">
-      <div class="log-row-main">
-        <span class="log-row-icon">${icon}</span>
-        <span class="log-row-task">${task}</span>
-        <span class="log-row-time">${time}</span>
-      </div>
-      <div class="log-row-meta">
-        <span>${formatDuration(entry.minutes)}</span>
-        <span class="log-row-pizzas">🍕 ${formatScore(entry.pizzas)}</span>
+    <div class="log-row-wrap" ${editable && entry.id ? `data-log-id="${entry.id}"` : ''}>
+      ${actions}
+      <div class="log-row">
+        <div class="log-row-main">
+          <span class="log-row-icon">${icon}</span>
+          <span class="log-row-task">${task}</span>
+          <span class="log-row-time">${time}</span>
+        </div>
+        <div class="log-row-meta">
+          <span>${formatDuration(entry.minutes)}</span>
+          <span class="log-row-pizzas">🍕 ${formatScore(entry.pizzas)}</span>
+        </div>
       </div>
     </div>
   `
+}
+
+// =================================================================
+//  Recent-session swipe actions (edit / delete)
+// =================================================================
+const LOG_SWIPE_REVEAL = 112 // px — 2 action buttons at 3.5rem each
+
+let openSwipeRow = null
+function closeOpenSwipe() {
+  if (openSwipeRow) {
+    openSwipeRow.style.transform = 'translateX(0)'
+    openSwipeRow.classList.remove('open')
+    openSwipeRow = null
+  }
+}
+
+function wireLogSwipe(listEl) {
+  listEl.querySelectorAll('.log-row-wrap[data-log-id]').forEach(wrap => {
+    const row = wrap.querySelector('.log-row')
+    let startX = 0, startY = 0, dx = 0, active = false, decided = false, dragging = false
+
+    row.addEventListener('pointerdown', (e) => {
+      active = true; decided = false; dragging = false; dx = 0
+      startX = e.clientX; startY = e.clientY
+      row.style.transition = 'none'
+    })
+    row.addEventListener('pointermove', (e) => {
+      if (!active) return
+      const deltaX = e.clientX - startX
+      const deltaY = e.clientY - startY
+      if (!decided) {
+        if (Math.abs(deltaX) < 6 && Math.abs(deltaY) < 6) return
+        decided = true
+        dragging = Math.abs(deltaX) > Math.abs(deltaY)
+        if (!dragging) { active = false; return }
+        if (openSwipeRow && openSwipeRow !== row) closeOpenSwipe()
+      }
+      const base = row.classList.contains('open') ? -LOG_SWIPE_REVEAL : 0
+      dx = Math.min(0, Math.max(-LOG_SWIPE_REVEAL, base + deltaX))
+      row.style.transform = `translateX(${dx}px)`
+    })
+    const endDrag = () => {
+      if (!active) return
+      active = false
+      row.style.transition = ''
+      if (!dragging) return
+      if (dx <= -LOG_SWIPE_REVEAL / 2) {
+        row.style.transform = `translateX(-${LOG_SWIPE_REVEAL}px)`
+        row.classList.add('open')
+        openSwipeRow = row
+      } else {
+        row.style.transform = 'translateX(0)'
+        row.classList.remove('open')
+        if (openSwipeRow === row) openSwipeRow = null
+      }
+    }
+    row.addEventListener('pointerup', endDrag)
+    row.addEventListener('pointercancel', endDrag)
+    row.addEventListener('click', (e) => {
+      if (row.classList.contains('open')) { e.preventDefault(); closeOpenSwipe() }
+    })
+  })
+
+  listEl.querySelectorAll('[data-action="edit-log"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.closest('.log-row-wrap').dataset.logId
+      closeOpenSwipe()
+      openEditLogPopup(id)
+    })
+  })
+  listEl.querySelectorAll('[data-action="delete-log"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.closest('.log-row-wrap').dataset.logId
+      closeOpenSwipe()
+      confirmDeleteLog(id)
+    })
+  })
+}
+
+function openEditLogPopup(id) {
+  const rec = logEntriesById.get(id)
+  if (!rec) return
+  let selectedIcon = rec.icon
+  const o = overlay(`
+    <h3>Edit Record</h3>
+    <label class="field-label" for="edit-log-name">Name:</label>
+    <input id="edit-log-name" class="rename-input" type="text" maxlength="30" value="${escapeHtml(rec.entry.task || '')}" placeholder="Focus session" />
+    <label class="field-label">Icon:</label>
+    <div class="icon-picker">
+      ${LOG_ROW_ICONS.map(ic => `<button type="button" class="icon-pick ${ic === selectedIcon ? 'selected' : ''}" data-icon="${ic}">${ic}</button>`).join('')}
+    </div>
+    <div class="home-btn-col" style="margin-top:1.25rem">
+      <button type="button" data-action="save">Save</button>
+      <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+
+  o.querySelectorAll('.icon-pick').forEach(btn => {
+    btn.addEventListener('click', () => {
+      selectedIcon = btn.dataset.icon
+      o.querySelectorAll('.icon-pick').forEach(b => b.classList.toggle('selected', b === btn))
+    })
+  })
+
+  const input = o.querySelector('#edit-log-name')
+  setTimeout(() => input.focus(), 50)
+  o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="save"]').addEventListener('click', async () => {
+    const newName = input.value.trim().slice(0, 30) || 'Focus session'
+    const ok = await saveLogEdit(id, { task: newName, icon: selectedIcon })
+    if (!ok) return
+    o.remove()
+    renderHome()
+  })
+}
+
+async function saveLogEdit(id, updates) {
+  if (currentUser) {
+    const { error } = await supabase.from('sessions').update(updates).eq('id', id)
+    if (error) { toast(error.message); return false }
+    return true
+  }
+  const entry = state.log.find(e => e.id === id)
+  if (!entry) return false
+  Object.assign(entry, updates)
+  save()
+  return true
+}
+
+function confirmDeleteLog(id) {
+  const rec = logEntriesById.get(id)
+  if (!rec) return
+  const o = overlay(`
+    <h3>Delete this session?</h3>
+    <p>This can't be undone.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Yes, delete</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    o.remove()
+    const ok = await deleteLogEntry(id, rec.entry.pizzas)
+    if (!ok) return
+    renderHome()
+  })
+}
+
+async function deleteLogEntry(id, pizzas) {
+  if (currentUser) {
+    const { error } = await supabase.from('sessions').delete().eq('id', id)
+    if (error) { toast(error.message); return false }
+    await refreshProfile()
+    return true
+  }
+  const idx = state.log.findIndex(e => e.id === id)
+  if (idx < 0) return false
+  state.log.splice(idx, 1)
+  state.pizzas = Math.max(0, state.pizzas - pizzas)
+  save()
+  return true
 }
 
 // =================================================================
@@ -1519,6 +1728,12 @@ function renderSettings(highlightProfile) {
           <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
         </div>
         <div class="grow"><div><div class="gt">Version</div><div class="gs">${APP_VERSION}</div></div></div>
+        ${isAdmin() ? `
+        <div class="grow" role="button" tabindex="0" data-action="admin-dashboard">
+          <div><div class="gt">Admin Dashboard</div></div>
+          <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
+        </div>
+        ` : ''}
       </div>
     </div>
     <div style="height:8px"></div>
@@ -1526,6 +1741,7 @@ function renderSettings(highlightProfile) {
 
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="lore"]')?.addEventListener('click', renderLore)
+    app.querySelector('[data-action="admin-dashboard"]')?.addEventListener('click', renderAdminDashboard)
     app.querySelector('#volume-slider').addEventListener('input', (e) => {
       const v = Number(e.target.value) / 100
       state.volume = v
@@ -1639,6 +1855,172 @@ function playLoreVideo(entry) {
   if (video.requestFullscreen) video.requestFullscreen().catch(() => {})
   else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen()
   else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen()
+}
+
+// =================================================================
+//  Admin Dashboard (admin-only; see migration_admin.sql)
+// =================================================================
+function renderAdminDashboard() {
+  if (!isAdmin()) { renderSettings(); return }
+
+  const content = `
+    <div class="section-h" style="margin-top:6px"><h2>Admin Dashboard</h2></div>
+
+    <div class="group">
+      <p class="glab">Preset Profile Pictures</p>
+      <div class="preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
+      <input type="file" accept="image/*" id="preset-input" hidden />
+      <button class="btn-secondary admin-upload-btn" type="button" data-action="upload-preset">+ Upload New Preset</button>
+    </div>
+
+    <div class="group">
+      <p class="glab">Edit User Pizzas &amp; Coins</p>
+      <div class="admin-search-row">
+        <input id="admin-search-input" type="text" placeholder="Name or friend code" />
+        <button type="button" data-action="admin-search">Search</button>
+      </div>
+      <div id="admin-search-results" style="margin-top:0.625rem"></div>
+    </div>
+    <div style="height:8px"></div>
+  `
+
+  mountScreen('settings', content, () => {
+    loadPresetAvatars()
+    app.querySelector('[data-action="upload-preset"]').addEventListener('click', () => app.querySelector('#preset-input').click())
+    app.querySelector('#preset-input').addEventListener('change', (e) => {
+      const file = e.target.files[0]; e.target.value = ''
+      if (file) openAvatarCropper(file, (blob) => uploadPresetAvatar(blob))
+    })
+    app.querySelector('[data-action="admin-search"]').addEventListener('click', runAdminSearch)
+    app.querySelector('#admin-search-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') runAdminSearch()
+    })
+  })
+}
+
+async function loadPresetAvatars() {
+  const grid = app.querySelector('#preset-grid')
+  if (!grid) return
+  const { data, error } = await supabase.from('preset_avatars').select('id, path, url').order('created_at', { ascending: false })
+  if (error) { grid.innerHTML = `<p class="log-empty">${escapeHtml(error.message)}</p>`; return }
+  if (!data || !data.length) { grid.innerHTML = '<p class="log-empty">No presets yet.</p>'; return }
+  grid.innerHTML = data.map(p => `
+    <div class="preset-thumb" data-preset-id="${p.id}" data-preset-path="${escapeHtml(p.path)}">
+      <img src="${p.url}" alt="" />
+      <button class="preset-remove" type="button" data-action="remove-preset" aria-label="Remove preset">✕</button>
+    </div>
+  `).join('')
+  grid.querySelectorAll('[data-action="remove-preset"]').forEach(btn => {
+    btn.addEventListener('click', () => removePresetAvatar(btn.closest('.preset-thumb')))
+  })
+}
+
+async function uploadPresetAvatar(blob) {
+  const path = `presets/${crypto.randomUUID()}.jpg`
+  const { error: uploadError } = await supabase.storage.from('avatars').upload(path, blob, { contentType: 'image/jpeg' })
+  if (uploadError) { toast(uploadError.message); return }
+  const { data } = supabase.storage.from('avatars').getPublicUrl(path)
+  const { error } = await supabase.from('preset_avatars').insert({ path, url: data.publicUrl })
+  if (error) { toast(error.message); return }
+  loadPresetAvatars()
+}
+
+async function removePresetAvatar(el) {
+  const id = el.dataset.presetId
+  const path = el.dataset.presetPath
+  const { error } = await supabase.from('preset_avatars').delete().eq('id', id)
+  if (error) { toast(error.message); return }
+  await supabase.storage.from('avatars').remove([path])
+  loadPresetAvatars()
+}
+
+// Coins aren't a stored column - they're earned pizzas minus owned emotes,
+// plus any adjustment (gifts, or this admin tool). Mirrors coinBalance()
+// but for an arbitrary looked-up profile instead of the signed-in one.
+function adminCoinBalance(profile) {
+  const earned = Math.floor(Math.floor(profile.pizzas) / 12)
+  const owned = Array.isArray(profile.owned_emotes) ? profile.owned_emotes.length : 0
+  return Math.max(0, earned - owned + (profile.coin_adjustment || 0))
+}
+
+async function runAdminSearch() {
+  const input = app.querySelector('#admin-search-input')
+  const resultsEl = app.querySelector('#admin-search-results')
+  const q = input.value.trim().replace(/[,()]/g, '')
+  if (!q) { resultsEl.innerHTML = ''; return }
+  resultsEl.innerHTML = '<p class="log-empty">Searching&hellip;</p>'
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, display_name, friend_code, pizzas, coin_adjustment, owned_emotes, avatar_url')
+    .or(`display_name.ilike.%${q}%,friend_code.ilike.%${q}%`)
+    .limit(10)
+  if (error) { resultsEl.innerHTML = `<p class="log-empty">${escapeHtml(error.message)}</p>`; return }
+  if (!data || !data.length) { resultsEl.innerHTML = '<p class="log-empty">No users found.</p>'; return }
+  resultsEl.innerHTML = data.map(p => `
+    <div class="frow" data-admin-user="${p.id}" role="button" tabindex="0">
+      <img src="${p.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
+      <div><div class="fn">${escapeHtml(p.display_name)}</div><div class="fp">Code ${escapeHtml(p.friend_code || '')} &middot; 🍕 ${formatScore(p.pizzas)} &middot; ${coinImg()} ${adminCoinBalance(p)}</div></div>
+    </div>
+  `).join('')
+  const byId = Object.fromEntries(data.map(p => [p.id, p]))
+  resultsEl.querySelectorAll('[data-admin-user]').forEach(row => {
+    row.addEventListener('click', () => openAdminAdjustPopup(byId[row.dataset.adminUser]))
+  })
+}
+
+function openAdminAdjustPopup(profile) {
+  const o = overlay(`
+    <h3>Edit ${escapeHtml(profile.display_name)}</h3>
+    <p class="confirm-sub">Currently: 🍕 ${formatScore(profile.pizzas)} &middot; ${coinImg()} ${adminCoinBalance(profile)}</p>
+    <label class="field-label" for="admin-pizza-delta">Pizzas +/-</label>
+    <input id="admin-pizza-delta" class="rename-input" type="number" step="0.01" value="0" />
+    <label class="field-label" for="admin-coin-delta">Coins +/-</label>
+    <input id="admin-coin-delta" class="rename-input" type="number" step="1" value="0" />
+    <div class="home-btn-col" style="margin-top:0.25rem">
+      <button type="button" data-action="apply">Apply</button>
+      <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="apply"]').addEventListener('click', async () => {
+    const pizzaDelta = Number(o.querySelector('#admin-pizza-delta').value) || 0
+    const coinDelta = Number(o.querySelector('#admin-coin-delta').value) || 0
+    if (!pizzaDelta && !coinDelta) { o.remove(); return }
+    const ok = await applyAdminEdit(profile, pizzaDelta, coinDelta)
+    o.remove()
+    if (ok) { toast('Applied'); runAdminSearch() }
+  })
+}
+
+// Rides the same bump_pizzas trigger a normal completed session uses (see
+// schema.sql) by inserting an "Admin Edit" session row for the target user,
+// rather than writing profiles.pizzas directly - keeps a single source of
+// truth for how that column changes, and gives the user a visible log entry.
+async function applyAdminEdit(profile, pizzaDelta, coinDelta) {
+  const inserted = await insertSessionRow({
+    user_id: profile.id,
+    completed_at: new Date().toISOString(),
+    minutes: 0,
+    pizzas: pizzaDelta,
+    task: 'Admin Edit',
+  })
+  if (!inserted) return false
+
+  if (coinDelta) {
+    const nextAdjustment = (profile.coin_adjustment || 0) + coinDelta
+    const { error } = await supabase.from('profiles').update({ coin_adjustment: nextAdjustment }).eq('id', profile.id)
+    if (error) { toast(error.message); return false }
+  }
+  return true
+}
+
+// Falls back to the pre-migration column set if `icon` doesn't exist yet,
+// same resilience as fetchLog's select fallback.
+async function insertSessionRow(row) {
+  let { error } = await supabase.from('sessions').insert({ ...row, icon: '🛠️' })
+  if (error) ({ error } = await supabase.from('sessions').insert(row))
+  if (error) { toast(error.message); return false }
+  return true
 }
 
 function openRenamePopup() {
