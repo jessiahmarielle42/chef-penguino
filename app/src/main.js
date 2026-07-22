@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.8.0'
+const APP_VERSION = 'v2.8.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -618,10 +618,7 @@ function renderHome() {
     <button class="cta" type="button" data-action="cook">🔥 Start Cooking</button>
 
     <div class="section-h" style="margin-top:2.75rem"><h2>Recent sessions</h2></div>
-    <div class="friend-swipe-hint" style="margin-top:0.625rem;margin-bottom:1.375rem">
-      <span class="info-badge" aria-hidden="true">i</span>
-      <p>Swipe left on a session to edit</p>
-    </div>
+    <p class="swipe-line" style="margin:0.25rem 0 1rem">Swipe left on a session to edit</p>
     <div class="log-list" id="home-log"><p class="log-empty">Loading&hellip;</p></div>
     <button class="cal-seeall-btn" type="button" data-action="see-all-sessions">See All Sessions</button>
   `
@@ -853,9 +850,7 @@ function calWireHistory(dayMap, todayKey) {
     <div class="cal-sheet" id="cal-sheet">
       <div class="cal-grab" id="cal-grab"></div>
       <div class="cal-sheet-hd"><h3 id="cal-sheet-title">—</h3><span class="cal-sheet-sub" id="cal-sheet-sub"></span></div>
-      <div class="friend-swipe-hint" style="margin:0 1.25rem 0.5rem">
-        <span class="info-badge" aria-hidden="true">i</span><p>Swipe a session left to edit or delete</p>
-      </div>
+      <p class="swipe-line" style="margin:-0.25rem 1.25rem 0.75rem">Swipe a session left to edit or delete</p>
       <div class="cal-sheet-list" id="cal-sheet-list"></div>
     </div>
   `)
@@ -1038,7 +1033,7 @@ function calRenderDayBody(dayMap) {
   if (!arr.length) {
     return '<div class="cal-empty-note">No sessions this day.<br>Tap 🔥 Start Cooking to add one.</div>'
   }
-  let h = `<div class="friend-swipe-hint" style="margin:0.75rem 1.125rem 0.25rem"><span class="info-badge" aria-hidden="true">i</span><p>Tap a session to edit it</p></div>`
+  let h = `<div class="friend-swipe-hint" style="margin:0.75rem 0 0.875rem"><span class="info-badge" aria-hidden="true">i</span><p>Tap a session to edit it</p></div>`
   h += '<div class="cal-timeline">'
   arr.forEach(e => {
     const icon = stableIconFor(e)
@@ -2753,16 +2748,17 @@ function renderAdminUserList(filter) {
 function openAdminAdjustPopup(profile) {
   const curPizzas = Number(profile.pizzas) || 0
   const curCoins = adminCoinBalance(profile)
-  let chosenAvatarUrl = profile.avatar_url || ''
+  // undefined = unchanged, a url string = set to that preset, null = remove
+  // (revert to default penguin). Committed to the DB on Save, not on pick.
+  let avatarChange
   const o = overlay(`
     <h3>Edit ${escapeHtml(profile.display_name)}</h3>
-    <div class="editpic-avatar-wrap" style="margin-bottom:0.375rem">
+    <div class="editpic-avatar-wrap" style="margin-bottom:1.25rem">
       <img class="editpic-avatar" id="admin-edit-avatar" src="${profile.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
+      <button class="editpic-cam" type="button" data-action="edit-pic" aria-label="Edit picture">${CAMERA_SVG}</button>
     </div>
-    <label class="field-label">Profile picture</label>
-    <div class="editpic-presets" id="admin-edit-presets"><p class="editpic-empty">Loading&hellip;</p></div>
 
-    <label class="field-label" for="admin-name">Display Name</label>
+    <label class="field-label" for="admin-name" style="margin-top:0.375rem">Display Name</label>
     <input id="admin-name" class="rename-input" type="text" maxlength="15" value="${escapeHtml(profile.display_name || '')}" />
 
     <label class="field-label" for="admin-pizzas">Pizzas</label>
@@ -2775,7 +2771,15 @@ function openAdminAdjustPopup(profile) {
     </div>
   `, { popupClass: 'popup-wide' })
 
-  loadAdminEditPresets(o, profile.avatar_url, (url) => { chosenAvatarUrl = url })
+  const openPicker = () => {
+    openAdminPicPicker(profile, avatarChange, (choice) => {
+      avatarChange = choice
+      const avatarImg = o.querySelector('#admin-edit-avatar')
+      if (avatarImg) avatarImg.src = choice || `${BASE}assets/penguin-icon.png`
+    })
+  }
+  o.querySelector('#admin-edit-avatar').addEventListener('click', openPicker)
+  o.querySelector('[data-action="edit-pic"]').addEventListener('click', openPicker)
 
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="apply"]').addEventListener('click', async () => {
@@ -2788,7 +2792,7 @@ function openAdminAdjustPopup(profile) {
 
     const profileUpdates = {}
     if (newName !== profile.display_name) profileUpdates.display_name = newName
-    if (chosenAvatarUrl && chosenAvatarUrl !== profile.avatar_url) profileUpdates.avatar_url = chosenAvatarUrl
+    if (avatarChange !== undefined && (avatarChange || null) !== (profile.avatar_url || null)) profileUpdates.avatar_url = avatarChange
     const hasProfileUpdates = Object.keys(profileUpdates).length > 0
 
     if (!pizzaDelta && !coinDelta && !hasProfileUpdates) { o.remove(); return }
@@ -2806,12 +2810,25 @@ function openAdminAdjustPopup(profile) {
   })
 }
 
-// Reuses the same preset-avatar picker mechanism as a normal user's "Edit
-// Picture" popup (preset_avatars table + .editpic-preset styling), just
-// pointed at an arbitrary target profile instead of currentUser.
-async function loadAdminEditPresets(popupEl, currentUrl, onPick) {
-  const grid = popupEl.querySelector('#admin-edit-presets')
-  if (!grid) return
+// Sub-popup opened from the avatar/camera in openAdminAdjustPopup. Only
+// STAGES a choice via onChoose (url / null for remove) - no DB write here,
+// the parent popup's "Save changes" is what commits it.
+async function openAdminPicPicker(profile, stagedUrl, onChoose) {
+  const current = stagedUrl !== undefined ? stagedUrl : (profile.avatar_url || null)
+  const o = overlay(`
+    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
+    <h3>Edit Picture</h3>
+    <div class="editpic-avatar-wrap">
+      <img class="editpic-avatar" src="${current || `${BASE}assets/penguin-icon.png`}" alt="" />
+    </div>
+    <button type="button" class="btn-secondary" data-action="remove-pic">Remove picture</button>
+    <label class="field-label">Or pick a preset</label>
+    <div class="editpic-presets" id="admin-pic-presets"><p class="editpic-empty">Loading&hellip;</p></div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="remove-pic"]').addEventListener('click', () => { onChoose(null); o.remove() })
+
+  const grid = o.querySelector('#admin-pic-presets')
   let list = presetAvatarsCache
   if (!list || !list.length) {
     const { data, error } = await supabase.from('preset_avatars').select('id, url').order('created_at', { ascending: false })
@@ -2820,17 +2837,12 @@ async function loadAdminEditPresets(popupEl, currentUrl, onPick) {
   }
   if (!list.length) { grid.innerHTML = '<p class="editpic-empty">No presets available yet.</p>'; return }
   grid.innerHTML = list.map(p => `
-    <button class="editpic-preset ${p.url === currentUrl ? 'selected' : ''}" type="button" data-url="${escapeHtml(p.url)}">
+    <button class="editpic-preset ${p.url === current ? 'selected' : ''}" type="button" data-url="${escapeHtml(p.url)}">
       <img src="${p.url}" alt="" />
     </button>
   `).join('')
   grid.querySelectorAll('[data-url]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      grid.querySelectorAll('.editpic-preset').forEach(x => x.classList.toggle('selected', x === btn))
-      onPick(btn.dataset.url)
-      const avatarImg = popupEl.querySelector('#admin-edit-avatar')
-      if (avatarImg) avatarImg.src = btn.dataset.url
-    })
+    btn.addEventListener('click', () => { onChoose(btn.dataset.url); o.remove() })
   })
 }
 
