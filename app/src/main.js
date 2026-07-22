@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.7.4'
+const APP_VERSION = 'v2.8.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -15,6 +15,12 @@ function isAdmin() { return currentUser?.email === ADMIN_EMAIL }
 
 let currentUser = null
 let currentProfile = null
+
+// Whichever of renderHome() / renderHistory() is currently on screen, so a
+// session edit or delete (fired from either screen's swipe actions or the
+// History day-sheet) refreshes the right one instead of always bouncing back
+// to Home.
+let afterLogChange = renderHome
 
 // ---------- auth / profile / supabase plumbing (unchanged mechanics) ----------
 async function signInWithGoogle() {
@@ -463,6 +469,8 @@ function googleBtn() {
   return `<button class="gbtn" type="button" data-action="google">${GOOGLE_SVG}<span>Sign in with Google</span></button>`
 }
 
+const CAL_BACK_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>`
+
 const PENCIL_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3Z"/><path d="M13.5 7.5 16.5 10.5"/></svg>`
 const CAMERA_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13.5" r="3.2"/></svg>`
 const COPY_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`
@@ -576,6 +584,7 @@ function toast(msg) {
 //  Home dashboard
 // =================================================================
 function renderHome() {
+  afterLogChange = renderHome
   const lifetime = displayPizzas()
   const stash = stashCount()
   const toNext = 12 - stash
@@ -614,9 +623,11 @@ function renderHome() {
       <p>Swipe left on a session to edit</p>
     </div>
     <div class="log-list" id="home-log"><p class="log-empty">Loading&hellip;</p></div>
+    <button class="cal-seeall-btn" type="button" data-action="see-all-sessions">See All Sessions</button>
   `
 
   mountScreen('home', content, () => {
+    app.querySelector('[data-action="see-all-sessions"]').addEventListener('click', renderHistory)
     app.querySelector('.cta[data-action="cook"]').addEventListener('click', startCookingFlow)
     app.querySelector('[data-action="tile-pizza-info"]')?.addEventListener('click', openPizzaInfo)
     app.querySelector('[data-action="stash-info"]')?.addEventListener('click', openStashInfo)
@@ -677,6 +688,372 @@ function maybeShowCoinMilestone() {
       toast(`${coinImg('toast-coin')} +${gained} coin${gained > 1 ? 's' : ''}!`)
     })
   }
+}
+
+// =================================================================
+//  History / Calendar screen (Month / Week / Day)
+// =================================================================
+let calView = 'month'        // 'month' | 'week' | 'day'
+let calY = null              // displayed month year (month view + nav anchor)
+let calMo = null             // displayed month index 0-11
+let calSelKey = null         // selected day key 'YYYY-MM-DD' (week/day nav + month highlight)
+let calSheetDate = null      // day key currently open in the bottom sheet, or null if closed
+let calSheetFocusId = null   // entry id to scroll-to + flash inside the sheet, once
+let calSheetFreshOpen = false // true right before a user-initiated (animated) sheet open
+
+const CAL_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+const CAL_MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const CAL_DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+const CAL_DOW_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+const CAL_HPX_REM = 2.875 // week-view hour row height (46px at the app's 390px design width)
+
+function calPad2(n) { return String(n).padStart(2, '0') }
+function calKey(y, mo, d) { return `${y}-${calPad2(mo + 1)}-${calPad2(d)}` }
+function calKeyFromDate(dt) { return calKey(dt.getFullYear(), dt.getMonth(), dt.getDate()) }
+function calKeyFromTs(ts) { return calKeyFromDate(new Date(ts)) }
+function calDateFromKey(key) { const [y, mo, d] = key.split('-').map(Number); return new Date(y, mo - 1, d) }
+function calOrdinal(n) { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]) }
+function calFmtTime(ts) { return new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) }
+function calFmtDur(mn) { return formatDuration(mn) }
+// Root font-size in px, so the week view's ~6am auto-scroll lands correctly
+// under the app's viewport-scaled rem sizing (html{font-size:calc(...)}).
+function calRootPx() { return parseFloat(getComputedStyle(document.documentElement).fontSize) || 16 }
+
+function calGroupByDay(log) {
+  const map = new Map()
+  for (const e of log) {
+    const k = calKeyFromTs(e.completedAt)
+    let arr = map.get(k)
+    if (!arr) { arr = []; map.set(k, arr) }
+    arr.push(e)
+  }
+  for (const arr of map.values()) arr.sort((a, b) => a.completedAt - b.completedAt)
+  return map
+}
+
+function calDayTotals(map, key) {
+  const arr = map.get(key) || []
+  let pz = 0, mn = 0
+  arr.forEach(e => { pz += e.pizzas; mn += e.minutes })
+  return { pz, mn, n: arr.length, entries: arr }
+}
+
+function calMonthTotals(map, y, mo) {
+  const prefix = `${y}-${calPad2(mo + 1)}-`
+  let pz = 0, mn = 0
+  for (const [key, arr] of map) {
+    if (!key.startsWith(prefix)) continue
+    arr.forEach(e => { pz += e.pizzas; mn += e.minutes })
+  }
+  return { pz, mn }
+}
+
+// The Monday-start week containing `key`.
+function calWeekDays(key) {
+  const dt = calDateFromKey(key)
+  const off = (dt.getDay() + 6) % 7
+  const monday = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() - off)
+  const days = []
+  for (let i = 0; i < 7; i++) { const d = new Date(monday); d.setDate(monday.getDate() + i); days.push(d) }
+  return days
+}
+
+// Intensity by whole-pizza buckets: 0 = none, 1, 2, 3, and 4+ = most intense.
+function calIntensity(pz) {
+  const n = Math.round(pz)
+  if (n <= 0) return 0
+  if (n >= 4) return 4
+  return n
+}
+
+async function renderHistory() {
+  afterLogChange = renderHistory
+  const today = new Date()
+  if (calY === null) { calY = today.getFullYear(); calMo = today.getMonth() }
+  if (calSelKey === null) calSelKey = calKeyFromDate(today)
+  const todayKey = calKeyFromDate(today)
+
+  const log = await fetchLog(currentUser?.id)
+  const dayMap = calGroupByDay(log)
+
+  let navHtml = ''
+  let sumPz = 0, sumMn = 0
+  if (calView === 'month') {
+    navHtml = `
+      <div class="cal-navbar">
+        <button class="cal-chev" type="button" data-action="cal-prev">‹</button>
+        <div class="cal-navlabel">${CAL_MONTHS[calMo]} ${calY}</div>
+        <button class="cal-chev" type="button" data-action="cal-next">›</button>
+      </div>`
+    const t = calMonthTotals(dayMap, calY, calMo)
+    sumPz = t.pz; sumMn = t.mn
+  } else if (calView === 'week') {
+    const days = calWeekDays(calSelKey)
+    const first = days[0], last = days[6]
+    const label = (first.getMonth() === last.getMonth())
+      ? `${first.getDate()}–${last.getDate()} ${CAL_MONTHS_SHORT[first.getMonth()]}`
+      : `${first.getDate()} ${CAL_MONTHS_SHORT[first.getMonth()]} – ${last.getDate()} ${CAL_MONTHS_SHORT[last.getMonth()]}`
+    navHtml = `
+      <div class="cal-navbar">
+        <button class="cal-chev" type="button" data-action="cal-prev">‹</button>
+        <div class="cal-navlabel">${label}</div>
+        <button class="cal-chev" type="button" data-action="cal-next">›</button>
+      </div>`
+    days.forEach(d => { const t = calDayTotals(dayMap, calKeyFromDate(d)); sumPz += t.pz; sumMn += t.mn })
+  } else {
+    const dt = calDateFromKey(calSelKey)
+    navHtml = `
+      <div class="cal-navbar">
+        <button class="cal-chev" type="button" data-action="cal-prev">‹</button>
+        <div class="cal-navlabel">${CAL_DOW[(dt.getDay() + 6) % 7]} ${dt.getDate()} ${CAL_MONTHS[dt.getMonth()]}</div>
+        <button class="cal-chev" type="button" data-action="cal-next">›</button>
+      </div>`
+    const t = calDayTotals(dayMap, calSelKey)
+    sumPz = t.pz; sumMn = t.mn
+  }
+
+  const subtitle = calView === 'month' ? 'Your cooking calendar'
+    : calView === 'week' ? `Week of the ${calOrdinal(calDateFromKey(calSelKey).getDate())}`
+    : 'Single day view'
+
+  const bodyHtml = calView === 'month' ? calRenderMonthBody(dayMap, todayKey)
+    : calView === 'week' ? calRenderWeekBody(dayMap, todayKey)
+    : calRenderDayBody(dayMap)
+
+  const content = `
+    <div class="cal-hdr">
+      <button class="cal-back" type="button" data-action="cal-back" aria-label="Back">${CAL_BACK_SVG}</button>
+      <div class="cal-hdr-titles"><h1>History</h1><span>${subtitle}</span></div>
+      <button class="cal-today-btn" type="button" data-action="cal-today">Today</button>
+    </div>
+    <div class="cal-seg">
+      <button type="button" class="${calView === 'month' ? 'on' : ''}" data-v="month">Month</button>
+      <button type="button" class="${calView === 'week' ? 'on' : ''}" data-v="week">Week</button>
+      <button type="button" class="${calView === 'day' ? 'on' : ''}" data-v="day">Day</button>
+    </div>
+    ${navHtml}
+    <div class="cal-summary">
+      <div class="cal-stat"><div class="v">${formatScore(sumPz)} 🍕</div><div class="k">Pizzas</div></div>
+      <div class="cal-stat"><div class="v">${calFmtDur(sumMn)}</div><div class="k">Total focus time</div></div>
+    </div>
+    <div class="cal-viewbody">${bodyHtml}</div>
+  `
+
+  mountScreen('home', content, () => calWireHistory(dayMap, todayKey))
+}
+
+// The scrim + sheet are appended directly onto the `.app` shell (like
+// overlay()) rather than living inside the scrollable content string -
+// `.scroll` clips absolutely-positioned descendants via its overflow-y:auto,
+// which would otherwise cut the sheet off instead of letting it cover the
+// full screen (including the tab bar) the way a bottom sheet should.
+function calWireHistory(dayMap, todayKey) {
+  shellEl()?.insertAdjacentHTML('beforeend', `
+    <div class="cal-scrim" id="cal-scrim"></div>
+    <div class="cal-sheet" id="cal-sheet">
+      <div class="cal-grab" id="cal-grab"></div>
+      <div class="cal-sheet-hd"><h3 id="cal-sheet-title">—</h3><span class="cal-sheet-sub" id="cal-sheet-sub"></span></div>
+      <div class="friend-swipe-hint" style="margin:0 1.25rem 0.5rem">
+        <span class="info-badge" aria-hidden="true">i</span><p>Swipe a session left to edit or delete</p>
+      </div>
+      <div class="cal-sheet-list" id="cal-sheet-list"></div>
+    </div>
+  `)
+
+  app.querySelector('[data-action="cal-back"]').addEventListener('click', renderHome)
+  app.querySelector('[data-action="cal-today"]').addEventListener('click', () => {
+    const today = new Date()
+    calY = today.getFullYear(); calMo = today.getMonth(); calSelKey = calKeyFromDate(today)
+    renderHistory()
+  })
+  app.querySelectorAll('.cal-seg button').forEach(b => {
+    b.addEventListener('click', () => {
+      if (b.dataset.v === calView) return
+      calView = b.dataset.v
+      calCloseSheet()
+      renderHistory()
+    })
+  })
+
+  const stepMonth = (delta) => {
+    calMo += delta
+    if (calMo < 0) { calMo = 11; calY-- } else if (calMo > 11) { calMo = 0; calY++ }
+  }
+  const stepDays = (delta) => {
+    const dt = calDateFromKey(calSelKey)
+    dt.setDate(dt.getDate() + delta)
+    calSelKey = calKeyFromDate(dt)
+  }
+  app.querySelector('[data-action="cal-prev"]')?.addEventListener('click', () => {
+    if (calView === 'month') stepMonth(-1); else if (calView === 'week') stepDays(-7); else stepDays(-1)
+    renderHistory()
+  })
+  app.querySelector('[data-action="cal-next"]')?.addEventListener('click', () => {
+    if (calView === 'month') stepMonth(1); else if (calView === 'week') stepDays(7); else stepDays(1)
+    renderHistory()
+  })
+
+  const openDay = (key, focusId) => {
+    calSelKey = key; calSheetDate = key; calSheetFocusId = focusId ?? null; calSheetFreshOpen = true
+    renderHistory()
+  }
+
+  if (calView === 'month') {
+    app.querySelectorAll('.cal-cell.cal-has[data-day]').forEach(c => {
+      c.addEventListener('click', () => openDay(c.dataset.day))
+    })
+  } else if (calView === 'week') {
+    app.querySelectorAll('.cal-wblock[data-day]').forEach(b => {
+      b.addEventListener('click', () => openDay(b.dataset.day))
+    })
+    const scrollEl = app.querySelector('#cal-week-scroll')
+    if (scrollEl) scrollEl.scrollTop = Math.max(0, (6 * CAL_HPX_REM - 0.5) * calRootPx())
+  } else if (calView === 'day') {
+    app.querySelectorAll('.cal-tl-item[data-id]').forEach(it => {
+      it.addEventListener('click', () => openDay(calSelKey, it.dataset.id))
+    })
+  }
+
+  app.querySelector('#cal-scrim')?.addEventListener('click', calCloseSheet)
+  app.querySelector('#cal-grab')?.addEventListener('click', () => closeOpenSwipe())
+  app.querySelector('.cal-sheet-hd')?.addEventListener('click', () => closeOpenSwipe())
+
+  if (calSheetDate) calPopulateSheet(dayMap, calSheetDate)
+}
+
+function calPopulateSheet(dayMap, key) {
+  const t = calDayTotals(dayMap, key)
+  if (!t.n) { calSheetDate = null; return }
+  const dt = calDateFromKey(key)
+  const titleEl = app.querySelector('#cal-sheet-title')
+  const subEl = app.querySelector('#cal-sheet-sub')
+  const listEl = app.querySelector('#cal-sheet-list')
+  if (!titleEl || !subEl || !listEl) return
+  titleEl.textContent = `${CAL_DOW_FULL[dt.getDay()]} ${dt.getDate()} ${CAL_MONTHS[dt.getMonth()]}`
+  subEl.textContent = `${formatScore(t.pz)} 🍕 · ${calFmtDur(t.mn)}`
+  logEntriesById.clear()
+  listEl.innerHTML = t.entries.map(e => renderLogRow(e, true)).join('')
+  wireLogSwipe(listEl)
+
+  const scrim = app.querySelector('#cal-scrim')
+  const sheet = app.querySelector('#cal-sheet')
+  const show = () => { scrim.classList.add('show'); sheet.classList.add('show') }
+  if (calSheetFreshOpen) { calSheetFreshOpen = false; requestAnimationFrame(show) } else show()
+
+  if (calSheetFocusId != null) {
+    const id = calSheetFocusId
+    calSheetFocusId = null
+    const target = listEl.querySelector(`.log-row-wrap[data-log-id="${id}"]`)
+    if (target) {
+      setTimeout(() => {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        target.classList.add('cal-flash')
+        setTimeout(() => target.classList.remove('cal-flash'), 2400)
+      }, 340)
+    }
+  }
+}
+
+function calCloseSheet() {
+  calSheetDate = null
+  app.querySelector('#cal-scrim')?.classList.remove('show')
+  app.querySelector('#cal-sheet')?.classList.remove('show')
+  closeOpenSwipe()
+}
+
+function calRenderMonthBody(dayMap, todayKey) {
+  const y = calY, mo = calMo
+  const dim = new Date(y, mo + 1, 0).getDate()
+  const off = (new Date(y, mo, 1).getDay() + 6) % 7
+  let h = '<div class="cal-monthpanel"><div class="cal-dow">' + CAL_DOW.map(d => `<span>${d}</span>`).join('') + '</div><div class="cal-grid">'
+  for (let i = 0; i < off; i++) h += '<div class="cal-cell cal-empty-month"></div>'
+  for (let d = 1; d <= dim; d++) {
+    const key = calKey(y, mo, d)
+    const t = calDayTotals(dayMap, key)
+    const has = t.n > 0
+    const inten = calIntensity(t.pz)
+    const isTdy = key === todayKey
+    const sel = key === calSelKey
+    const cls = 'cal-cell' + (has ? ' cal-has cal-i' + inten : '') + (isTdy ? ' cal-today' : '') + (sel ? ' cal-sel' : '')
+    const total = Math.min(Math.round(t.pz), 10)
+    let dotsHtml = ''
+    if (total > 0) {
+      const mkRow = n => `<div class="cal-dotrow">${Array.from({ length: n }).map(() => '<i></i>').join('')}</div>`
+      if (total <= 5) dotsHtml = mkRow(total)
+      else { const top = Math.floor(total / 2), bottom = Math.ceil(total / 2); dotsHtml = mkRow(top) + mkRow(bottom) }
+    }
+    const dots = has ? `<div class="cal-dots">${dotsHtml}</div>` : ''
+    h += `<div class="${cls}" data-day="${key}"><div class="cal-dnum">${d}</div>${dots}</div>`
+  }
+  h += '</div></div>'
+  h += `<div class="cal-legend"><span>Less 🍕</span>
+    <span class="cal-legend-sw"></span>
+    <span class="cal-legend-sw cal-i1"></span>
+    <span class="cal-legend-sw cal-i2"></span>
+    <span class="cal-legend-sw cal-i3"></span>
+    <span class="cal-legend-sw cal-i4"></span>
+    <span>More 🍕</span></div>`
+  h += `<div class="cal-hint"><span class="info-badge" aria-hidden="true">i</span><p>Tap a day to see more details.</p></div>`
+  return h
+}
+
+function calRenderWeekBody(dayMap, todayKey) {
+  const days = calWeekDays(calSelKey)
+  let g = `<div class="cal-weekgrid" id="cal-week-scroll"><div class="cal-wk-table" style="--cal-hpx:${CAL_HPX_REM}rem">`
+  g += '<div class="cal-wk-corner"></div>'
+  days.forEach(dt => {
+    const key = calKeyFromDate(dt)
+    const tdy = key === todayKey
+    const t = calDayTotals(dayMap, key)
+    const tot = t.mn > 0 ? `<span class="cal-wk-tot">${calFmtDur(t.mn)}</span>` : ''
+    g += `<div class="cal-wk-head${tdy ? ' cal-tdy' : ''}"><span class="cal-wk-d0">${CAL_DOW[(dt.getDay() + 6) % 7][0]}</span><b>${dt.getDate()}</b>${tot}</div>`
+  })
+  let gutter = ''
+  for (let hh = 0; hh <= 24; hh++) {
+    const hd = hh % 24
+    const lab = hd === 0 ? '12a' : (hd < 12 ? hd + 'a' : (hd === 12 ? '12p' : (hd - 12) + 'p'))
+    gutter += `<div class="cal-hrlabel" style="top:${hh * CAL_HPX_REM}rem">${lab}</div>`
+  }
+  g += `<div class="cal-wk-gutter">${gutter}</div>`
+  days.forEach(dt => {
+    const key = calKeyFromDate(dt)
+    const arr = dayMap.get(key) || []
+    let blocks = ''
+    arr.forEach(e => {
+      const d = new Date(e.completedAt)
+      const start = d.getHours() + d.getMinutes() / 60
+      const top = start * CAL_HPX_REM
+      const ht = Math.max((e.minutes / 60) * CAL_HPX_REM, 1.375)
+      const low = e.pizzas < 3 ? ' cal-low' : ''
+      blocks += `<div class="cal-wblock${low}" style="top:${top}rem; height:${ht}rem" data-day="${key}">🍕 ${formatScore1(e.pizzas)}</div>`
+    })
+    g += `<div class="cal-wk-col" data-day="${key}">${blocks}</div>`
+  })
+  g += '</div></div>'
+  return g
+}
+
+function calRenderDayBody(dayMap) {
+  const arr = dayMap.get(calSelKey) || []
+  if (!arr.length) {
+    return '<div class="cal-empty-note">No sessions this day.<br>Tap 🔥 Start Cooking to add one.</div>'
+  }
+  let h = `<div class="friend-swipe-hint" style="margin:0.75rem 1.125rem 0.25rem"><span class="info-badge" aria-hidden="true">i</span><p>Tap a session to edit it</p></div>`
+  h += '<div class="cal-timeline">'
+  arr.forEach(e => {
+    const icon = stableIconFor(e)
+    const task = escapeHtml((e.task || '').replace(COIN_TASK_RE, '')) || 'Focus session'
+    h += `<div class="cal-tl-item" data-id="${e.id}" role="button" tabindex="0">
+      <div class="cal-tl-time">${calFmtTime(e.completedAt)}</div>
+      <div class="cal-tl-rail"><div class="cal-tl-dot"></div><div class="cal-tl-line"></div></div>
+      <div class="cal-tl-card">
+        <div class="cal-tl-top"><span class="cal-tl-ico">${icon}</span><span class="cal-tl-name">${task}</span></div>
+        <div class="cal-tl-meta"><span>${calFmtDur(e.minutes)}</span><span class="cal-tl-pz">🍕 ${formatScore(e.pizzas)}</span></div>
+      </div>
+    </div>`
+  })
+  h += '</div>'
+  return h
 }
 
 function pizzaImagePath(count) {
@@ -1599,7 +1976,7 @@ function openEditLogPopup(id) {
     const ok = await saveLogEdit(id, { task: newName, icon: selectedIcon })
     if (!ok) return
     o.remove()
-    renderHome()
+    afterLogChange()
   })
 }
 
@@ -1632,7 +2009,7 @@ function confirmDeleteLog(id) {
     o.remove()
     const ok = await deleteLogEntry(id, rec.entry.pizzas)
     if (!ok) return
-    renderHome()
+    afterLogChange()
   })
 }
 
@@ -2056,32 +2433,35 @@ function renderAdminDashboard() {
   const content = `
     <div class="section-h" style="margin-top:6px"><h2>Admin Dashboard</h2></div>
 
-    <div class="group">
-      <p class="glab">Preset Profile Pictures</p>
-      <div class="adm-preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
-      <button class="admin-upload-btn" type="button" data-action="toggle-preset-edit">Edit Pictures</button>
-      <input type="file" accept="image/*" id="preset-input" hidden />
-    </div>
-
-    <div class="group">
-      <p class="glab">Edit User Pizzas &amp; Coins</p>
-      <div class="adm-search-card">
-        <span class="adm-search-ic" aria-hidden="true">🔍</span>
-        <input id="admin-search-input" type="text" placeholder="Name or friend code" />
-        <button type="button" data-action="admin-search">Search</button>
+    <div class="admin-dash">
+      <div class="group">
+        <p class="glab">Preset Profile Pictures</p>
+        <div class="adm-preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
+        <button class="admin-upload-btn" type="button" data-action="toggle-preset-edit">Edit Pictures</button>
+        <input type="file" accept="image/*" id="preset-input" hidden />
       </div>
-      <div id="admin-search-results" style="margin-top:0.875rem"></div>
-    </div>
 
-    <div class="group">
-      <p class="glab">Emote Types</p>
-      <div class="adm-tags" id="adm-tags"><p class="editpic-empty">Loading&hellip;</p></div>
-      <div class="adm-search-card" style="margin-top:0.75rem">
-        <input id="adm-new-tag" type="text" placeholder="New type name" maxlength="20" />
-        <button type="button" data-action="add-tag">Add</button>
+      <div class="group">
+        <p class="glab">Emote Types</p>
+        <div class="adm-tags" id="adm-tags"><p class="editpic-empty">Loading&hellip;</p></div>
+        <div class="adm-search-card" style="margin-top:0.75rem">
+          <input id="adm-new-tag" type="text" placeholder="New type name" maxlength="20" />
+          <button type="button" data-action="add-tag">Add</button>
+        </div>
+        <p class="glab" style="margin-top:1.5rem">Tag Emotes</p>
+        <div class="glist" id="adm-emote-list"></div>
       </div>
-      <p class="glab" style="margin-top:1.5rem">Tag Emotes</p>
-      <div class="glist" id="adm-emote-list"></div>
+
+      <!-- Users last: this list can get long, so it lives at the bottom -->
+      <div class="group">
+        <p class="glab">Edit User Pizzas, Coins &amp; Names</p>
+        <div class="adm-search-card">
+          <span class="adm-search-ic" aria-hidden="true">🔍</span>
+          <input id="admin-search-input" type="text" placeholder="Filter by name or friend code" />
+        </div>
+        <div class="adm-list-count" id="admin-user-count"></div>
+        <div class="adm-user-scroll" id="admin-user-scroll"><p class="log-empty">Loading&hellip;</p></div>
+      </div>
     </div>
     <div style="height:8px"></div>
   `
@@ -2097,14 +2477,13 @@ function renderAdminDashboard() {
       presetEditMode = !presetEditMode
       renderPresetGrid()
     })
-    app.querySelector('[data-action="admin-search"]').addEventListener('click', runAdminSearch)
-    app.querySelector('#admin-search-input').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') runAdminSearch()
-    })
 
     loadEmoteData(true).then(renderAdminEmoteTypes)
     app.querySelector('[data-action="add-tag"]').addEventListener('click', addEmoteTag)
     app.querySelector('#adm-new-tag').addEventListener('keydown', (e) => { if (e.key === 'Enter') addEmoteTag() })
+
+    loadAdminUsers()
+    app.querySelector('#admin-search-input').addEventListener('input', (e) => renderAdminUserList(e.target.value))
   })
 }
 
@@ -2321,20 +2700,38 @@ function adminCoinBalance(profile) {
   return Math.max(0, earned - owned + (profile.coin_adjustment || 0))
 }
 
-async function runAdminSearch() {
-  const input = app.querySelector('#admin-search-input')
-  const resultsEl = app.querySelector('#admin-search-results')
-  const q = input.value.trim().replace(/[,()]/g, '')
-  if (!q) { resultsEl.innerHTML = ''; return }
-  resultsEl.innerHTML = '<p class="log-empty">Searching&hellip;</p>'
+// All profiles, loaded once when the dashboard mounts so the Users list is
+// always visible & scrollable; the search input then just filters this
+// cache client-side instead of re-querying on every keystroke.
+let adminUsersCache = []
+
+async function loadAdminUsers() {
+  const scrollEl = app.querySelector('#admin-user-scroll')
+  if (scrollEl) scrollEl.innerHTML = '<p class="log-empty">Loading&hellip;</p>'
   const { data, error } = await supabase
     .from('profiles')
     .select('id, display_name, friend_code, pizzas, coin_adjustment, owned_emotes, avatar_url')
-    .or(`display_name.ilike.%${q}%,friend_code.ilike.%${q}%`)
-    .limit(10)
-  if (error) { resultsEl.innerHTML = `<p class="log-empty">${escapeHtml(error.message)}</p>`; return }
-  if (!data || !data.length) { resultsEl.innerHTML = '<p class="log-empty">No users found.</p>'; return }
-  resultsEl.innerHTML = `<div class="glist">${data.map(p => `
+    .order('display_name', { ascending: true })
+    .limit(200)
+  if (error) {
+    if (scrollEl) scrollEl.innerHTML = `<p class="log-empty">${escapeHtml(error.message)}</p>`
+    return
+  }
+  adminUsersCache = data || []
+  renderAdminUserList(app.querySelector('#admin-search-input')?.value || '')
+}
+
+function renderAdminUserList(filter) {
+  const scrollEl = app.querySelector('#admin-user-scroll')
+  const countEl = app.querySelector('#admin-user-count')
+  if (!scrollEl) return
+  const q = (filter || '').trim().toLowerCase()
+  const list = q
+    ? adminUsersCache.filter(p => (p.display_name || '').toLowerCase().includes(q) || (p.friend_code || '').toLowerCase().includes(q))
+    : adminUsersCache
+  if (countEl) countEl.textContent = q ? `${list.length} of ${adminUsersCache.length} users` : `${adminUsersCache.length} users`
+  if (!list.length) { scrollEl.innerHTML = '<p class="log-empty">No users found.</p>'; return }
+  scrollEl.innerHTML = `<div class="glist">${list.map(p => `
     <div class="adm-userrow" data-admin-user="${p.id}" role="button" tabindex="0">
       <img src="${p.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
       <div class="adm-u-info"><div class="adm-u-name">${escapeHtml(p.display_name)}</div><div class="adm-u-code">Code ${escapeHtml(p.friend_code || '')}</div></div>
@@ -2345,17 +2742,29 @@ async function runAdminSearch() {
       </div>
     </div>
   `).join('')}</div>`
-  const byId = Object.fromEntries(data.map(p => [p.id, p]))
-  resultsEl.querySelectorAll('[data-admin-user]').forEach(row => {
+  const byId = Object.fromEntries(list.map(p => [p.id, p]))
+  scrollEl.querySelectorAll('[data-admin-user]').forEach(row => {
     row.addEventListener('click', () => openAdminAdjustPopup(byId[row.dataset.adminUser]))
   })
 }
 
+// Per-user edit popup: pizzas & coins (original purpose) plus display name
+// and profile picture, so an admin can also clean up a profane name/avatar.
 function openAdminAdjustPopup(profile) {
   const curPizzas = Number(profile.pizzas) || 0
   const curCoins = adminCoinBalance(profile)
+  let chosenAvatarUrl = profile.avatar_url || ''
   const o = overlay(`
     <h3>Edit ${escapeHtml(profile.display_name)}</h3>
+    <div class="editpic-avatar-wrap" style="margin-bottom:0.375rem">
+      <img class="editpic-avatar" id="admin-edit-avatar" src="${profile.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
+    </div>
+    <label class="field-label">Profile picture</label>
+    <div class="editpic-presets" id="admin-edit-presets"><p class="editpic-empty">Loading&hellip;</p></div>
+
+    <label class="field-label" for="admin-name">Display Name</label>
+    <input id="admin-name" class="rename-input" type="text" maxlength="15" value="${escapeHtml(profile.display_name || '')}" />
+
     <label class="field-label" for="admin-pizzas">Pizzas</label>
     <input id="admin-pizzas" class="rename-input" type="number" step="0.01" value="${curPizzas}" />
     <label class="field-label" for="admin-coins">Coins</label>
@@ -2365,17 +2774,63 @@ function openAdminAdjustPopup(profile) {
       <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
     </div>
   `, { popupClass: 'popup-wide' })
+
+  loadAdminEditPresets(o, profile.avatar_url, (url) => { chosenAvatarUrl = url })
+
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="apply"]').addEventListener('click', async () => {
+    const newName = o.querySelector('#admin-name').value.trim().slice(0, 15) || profile.display_name
     const newPizzas = Number(o.querySelector('#admin-pizzas').value)
     const newCoins = Number(o.querySelector('#admin-coins').value)
     if (Number.isNaN(newPizzas) || Number.isNaN(newCoins)) { toast('Enter valid numbers'); return }
     const pizzaDelta = Math.round((newPizzas - curPizzas) * 100) / 100
     const coinDelta = Math.round(newCoins - curCoins)
-    if (!pizzaDelta && !coinDelta) { o.remove(); return }
-    const ok = await applyAdminEdit(profile, pizzaDelta, coinDelta)
+
+    const profileUpdates = {}
+    if (newName !== profile.display_name) profileUpdates.display_name = newName
+    if (chosenAvatarUrl && chosenAvatarUrl !== profile.avatar_url) profileUpdates.avatar_url = chosenAvatarUrl
+    const hasProfileUpdates = Object.keys(profileUpdates).length > 0
+
+    if (!pizzaDelta && !coinDelta && !hasProfileUpdates) { o.remove(); return }
+
+    // Admins can update any profile (RLS policy already grants this) - no
+    // migration needed here.
+    if (hasProfileUpdates) {
+      const { error } = await supabase.from('profiles').update(profileUpdates).eq('id', profile.id)
+      if (error) { toast(error.message); return }
+      Object.assign(profile, profileUpdates)
+    }
+    const ok = (pizzaDelta || coinDelta) ? await applyAdminEdit(profile, pizzaDelta, coinDelta) : true
     o.remove()
-    if (ok) { toast('Applied'); runAdminSearch() }
+    if (ok) { toast('Applied'); renderAdminUserList(app.querySelector('#admin-search-input')?.value || '') }
+  })
+}
+
+// Reuses the same preset-avatar picker mechanism as a normal user's "Edit
+// Picture" popup (preset_avatars table + .editpic-preset styling), just
+// pointed at an arbitrary target profile instead of currentUser.
+async function loadAdminEditPresets(popupEl, currentUrl, onPick) {
+  const grid = popupEl.querySelector('#admin-edit-presets')
+  if (!grid) return
+  let list = presetAvatarsCache
+  if (!list || !list.length) {
+    const { data, error } = await supabase.from('preset_avatars').select('id, url').order('created_at', { ascending: false })
+    if (error) { grid.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
+    list = data || []
+  }
+  if (!list.length) { grid.innerHTML = '<p class="editpic-empty">No presets available yet.</p>'; return }
+  grid.innerHTML = list.map(p => `
+    <button class="editpic-preset ${p.url === currentUrl ? 'selected' : ''}" type="button" data-url="${escapeHtml(p.url)}">
+      <img src="${p.url}" alt="" />
+    </button>
+  `).join('')
+  grid.querySelectorAll('[data-url]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      grid.querySelectorAll('.editpic-preset').forEach(x => x.classList.toggle('selected', x === btn))
+      onPick(btn.dataset.url)
+      const avatarImg = popupEl.querySelector('#admin-edit-avatar')
+      if (avatarImg) avatarImg.src = btn.dataset.url
+    })
   })
 }
 
@@ -2407,21 +2862,48 @@ async function insertSessionRow(row) {
   return true
 }
 
+// Small, tasteful (non-exhaustive) blocklist for self-chosen display names.
+// Substring match on the lowercased name - keeps moderation simple without a
+// migration or external service. Admins editing OTHER users' names (see
+// openAdminAdjustPopup) are exempt on purpose, so they can fix a bad name.
+const NAME_BLOCKLIST = [
+  'fuck', 'shit', 'bitch', 'asshole', 'assh0le', 'cunt', 'dick', 'pussy',
+  'nigger', 'nigga', 'fag', 'faggot', 'whore', 'slut', 'retard', 'rape',
+  'nazi', 'cock', 'twat', 'bastard', 'dyke', 'chink', 'spic', 'kike',
+]
+function isNameAllowed(name) {
+  const n = (name || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  return !NAME_BLOCKLIST.some(w => n.includes(w))
+}
+
 function openRenamePopup() {
   const o = overlay(`
     <h3>Edit name</h3>
     <input id="rename-input" class="rename-input" type="text" maxlength="15" value="${escapeHtml(currentProfile?.display_name || '')}" placeholder="Display name" />
+    <p class="inline-error" id="rename-error">That name isn't allowed &mdash; please choose another.</p>
     <div class="home-btn-col">
       <button type="button" data-action="save">Save</button>
       <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
     </div>
   `)
   const input = o.querySelector('#rename-input')
+  const errEl = o.querySelector('#rename-error')
+  const saveBtn = o.querySelector('[data-action="save"]')
+  const validate = () => {
+    const ok = isNameAllowed(input.value)
+    errEl.classList.toggle('show', !ok)
+    input.classList.toggle('err', !ok)
+    saveBtn.disabled = !ok
+    return ok
+  }
+  input.addEventListener('input', validate)
+  validate()
   setTimeout(() => input.focus(), 50)
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="save"]').addEventListener('click', async () => {
     const newName = input.value.trim().slice(0, 15)
     if (!newName) return
+    if (!validate()) return
     const { error } = await supabase.from('profiles').update({ display_name: newName }).eq('id', currentUser.id)
     if (error) { toast(error.message); return }
     currentProfile.display_name = newName
