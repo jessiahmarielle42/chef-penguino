@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.9.1'
+const APP_VERSION = 'v2.10.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -241,9 +241,27 @@ function addSessionPizzas(minutes) {
   save()
 }
 
-function logSession({ completedAt, minutes, pizzas, task }) {
-  state.log.unshift({ id: crypto.randomUUID(), completedAt, minutes, pizzas, task })
+function logSession({ completedAt, minutes, pizzas, task, icon }) {
+  const entry = { id: crypto.randomUUID(), completedAt, minutes, pizzas, task }
+  if (icon) entry.icon = icon
+  state.log.unshift(entry)
   save()
+}
+
+// Records a "Coin earned!" marker in the session log so the pizza -> coin
+// conversion is visible to the user. Stored like the admin coin rows (0 min,
+// 0 pizzas, amount carried in the task label) so no schema change is needed;
+// rendered non-editable (see isCoinEntry). Timestamped just after the session
+// that earned it so it sorts directly above it in the log.
+async function logCoinConversion(count, completedAt) {
+  if (count < 1) return
+  const label = `Coin earned! (+${count} coin${count === 1 ? '' : 's'})`
+  const ts = completedAt + 1000
+  if (currentUser) {
+    await insertSessionRow({ user_id: currentUser.id, completed_at: new Date(ts).toISOString(), minutes: 0, pizzas: 0, task: label, icon: '🪙' })
+  } else {
+    logSession({ completedAt: ts, minutes: 0, pizzas: 0, task: label, icon: '🪙' })
+  }
 }
 
 async function finalizeSession(playAlarm) {
@@ -251,6 +269,11 @@ async function finalizeSession(playAlarm) {
   const minutes = t.elapsedMs / 60000
   const pizzasEarned = minutes / 60 // full precision - see addSessionPizzas
   const completedAt = Date.now()
+  // Base total BEFORE this session (DB value for signed-in, local for guest),
+  // used to detect whether this session pushes the user across a 12-pizza coin
+  // threshold.
+  const oldTotal = Number(displayPizzas()) || 0
+  const coinsBefore = Math.floor(Math.floor(oldTotal) / 12)
   addSessionPizzas(minutes)
   logSession({ completedAt, minutes, pizzas: pizzasEarned, task: t.task })
   state.timer = null
@@ -268,8 +291,15 @@ async function finalizeSession(playAlarm) {
       state.pendingSessions.push(row)
       save()
     }
+    // Optimistically reflect the new total so the coin chip updates right away,
+    // even if the profile refresh below lags or fails; refreshProfile() then
+    // reconciles against the authoritative DB value.
+    if (currentProfile) currentProfile.pizzas = oldTotal + pizzasEarned
     await refreshProfile()
   }
+
+  const coinsAfter = Math.floor(Math.floor(oldTotal + pizzasEarned) / 12)
+  if (coinsAfter > coinsBefore) await logCoinConversion(coinsAfter - coinsBefore, completedAt)
 
   if (playAlarm) renderTapToContinue(() => renderHome(), true, { minutes, pizzas: pizzasEarned })
   else renderHome()
@@ -651,7 +681,7 @@ function renderHome() {
 
     <button class="cta" type="button" data-action="cook">🔥 Start Cooking</button>
 
-    <div class="section-h" style="margin-top:2.75rem"><h2>Recent sessions</h2></div>
+    <div class="section-h" style="margin-top:2.75rem"><h2 class="section-h-lg">Recent sessions</h2></div>
     <p class="swipe-line" style="margin:0.25rem 0 1rem">Swipe left on a session to edit</p>
     <div class="log-list" id="home-log"><p class="log-empty">Loading&hellip;</p></div>
     <button class="cal-seeall-btn" type="button" data-action="see-all-sessions">📅&nbsp; See All Sessions</button>
@@ -1103,14 +1133,22 @@ function calRenderDayBody(dayMap) {
   let h = `<div class="friend-swipe-hint" style="margin:0.75rem 0 0.875rem"><span class="info-badge" aria-hidden="true">i</span><p>Tap a session to edit it</p></div>`
   h += '<div class="cal-timeline">'
   arr.forEach(e => {
-    const icon = stableIconFor(e)
+    const isCoin = isCoinEntry(e)
+    // Coin conversions get the gold coin glyph; admin edits keep their stored
+    // tools icon; everything else uses its stable food icon.
+    const icon = (isCoin && !isAdminEditEntry(e)) ? coinImg('log-coin') : stableIconFor(e)
+    const coinAmt = (COIN_TASK_RE.exec(e.task || '') || [])[1] || ''
+    const metric = isCoin ? `${coinImg('log-coin')} ${coinAmt}`.trim() : `🍕 ${formatScore(e.pizzas)}`
     const task = escapeHtml((e.task || '').replace(COIN_TASK_RE, '')) || 'Focus session'
     h += `<div class="cal-tl-item" data-id="${e.id}" role="button" tabindex="0">
       <div class="cal-tl-time">${calFmtTime(e.completedAt)}</div>
       <div class="cal-tl-rail"><div class="cal-tl-dot"></div><div class="cal-tl-line"></div></div>
       <div class="cal-tl-card">
-        <div class="cal-tl-top"><span class="cal-tl-ico">${icon}</span><span class="cal-tl-name">${task}</span></div>
-        <div class="cal-tl-meta"><span>${calFmtDur(e.minutes)}</span><span class="cal-tl-pz">🍕 ${formatScore(e.pizzas)}</span></div>
+        <div class="cal-tl-cardbody">
+          <div class="cal-tl-top"><span class="cal-tl-ico">${icon}</span><span class="cal-tl-name">${task}</span></div>
+          <div class="cal-tl-meta"><span>${calFmtDur(e.minutes)}</span></div>
+        </div>
+        <span class="cal-tl-pz">${metric}</span>
       </div>
     </div>`
   })
@@ -1482,7 +1520,7 @@ async function loadFriendsList() {
         ${rank}
         <img src="${f.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
         <div><div class="fn">${name}</div><div class="fp">Code ${escapeHtml(f.friend_code || '')}</div></div>
-        <div class="score">🍕 ${formatScore(f.pizzas)}</div>
+        <div class="score">🍕 ${formatScore(Number(f.pizzas) || 0)}</div>
         <button type="button" class="frow-more" data-more="${f.id}" aria-label="More actions">⋮</button>
       </div>
     `
@@ -1515,10 +1553,10 @@ function openFriendActions(friend, alreadyNooted) {
     <img class="popup-profile-avatar" src="${friend.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
     <div class="popup-profile-name">${escapeHtml(chefName(friend.display_name))}</div>
     <div class="home-btn-col">
-      <button type="button" class="btn-secondary" data-action="visit">🏠 Visit Pizzeria</button>
-      <button type="button" class="btn-secondary" data-action="noot">🐧 Noot</button>
+      <button type="button" data-action="visit">🏠 Visit Pizzeria</button>
+      <button type="button" data-action="noot">🐧 Noot</button>
       <button type="button" data-action="gift">🎁 Gift Coins</button>
-      <button type="button" class="btn-secondary" data-action="report">🚩 Report</button>
+      <button type="button" data-action="report">🚩 Report</button>
       <button type="button" class="btn-danger" data-action="remove">🗑 Remove</button>
       <button type="button" class="btn-danger" data-action="block">🚫 Block</button>
     </div>
@@ -1537,7 +1575,8 @@ function openFriendActions(friend, alreadyNooted) {
   o.querySelector('[data-action="block"]').addEventListener('click', () => { o.remove(); confirmBlockFriend(friend) })
 }
 
-const REPORT_REASONS = ['Spam', 'Harassment', 'Inappropriate name or picture', 'Other']
+const REPORT_REASONS = ['Spam', 'Harassment', 'Inappropriate name', 'Other']
+const REPORT_MIN_DETAILS = 10
 
 function openReportPopup(friend) {
   let selected = null
@@ -1548,25 +1587,30 @@ function openReportPopup(friend) {
     <div class="report-reasons">
       ${REPORT_REASONS.map(r => `<button type="button" class="chip report-reason" data-reason="${escapeHtml(r)}">${escapeHtml(r)}</button>`).join('')}
     </div>
-    <textarea id="report-details" class="rename-input report-details" maxlength="300" placeholder="Add details (optional)"></textarea>
+    <textarea id="report-details" class="rename-input report-details" maxlength="300" placeholder="Add details (required, min ${REPORT_MIN_DETAILS} characters)"></textarea>
     <div class="home-btn-col" style="margin-top:0.25rem">
       <button type="button" class="btn-danger" data-action="submit" disabled>Submit report</button>
       <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
     </div>
   `, { popupClass: 'popup-wide' })
   const submitBtn = o.querySelector('[data-action="submit"]')
+  const detailsEl = o.querySelector('#report-details')
+  // Submit unlocks only once a reason is picked AND at least REPORT_MIN_DETAILS
+  // characters of detail are written, so reports carry enough context to action.
+  const refreshSubmit = () => { submitBtn.disabled = !(selected && detailsEl.value.trim().length >= REPORT_MIN_DETAILS) }
   o.querySelectorAll('.report-reason').forEach(btn => {
     btn.addEventListener('click', () => {
       selected = btn.dataset.reason
       o.querySelectorAll('.report-reason').forEach(b => b.classList.toggle('selected', b === btn))
-      submitBtn.disabled = false
+      refreshSubmit()
     })
   })
+  detailsEl.addEventListener('input', refreshSubmit)
   o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   submitBtn.addEventListener('click', async () => {
-    if (!selected) return
-    const details = o.querySelector('#report-details').value.trim().slice(0, 300) || null
+    const details = detailsEl.value.trim().slice(0, 300)
+    if (!selected || details.length < REPORT_MIN_DETAILS) return
     const { error } = await supabase.rpc('report_user', { target_id: friend.id, reason: selected, details })
     if (error) { toast(error.message); return }
     o.remove()
@@ -1632,11 +1676,26 @@ async function renderBlockedList(o) {
 
 function confirmDeleteAccount() {
   const o = overlay(`
-    <h3>Delete account?</h3>
+    <h3>Delete account? ⚠️</h3>
     <p>This permanently erases your account, progress, friends and coins. This can't be undone.</p>
     <div class="home-btn-col">
       <button type="button" class="btn-danger" data-action="yes">Delete my account</button>
       <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  // First confirm just opens a SECOND confirmation - account deletion is
+  // irreversible, so we require two deliberate taps.
+  o.querySelector('[data-action="yes"]').addEventListener('click', () => { o.remove(); confirmDeleteAccountFinal() })
+}
+
+function confirmDeleteAccountFinal() {
+  const o = overlay(`
+    <h3>Are you absolutely sure? ⚠️</h3>
+    <p>Last chance &mdash; this will permanently delete everything and you will be signed out. This cannot be undone.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Yes, delete forever</button>
+      <button type="button" class="btn-secondary" data-action="no">Keep my account</button>
     </div>
   `)
   o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
@@ -1645,7 +1704,7 @@ function confirmDeleteAccount() {
     btn.disabled = true
     btn.textContent = 'Deleting…'
     const { error } = await supabase.rpc('delete_own_account')
-    if (error) { btn.disabled = false; btn.textContent = 'Delete my account'; toast(error.message); return }
+    if (error) { btn.disabled = false; btn.textContent = 'Yes, delete forever'; toast(error.message); return }
     await supabase.auth.signOut()
     currentUser = null
     currentProfile = null
@@ -1826,7 +1885,7 @@ function renderFriendHome(friend) {
       </div>
     </div>
 
-    <div class="section-h"><h2>Recent sessions</h2></div>
+    <div class="section-h"><h2 class="section-h-lg">Recent sessions</h2></div>
     <div class="log-list" id="home-log"><p class="log-empty">Loading&hellip;</p></div>
   `
 
@@ -1975,6 +2034,10 @@ const COIN_TASK_RE = / \(([+-]?\d+(?:\.\d+)?) coins?\)$/
 // stored before this labeling existed (task === plain 'Admin Edit').
 function isAdminEditEntry(entry) { return /^Admin Edit\b/.test(entry.task || '') }
 
+// Coin rows (admin coin adjustments and pizza->coin conversions) are an audit
+// trail, not user sessions, so they can't be edited or deleted.
+function isCoinEntry(entry) { return entry.icon === '🪙' || COIN_TASK_RE.test(entry.task || '') }
+
 function logRowMetric(entry) {
   const m = COIN_TASK_RE.exec(entry.task || '')
   if (m) return `${coinImg('log-coin')} ${m[1]}`
@@ -1994,10 +2057,12 @@ function renderLogRow(entry, editable) {
   // Always the tools icon for an admin-edit row, regardless of what icon (if
   // any) got stored for it - guarantees a consistent, unambiguous glyph even
   // for rows written before this rule existed.
-  const icon = isAdminEdit ? '🛠️' : stableIconFor(entry)
+  // Coin conversions show the app's gold coin image (not the coin emoji, which
+  // can render as a dull/silver glyph on some platforms).
+  const icon = isAdminEdit ? '🛠️' : (isCoinEntry(entry) ? coinImg('log-coin') : stableIconFor(entry))
   // Admin-edit rows are an audit trail, not a session the user created - they
   // can't be renamed, re-iconed, or deleted.
-  const canEdit = editable && entry.id && !isAdminEdit
+  const canEdit = editable && entry.id && !isAdminEdit && !isCoinEntry(entry)
   if (canEdit) logEntriesById.set(entry.id, { entry, icon })
 
   const actions = canEdit ? `
@@ -2419,7 +2484,7 @@ function renderSettings(highlightProfile) {
                <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
              </div>
              <div class="grow" role="button" tabindex="0" data-action="delete-account">
-               <div><div class="gt danger-text">Delete account</div><div class="gs">Permanently erase your account and data</div></div>
+               <div><div class="gt danger-text">Delete account ⚠️</div><div class="gs">Permanently erase your account and data</div></div>
                <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
              </div>`
           : `<div class="account-guest"><p class="gs">Sign in to sync your progress across devices and add friends.</p>${googleBtn()}</div>`}
@@ -2639,6 +2704,16 @@ function renderAdminDashboard() {
 
     <div class="admin-dash">
       <div class="group">
+        <p class="glab">Reports</p>
+        <div class="adm-mod-list" id="adm-reports"><p class="editpic-empty">Loading&hellip;</p></div>
+      </div>
+
+      <div class="group">
+        <p class="glab">Blocks</p>
+        <div class="adm-mod-list" id="adm-blocks"><p class="editpic-empty">Loading&hellip;</p></div>
+      </div>
+
+      <div class="group">
         <p class="glab">Preset Profile Pictures</p>
         <div class="adm-preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
         <button class="admin-upload-btn" type="button" data-action="toggle-preset-edit">Edit Pictures</button>
@@ -2672,6 +2747,8 @@ function renderAdminDashboard() {
 
   presetEditMode = false
   mountScreen('settings', content, () => {
+    loadAdminReports()
+    loadAdminBlocks()
     loadPresetAvatars()
     app.querySelector('#preset-input').addEventListener('change', (e) => {
       const file = e.target.files[0]; e.target.value = ''
@@ -2689,6 +2766,54 @@ function renderAdminDashboard() {
     loadAdminUsers()
     app.querySelector('#admin-search-input').addEventListener('input', (e) => renderAdminUserList(e.target.value))
   })
+}
+
+// ---------- admin: moderation (reports + blocks) ----------
+function calFmtShortDate(ts) {
+  return new Date(ts).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+async function loadAdminReports() {
+  const el = app.querySelector('#adm-reports')
+  if (!el) return
+  const { data, error } = await supabase
+    .from('reports')
+    .select('id, reason, details, created_at, reporter:reporter_id(display_name), reported:reported_id(display_name)')
+    .order('created_at', { ascending: false })
+    .limit(100)
+  if (error) { el.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
+  if (!data || !data.length) { el.innerHTML = '<p class="editpic-empty">No reports yet.</p>'; return }
+  el.innerHTML = data.map(r => `
+    <div class="adm-mod-row">
+      <div class="adm-mod-head">
+        <span class="adm-mod-reason">🚩 ${escapeHtml(r.reason)}</span>
+        <span class="adm-mod-date">${calFmtShortDate(r.created_at)}</span>
+      </div>
+      <div class="adm-mod-who">${escapeHtml(chefName(r.reporter?.display_name))} <span class="adm-mod-arrow">reported</span> ${escapeHtml(chefName(r.reported?.display_name))}</div>
+      ${r.details ? `<div class="adm-mod-details">${escapeHtml(r.details)}</div>` : ''}
+    </div>
+  `).join('')
+}
+
+async function loadAdminBlocks() {
+  const el = app.querySelector('#adm-blocks')
+  if (!el) return
+  const { data, error } = await supabase
+    .from('blocked_users')
+    .select('id, created_at, blocked_name, blocker:blocker_id(display_name), blocked:blocked_id(display_name)')
+    .order('created_at', { ascending: false })
+    .limit(100)
+  if (error) { el.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
+  if (!data || !data.length) { el.innerHTML = '<p class="editpic-empty">No blocks yet.</p>'; return }
+  el.innerHTML = data.map(b => `
+    <div class="adm-mod-row">
+      <div class="adm-mod-head">
+        <span class="adm-mod-reason">🚫 Block</span>
+        <span class="adm-mod-date">${calFmtShortDate(b.created_at)}</span>
+      </div>
+      <div class="adm-mod-who">${escapeHtml(chefName(b.blocker?.display_name))} <span class="adm-mod-arrow">blocked</span> ${escapeHtml(chefName(b.blocked?.display_name || b.blocked_name))}</div>
+    </div>
+  `).join('')
 }
 
 // ---------- admin: emote type tags + per-emote overrides ----------

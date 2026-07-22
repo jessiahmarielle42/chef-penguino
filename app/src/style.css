@@ -220,8 +220,10 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   display: inline-block;
   filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));
 }
-.coin.lg { width:3.875rem; height:3.875rem; filter: drop-shadow(0 6px 14px rgba(246,198,75,0.55)); }
-.coin.xl { width:7.5rem; height:7.5rem; margin:0 auto 1rem; filter: drop-shadow(0 10px 20px rgba(246,198,75,0.6)); }
+/* No drop-shadow on the large coins: iOS Safari renders a faint square box
+   around a filtered transparent PNG. The coin is a clean circle on its own. */
+.coin.lg { width:3.875rem; height:3.875rem; }
+.coin.xl { width:7.5rem; height:7.5rem; margin:0 auto 1rem; }
 .coin.log-coin { width:1rem; height:1rem; vertical-align:-0.15em; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.3)); }
 
 /* bottom padding clears the fire FAB, which pokes ~56px above the tab bar's own box via its
@@ -284,6 +286,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   margin:1.25rem 0.125rem 0.75rem;
 }
 .section-h h2 { font-family: var(--font-display); font-weight: 800; font-size:1.1875rem; margin: 0; color: var(--cream); }
+.section-h h2.section-h-lg { font-size:1.5rem; }
 .section-h .meta { font-size:0.75rem; color: var(--muted); font-weight: 700; }
 
 /* ---------- shop ---------- */
@@ -564,7 +567,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
    Admin Dashboard) match the two-line title+subtitle rows (Lore, Check out
    the game!, Legal and Disclaimers) above/below them. Scoped to this group
    only - .grow is reused elsewhere and shouldn't change size globally. */
-.about-glist .grow { min-height:3.5rem; }
+.about-glist .grow { min-height:3.9rem; }
 
 .lore-player {
   position: fixed; inset:0; z-index: 999; background: #000;
@@ -789,6 +792,16 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .blocked-row { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:0.75rem 0.875rem; background:var(--card-2); border:1px solid var(--line); border-radius:0.75rem; }
 .blocked-name { font-weight:700; color:var(--cream); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .popup button.blocked-unblock { width:auto; margin:0; flex:none; padding:0.5rem 1rem; font-size:0.8125rem; }
+
+/* admin dashboard: reports + blocks moderation lists */
+.adm-mod-list { display:flex; flex-direction:column; gap:0.625rem; }
+.adm-mod-row { background:var(--card-2); border:1px solid var(--line); border-radius:0.75rem; padding:0.75rem 0.875rem; }
+.adm-mod-head { display:flex; align-items:center; justify-content:space-between; gap:0.75rem; margin-bottom:0.375rem; }
+.adm-mod-reason { font-weight:800; color:var(--cream); font-size:0.875rem; }
+.adm-mod-date { font-size:0.6875rem; color:var(--muted); font-weight:700; flex:none; }
+.adm-mod-who { font-size:0.8125rem; color:var(--cream); font-weight:700; }
+.adm-mod-arrow { color:var(--muted); font-weight:700; margin:0 0.25rem; }
+.adm-mod-details { margin-top:0.5rem; font-size:0.8125rem; color:var(--muted-2); line-height:1.45; background:var(--card); border-radius:0.5rem; padding:0.5rem 0.625rem; }
 .popup-info-badge { position: absolute; top:1.125rem; left:1.125rem; width:1.375rem; height:1.375rem; font-size:0.75rem; }
 
 /* profile popup */
@@ -1894,20 +1907,26 @@ img.shop-image {
 
 /* ---------- day view ---------- */
 .cal-timeline { padding:0.375rem 0 1.5rem; position: relative; }
-.cal-tl-item { display: flex; gap:0.75rem; padding: 0 0 0.25rem; cursor: pointer; }
+.cal-tl-item { display: flex; gap:0.75rem; align-items: stretch; margin-bottom:0.625rem; cursor: pointer; }
 .cal-tl-item:active .cal-tl-card { transform: scale(0.985); }
 /* time + dot are vertically centred on the card via flexbox so they line up
    robustly regardless of font metrics (fixed paddings drifted per device). */
 .cal-tl-time { width:4rem; flex:0 0 4rem; display: flex; align-items: center; text-align: left; color: var(--muted); font-size:0.75rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 .cal-tl-rail { flex:0 0 1.125rem; position: relative; }
-.cal-tl-line { position: absolute; left: 50%; top: 0; bottom: 0; width:0.125rem; transform: translateX(-50%); background: var(--panel-line); }
+/* Line spans the full row height plus the inter-card gap so the timeline reads
+   as one continuous rail; the last row's line stops at its own card. */
+.cal-tl-line { position: absolute; left: 50%; top: 0; bottom: -0.625rem; width:0.125rem; transform: translateX(-50%); background: var(--panel-line); }
+.cal-tl-item:last-child .cal-tl-line { bottom: 0; }
+/* Dot sits at the vertical centre of the row (= centre of the card, since the
+   inter-card spacing now lives on the item's margin, not the card). */
 .cal-tl-dot { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width:0.875rem; height:0.875rem; border-radius: 50%; background: linear-gradient(180deg, var(--gold), var(--gold-deep)); box-shadow: 0 0 0 0.1875rem var(--page-bg); z-index: 1; }
-.cal-tl-card { flex: 1; background: var(--card); border: 1px solid var(--line); border-radius:0.875rem; padding:0.6875rem 0.8125rem; margin-bottom:0.625rem; }
+.cal-tl-card { flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius:0.875rem; padding:0.6875rem 0.8125rem; display: flex; align-items: center; justify-content: space-between; gap:0.75rem; }
+.cal-tl-cardbody { flex: 1; min-width: 0; }
 .cal-tl-top { display: flex; align-items: center; gap:0.5rem; }
-.cal-tl-ico { font-size:1.0625rem; }
-.cal-tl-name { font-weight: 800; font-size:0.90625rem; color: var(--cream); }
+.cal-tl-ico { font-size:1.0625rem; flex-shrink: 0; }
+.cal-tl-name { font-weight: 800; font-size:0.90625rem; color: var(--cream); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cal-tl-meta { display: flex; gap:0.875rem; margin-top:0.375rem; color: var(--muted); font-size:0.75rem; font-weight: 700; }
-.cal-tl-pz { color: var(--gold); display: flex; align-items: center; gap:0.1875rem; }
+.cal-tl-pz { flex-shrink: 0; color: var(--gold); display: flex; align-items: center; gap:0.1875rem; font-size:0.8125rem; font-weight: 800; }
 :root[data-theme="light"] .cal-tl-pz { color: #b56b00; }
 @media (prefers-color-scheme: light) { :root:not([data-theme]) .cal-tl-pz { color: #b56b00; } }
 
