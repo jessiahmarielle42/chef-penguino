@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.7.2'
+const APP_VERSION = 'v2.7.3'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -1232,7 +1232,7 @@ function openNootCooldownInfo(name) {
     <h3>Already Nooted</h3>
     <p>You can Noot ${escapeHtml(name)} again once they've acknowledged your last Noot.</p>
     <button type="button" data-action="ok">Got it</button>
-  `, { popupClass: 'popup-wide' })
+  `, { popupClass: 'popup-wide popup-centered' })
   o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
 }
 
@@ -1247,7 +1247,7 @@ function renderFriendHome(friend) {
     <div class="hero-card" id="hero-card" role="button" tabindex="0">
       <img class="hero-still" src="${heroSrc}" alt="" />
       <div class="glow"></div>
-      <button class="hero-tap" type="button" data-action="emote">👋 Tap to emote</button>
+      <button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>
     </div>
 
     <div class="tiles">
