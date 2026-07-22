@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.8.1'
+const APP_VERSION = 'v2.8.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -912,8 +912,41 @@ function calWireHistory(dayMap, todayKey) {
   app.querySelector('#cal-scrim')?.addEventListener('click', calCloseSheet)
   app.querySelector('#cal-grab')?.addEventListener('click', () => closeOpenSwipe())
   app.querySelector('.cal-sheet-hd')?.addEventListener('click', () => closeOpenSwipe())
+  calWireSheetDrag()
 
   if (calSheetDate) calPopulateSheet(dayMap, calSheetDate)
+}
+
+// Drag the grab handle (or header) down to dismiss the bottom sheet.
+function calWireSheetDrag() {
+  const sheet = app.querySelector('#cal-sheet')
+  if (!sheet) return
+  const wire = (handle) => {
+    if (!handle) return
+    handle.style.touchAction = 'none'
+    let startY = 0, dy = 0, dragging = false
+    handle.addEventListener('pointerdown', (e) => {
+      dragging = true; startY = e.clientY; dy = 0
+      sheet.style.transition = 'none'
+      try { handle.setPointerCapture(e.pointerId) } catch {}
+    })
+    handle.addEventListener('pointermove', (e) => {
+      if (!dragging) return
+      dy = Math.max(0, e.clientY - startY)   // downward only
+      sheet.style.transform = `translateY(${dy}px)`
+    })
+    const end = () => {
+      if (!dragging) return
+      dragging = false
+      sheet.style.transition = ''
+      sheet.style.transform = ''             // hand back to the CSS .show class
+      if (dy > Math.min(120, (sheet.offsetHeight || 400) * 0.25)) calCloseSheet()
+    }
+    handle.addEventListener('pointerup', end)
+    handle.addEventListener('pointercancel', end)
+  }
+  wire(app.querySelector('#cal-grab'))
+  wire(app.querySelector('.cal-sheet-hd'))
 }
 
 function calPopulateSheet(dayMap, key) {
@@ -2821,9 +2854,9 @@ async function openAdminPicPicker(profile, stagedUrl, onChoose) {
     <div class="editpic-avatar-wrap">
       <img class="editpic-avatar" src="${current || `${BASE}assets/penguin-icon.png`}" alt="" />
     </div>
-    <button type="button" class="btn-secondary" data-action="remove-pic">Remove picture</button>
-    <label class="field-label">Or pick a preset</label>
-    <div class="editpic-presets" id="admin-pic-presets"><p class="editpic-empty">Loading&hellip;</p></div>
+    <button type="button" class="btn-secondary" data-action="remove-pic" style="margin-top:0.875rem">Remove picture</button>
+    <label class="field-label" style="margin-top:1.75rem">Or pick a preset</label>
+    <div class="editpic-presets" id="admin-pic-presets" style="margin-top:0.625rem"><p class="editpic-empty">Loading&hellip;</p></div>
   `, { popupClass: 'popup-wide' })
   o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="remove-pic"]').addEventListener('click', () => { onChoose(null); o.remove() })
