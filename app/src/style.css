@@ -702,6 +702,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 }
 
 .popup-wide { text-align: left; }
+.popup.popup-centered p { text-align: center; }
 .popup-info-badge { position: absolute; top:1.125rem; left:1.125rem; width:1.375rem; height:1.375rem; font-size:0.75rem; }
 
 /* profile popup */
