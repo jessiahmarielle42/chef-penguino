@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.9.0'
+const APP_VERSION = 'v2.9.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -31,10 +31,10 @@ async function signInWithGoogle() {
 }
 
 async function signInWithApple() {
-  await supabase.auth.signInWithOAuth({
-    provider: 'apple',
-    options: { redirectTo: window.location.origin + BASE },
-  })
+  // Apple provider isn't enabled yet - show an "under construction" notice
+  // instead of triggering an OAuth flow that would error. Swap this back to
+  // supabase.auth.signInWithOAuth({ provider: 'apple', ... }) once it's set up.
+  toast('Sign in with Apple is coming soon! 🚧')
 }
 
 // Wire both OAuth buttons on a given root (element or app).
