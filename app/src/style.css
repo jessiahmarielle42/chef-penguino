@@ -406,6 +406,8 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 }
 .friend-swipe-hint .info-badge { margin-top:0.0625rem; }
 .friend-swipe-hint p { margin: 0; font-size:0.7812rem; color: var(--muted); line-height: 1.5; }
+/* plain hint line (no card) shown directly under a section/sheet title */
+.swipe-line { font-size:0.8125rem; color: var(--muted); line-height: 1.5; font-weight: 600; }
 .medal { font-size:1.125rem; width:1.5rem; text-align: center; }
 
 .addfriend { display: flex; gap:0.5625rem; margin-top:0.375rem; }
@@ -469,6 +471,13 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   padding:0.6875rem 1.0625rem; border-radius:0.75rem; cursor: pointer;
   background: linear-gradient(180deg, #FFB25E, var(--fire) 55%, var(--fire-deep));
   box-shadow: 0 6px 14px -6px rgba(251,122,46,0.7);
+}
+/* Scoped override: the Emote Types "Add" button should read gold/theme,
+   not the shared fire-orange look above (used elsewhere for other actions). */
+.adm-search-card button[data-action="add-tag"] {
+  color: #3a2708;
+  background: linear-gradient(180deg, var(--gold), var(--gold-deep));
+  box-shadow: 0 6px 14px -6px rgba(215,154,34,0.6);
 }
 /* always-visible, scrollable user roster (search input above just filters it) */
 .adm-user-scroll {
@@ -1839,7 +1848,7 @@ img.shop-image {
 .cal-timeline { padding:0.375rem 0 1.5rem; position: relative; }
 .cal-tl-item { display: flex; gap:0.75rem; padding: 0 0 0.25rem; cursor: pointer; }
 .cal-tl-item:active .cal-tl-card { transform: scale(0.985); }
-.cal-tl-time { width:3.5rem; flex:0 0 3.5rem; text-align: right; color: var(--muted); font-size:0.75rem; font-weight: 700; padding-top:0.875rem; font-variant-numeric: tabular-nums; }
+.cal-tl-time { width:4rem; flex:0 0 4rem; text-align: left; color: var(--muted); font-size:0.75rem; font-weight: 700; padding-top:0.875rem; font-variant-numeric: tabular-nums; }
 .cal-tl-rail { flex:0 0 1.125rem; display: flex; flex-direction: column; align-items: center; }
 .cal-tl-dot { width:0.875rem; height:0.875rem; border-radius: 50%; background: linear-gradient(180deg, var(--gold), var(--gold-deep)); margin-top:0.9375rem; box-shadow: 0 0 0 0.1875rem var(--page-bg); }
 .cal-tl-line { flex: 1; width:0.125rem; background: var(--panel-line); }
