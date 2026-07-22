@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.10.0'
+const APP_VERSION = 'v2.10.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -101,8 +101,9 @@ function subscribeToSocial() {
     .channel(`social-${uid}`)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'noots', filter: `recipient_id=eq.${uid}` }, () => checkPendingNoots())
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'coin_gifts', filter: `recipient_id=eq.${uid}` }, () => checkPendingCoinGifts())
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'warnings', filter: `user_id=eq.${uid}` }, () => checkPendingWarnings())
     .subscribe((status) => {
-      if (status === 'SUBSCRIBED') { checkPendingNoots(); checkPendingCoinGifts() }
+      if (status === 'SUBSCRIBED') { checkPendingNoots(); checkPendingCoinGifts(); checkPendingWarnings() }
     })
 }
 function unsubscribeFromSocial() {
@@ -318,6 +319,7 @@ async function boot() {
         if (!state.timer) renderHome()
         checkPendingNoots()
         checkPendingCoinGifts()
+        checkPendingWarnings()
       })
     } else if (event === 'SIGNED_OUT') {
       unsubscribeFromSocial()
@@ -344,6 +346,7 @@ async function boot() {
   }
   checkPendingNoots()
   checkPendingCoinGifts()
+  checkPendingWarnings()
 }
 
 boot()
@@ -1777,6 +1780,7 @@ function playNootSound() {
 // two copies of the same popup on top of each other.
 let nootPopupOpen = false
 let coinGiftPopupOpen = false
+let warningPopupOpen = false
 
 async function checkPendingNoots() {
   if (!currentUser || nootPopupOpen) return
@@ -1843,6 +1847,37 @@ function showCoinGiftReceivedPopup(gift) {
     const chip = app.querySelector('.coin-chip span:last-child')
     if (chip) chip.textContent = coinBalance()
     checkPendingCoinGifts()
+  })
+}
+
+async function checkPendingWarnings() {
+  if (!currentUser || warningPopupOpen) return
+  const { data: warning } = await supabase
+    .from('warnings')
+    .select('id, message, created_at')
+    .eq('user_id', currentUser.id)
+    .is('acknowledged_at', null)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  if (!warning || warningPopupOpen) return
+  showWarningPopup(warning)
+}
+
+function showWarningPopup(warning) {
+  warningPopupOpen = true
+  const o = overlay(`
+    <div class="popup-emoji-xl">⚠️</div>
+    <h3>A warning from the Chef Penguino team</h3>
+    <p class="warning-msg">${escapeHtml(warning.message)}</p>
+    <p class="warning-note">Please follow our community rules so everyone can cook in peace.</p>
+    <button type="button" data-action="ok">I understand</button>
+  `, { dismissable: false })
+  o.querySelector('[data-action="ok"]').addEventListener('click', async () => {
+    await supabase.rpc('acknowledge_warning', { warning_id: warning.id })
+    o.remove()
+    warningPopupOpen = false
+    checkPendingWarnings()
   })
 }
 
@@ -2778,21 +2813,71 @@ async function loadAdminReports() {
   if (!el) return
   const { data, error } = await supabase
     .from('reports')
-    .select('id, reason, details, created_at, reporter:reporter_id(display_name), reported:reported_id(display_name)')
+    .select('id, reason, details, created_at, reported_id, reporter:reporter_id(display_name), reported:reported_id(display_name)')
     .order('created_at', { ascending: false })
     .limit(100)
   if (error) { el.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
   if (!data || !data.length) { el.innerHTML = '<p class="editpic-empty">No reports yet.</p>'; return }
-  el.innerHTML = data.map(r => `
-    <div class="adm-mod-row">
+  el.innerHTML = data.map(r => {
+    const reportedName = chefName(r.reported?.display_name)
+    return `
+    <div class="adm-mod-row" data-report-id="${escapeHtml(r.id)}">
       <div class="adm-mod-head">
         <span class="adm-mod-reason">🚩 ${escapeHtml(r.reason)}</span>
         <span class="adm-mod-date">${calFmtShortDate(r.created_at)}</span>
       </div>
-      <div class="adm-mod-who">${escapeHtml(chefName(r.reporter?.display_name))} <span class="adm-mod-arrow">reported</span> ${escapeHtml(chefName(r.reported?.display_name))}</div>
+      <div class="adm-mod-who">${escapeHtml(chefName(r.reporter?.display_name))} <span class="adm-mod-arrow">reported</span> ${escapeHtml(reportedName)}</div>
       ${r.details ? `<div class="adm-mod-details">${escapeHtml(r.details)}</div>` : ''}
+      <div class="adm-mod-actions">
+        <button type="button" class="adm-mod-btn warn" data-action="warn" data-reported="${escapeHtml(r.reported_id)}" data-name="${escapeHtml(reportedName)}">⚠️ Warn user</button>
+        <button type="button" class="adm-mod-btn dismiss" data-action="dismiss">Dismiss</button>
+      </div>
+    </div>`
+  }).join('')
+  el.querySelectorAll('[data-action="dismiss"]').forEach(btn => {
+    btn.addEventListener('click', () => dismissReport(btn.closest('.adm-mod-row')))
+  })
+  el.querySelectorAll('[data-action="warn"]').forEach(btn => {
+    btn.addEventListener('click', () => openWarnUserPopup(btn.dataset.reported, btn.dataset.name))
+  })
+}
+
+async function dismissReport(rowEl) {
+  const id = rowEl?.dataset.reportId
+  if (!id) return
+  const { error } = await supabase.rpc('dismiss_report', { report_id: id })
+  if (error) { toast(error.message); return }
+  rowEl.remove()
+  toast('Report dismissed')
+  const el = app.querySelector('#adm-reports')
+  if (el && !el.querySelector('.adm-mod-row')) el.innerHTML = '<p class="editpic-empty">No reports yet.</p>'
+}
+
+function openWarnUserPopup(reportedId, name) {
+  const o = overlay(`
+    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
+    <h3>Warn ${escapeHtml(name || 'this user')}</h3>
+    <p>They'll see this as a warning popup next time they open the app.</p>
+    <textarea id="warn-msg" class="rename-input report-details" maxlength="300" placeholder="Write your warning message&hellip;"></textarea>
+    <div class="home-btn-col" style="margin-top:0.25rem">
+      <button type="button" class="btn-danger" data-action="send" disabled>Send warning</button>
+      <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
     </div>
-  `).join('')
+  `, { popupClass: 'popup-wide' })
+  const msgEl = o.querySelector('#warn-msg')
+  const sendBtn = o.querySelector('[data-action="send"]')
+  msgEl.addEventListener('input', () => { sendBtn.disabled = msgEl.value.trim().length < 3 })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
+  sendBtn.addEventListener('click', async () => {
+    const message = msgEl.value.trim().slice(0, 300)
+    if (message.length < 3) return
+    sendBtn.disabled = true
+    const { error } = await supabase.rpc('warn_user', { target_id: reportedId, message })
+    if (error) { sendBtn.disabled = false; toast(error.message); return }
+    o.remove()
+    toast('Warning sent')
+  })
 }
 
 async function loadAdminBlocks() {
