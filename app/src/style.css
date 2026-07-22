@@ -547,6 +547,25 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   font-family: var(--font-display); font-weight: 800; font-size:0.9375rem; color: var(--scrim-text);
 }
 
+/* ---------- legal / disclaimers ---------- */
+.legal-list { display: flex; flex-direction: column; gap:0.875rem; margin-top:0.875rem; }
+.legal-card {
+  background: var(--card); border: 1px solid var(--line); border-radius:1rem;
+  padding:1.1875rem 1.125rem; box-sizing: border-box;
+}
+.legal-card-title {
+  font-family: var(--font-display); font-weight: 800; font-size:1.0625rem;
+  color: var(--cream); margin-bottom:0.625rem;
+}
+.legal-card p { font-size:0.875rem; line-height:1.5; color: var(--muted-2); }
+.legal-card p + p { margin-top:0.6875rem; }
+
+/* Settings > About: force equal row heights so single-line rows (Version,
+   Admin Dashboard) match the two-line title+subtitle rows (Lore, Check out
+   the game!, Legal and Disclaimers) above/below them. Scoped to this group
+   only - .grow is reused elsewhere and shouldn't change size globally. */
+.about-glist .grow { min-height:3.5rem; }
+
 .lore-player {
   position: fixed; inset:0; z-index: 999; background: #000;
   display: flex; align-items: center; justify-content: center;
@@ -608,6 +627,10 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .gbtn { display:inline-flex; align-items:center; justify-content:center; gap:0.75rem; background:#fff; color:#3c4043; border:1px solid #dadce0; border-radius:0.75rem; padding:0.75rem 1.25rem; font-family:var(--font-body); font-weight:700; font-size:0.875rem; cursor:pointer; box-shadow:0 1px 2px rgba(0,0,0,0.25); }
 .gbtn:active { background:#f1f3f4; }
 .gbtn svg { width:1.125rem; height:1.125rem; flex:none; }
+.abtn { display:inline-flex; align-items:center; justify-content:center; gap:0.75rem; background:#000; color:#fff; border:1px solid #000; border-radius:0.75rem; padding:0.75rem 1.25rem; font-family:var(--font-body); font-weight:700; font-size:0.875rem; cursor:pointer; box-shadow:0 1px 2px rgba(0,0,0,0.25); }
+.abtn:active { background:#1a1a1a; }
+.abtn svg { width:1.125rem; height:1.125rem; flex:none; }
+:root[data-theme="light"] .abtn { border-color:#000; }
 .popup .gbtn { background:#fff; color:#3c4043; font-weight:700; font-size:0.875rem; padding:0.75rem 1.25rem; border-radius:0.75rem; box-shadow:0 1px 2px rgba(0,0,0,0.25); }
 .popup .gbtn:active { background:#f1f3f4; }
 
@@ -699,6 +722,14 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 }
 .rename-input.err { border-color: var(--ember); margin-bottom:0.5rem; }
 
+/* "Chef" is a fixed, non-editable prefix; the input holds only the [name]. */
+.rename-chef-row { display: flex; align-items: center; gap:0.625rem; margin-bottom:1rem; }
+.rename-chef-prefix {
+  flex: none; font-family: var(--font-display); font-weight: 800; font-size:1rem;
+  color: var(--muted); padding:0.75rem 0; white-space: nowrap;
+}
+.rename-chef-row .rename-input { margin-bottom:0; }
+
 /* inline validation message (e.g. profanity-filter block on self-naming) */
 .inline-error {
   display: none; margin:-0.25rem 0 1rem; font-size:0.75rem; font-weight: 700; color: var(--ember);
@@ -743,6 +774,21 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 
 .popup-wide { text-align: left; }
 .popup.popup-centered p { text-align: center; }
+.report-reasons { display: flex; flex-wrap: wrap; gap:0.5rem; margin:0.875rem 0; }
+.popup button.report-reason.selected {
+  border-color: var(--fire);
+  background: linear-gradient(160deg, rgba(251,122,46,0.28), var(--chip-bg));
+  color: var(--cream);
+}
+.report-details {
+  width: 100%; min-height:4.5rem; resize: vertical; font-family: inherit;
+  padding:0.75rem 0.875rem; box-sizing: border-box;
+}
+.danger-text { color: var(--ember); }
+.blocked-list { display:flex; flex-direction:column; gap:0.625rem; margin-top:0.875rem; }
+.blocked-row { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:0.75rem 0.875rem; background:var(--card-2); border:1px solid var(--line); border-radius:0.75rem; }
+.blocked-name { font-weight:700; color:var(--cream); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.popup button.blocked-unblock { width:auto; margin:0; flex:none; padding:0.5rem 1rem; font-size:0.8125rem; }
 .popup-info-badge { position: absolute; top:1.125rem; left:1.125rem; width:1.375rem; height:1.375rem; font-size:0.75rem; }
 
 /* profile popup */

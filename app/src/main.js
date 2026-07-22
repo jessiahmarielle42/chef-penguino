@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.8.5'
+const APP_VERSION = 'v2.9.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -28,6 +28,20 @@ async function signInWithGoogle() {
     provider: 'google',
     options: { redirectTo: window.location.origin + BASE },
   })
+}
+
+async function signInWithApple() {
+  // Apple provider isn't enabled yet - show an "under construction" notice
+  // instead of triggering an OAuth flow that would error. Swap this back to
+  // supabase.auth.signInWithOAuth({ provider: 'apple', ... }) once it's set up.
+  toast('Sign in with Apple is coming soon! 🚧')
+}
+
+// Wire both OAuth buttons on a given root (element or app).
+function wireSignInButtons(root) {
+  if (!root) return
+  root.querySelector('[data-action="google"]')?.addEventListener('click', signInWithGoogle)
+  root.querySelector('[data-action="apple"]')?.addEventListener('click', signInWithApple)
 }
 
 async function signOut() {
@@ -451,9 +465,24 @@ function playEmoteInto(imgEl, emoteId, revertSrc, onRevert) {
 // =================================================================
 function isSignedIn() { return !!currentUser }
 
+// Everyone is displayed as "Chef <name>". The raw [name] (max 15 chars) is
+// what's stored in profiles.display_name and what the user edits; the "Chef"
+// prefix is added at display time and isn't editable. stripChef() guards
+// against double-prefixing if an older stored name already begins with "Chef".
+function stripChef(name) {
+  return String(name || '').replace(/^chef\s+/i, '').trim()
+}
+function chefName(name) {
+  const raw = stripChef(name)
+  return raw ? `Chef ${raw}` : 'Chef'
+}
+function myRawName() {
+  if (!currentUser) return ''
+  return stripChef(currentProfile?.display_name || currentUser.email?.split('@')[0] || '')
+}
 function myName() {
   if (!currentUser) return 'Guest'
-  return currentProfile?.display_name || currentUser.email?.split('@')[0] || 'Chef'
+  return chefName(myRawName())
 }
 function myAvatar() {
   return currentProfile?.avatar_url || `${BASE}assets/penguin-icon.png`
@@ -465,8 +494,13 @@ function coinImg(extra = '') {
 
 const GOOGLE_SVG = `<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>`
 
+const APPLE_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M16.36 12.78c.02 2.5 2.19 3.33 2.22 3.35-.02.06-.35 1.19-1.15 2.36-.69 1.01-1.41 2.02-2.54 2.04-1.11.02-1.47-.66-2.74-.66s-1.66.64-2.72.68c-1.09.04-1.92-1.09-2.62-2.1-1.43-2.06-2.52-5.83-1.05-8.38.73-1.26 2.03-2.06 3.44-2.08 1.07-.02 2.09.72 2.74.72.66 0 1.89-.89 3.19-.76.54.02 2.07.22 3.05 1.65-.08.05-1.82 1.06-1.8 3.16zM14.28 5.4c.58-.7.97-1.68.86-2.65-.83.03-1.84.55-2.44 1.25-.54.62-1.01 1.61-.88 2.56.93.07 1.88-.47 2.46-1.16z"/></svg>`
+
 function googleBtn() {
-  return `<button class="gbtn" type="button" data-action="google">${GOOGLE_SVG}<span>Sign in with Google</span></button>`
+  return `
+    <button class="gbtn" type="button" data-action="google">${GOOGLE_SVG}<span>Sign in with Google</span></button>
+    <button class="abtn" type="button" data-action="apple">${APPLE_SVG}<span>Sign in with Apple</span></button>
+  `
 }
 
 const CAL_BACK_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>`
@@ -620,7 +654,7 @@ function renderHome() {
     <div class="section-h" style="margin-top:2.75rem"><h2>Recent sessions</h2></div>
     <p class="swipe-line" style="margin:0.25rem 0 1rem">Swipe left on a session to edit</p>
     <div class="log-list" id="home-log"><p class="log-empty">Loading&hellip;</p></div>
-    <button class="cal-seeall-btn" type="button" data-action="see-all-sessions">📅 See All Sessions</button>
+    <button class="cal-seeall-btn" type="button" data-action="see-all-sessions">📅&nbsp; See All Sessions</button>
   `
 
   mountScreen('home', content, () => {
@@ -1166,7 +1200,7 @@ async function renderShop(scrollTop) {
       </div>
     `
     mountScreen('shop', content, () => {
-      app.querySelector('[data-action="google"]')?.addEventListener('click', signInWithGoogle)
+      wireSignInButtons(app)
     })
     return
   }
@@ -1355,7 +1389,7 @@ function openProfilePopup() {
   `, { popupClass: 'popup-profile' })
 
   o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
-  o.querySelector('[data-action="google"]')?.addEventListener('click', signInWithGoogle)
+  wireSignInButtons(o)
   o.querySelector('[data-action="edit-profile"]')?.addEventListener('click', () => {
     o.remove()
     renderSettings(true)
@@ -1380,7 +1414,7 @@ async function renderFriends() {
       </div>
     `
     mountScreen('friends', content, () => {
-      app.querySelector('[data-action="google"]')?.addEventListener('click', signInWithGoogle)
+      wireSignInButtons(app)
     })
     return
   }
@@ -1442,7 +1476,7 @@ async function loadFriendsList() {
   const medals = ['🥇', '🥈', '🥉']
   listEl.innerHTML = board.map((f, i) => {
     const rank = i < 3 ? `<div class="medal">${medals[i]}</div>` : `<div class="rank">${i + 1}</div>`
-    const name = f.isMe ? `${escapeHtml(f.display_name)} <span class="you-tag">(you)</span>` : escapeHtml(f.display_name)
+    const name = f.isMe ? `${escapeHtml(f.display_name)} <span class="you-tag">(you)</span>` : escapeHtml(chefName(f.display_name))
     return `
       <div class="frow ${f.isMe ? 'me' : ''}" ${f.isMe ? 'role="button" tabindex="0"' : `data-friend="${f.id}" role="button" tabindex="0"`}>
         ${rank}
@@ -1479,12 +1513,14 @@ function openFriendActions(friend, alreadyNooted) {
   const o = overlay(`
     <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
     <img class="popup-profile-avatar" src="${friend.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
-    <div class="popup-profile-name">${escapeHtml(friend.display_name)}</div>
+    <div class="popup-profile-name">${escapeHtml(chefName(friend.display_name))}</div>
     <div class="home-btn-col">
       <button type="button" class="btn-secondary" data-action="visit">🏠 Visit Pizzeria</button>
       <button type="button" class="btn-secondary" data-action="noot">🐧 Noot</button>
       <button type="button" data-action="gift">🎁 Gift Coins</button>
+      <button type="button" class="btn-secondary" data-action="report">🚩 Report</button>
       <button type="button" class="btn-danger" data-action="remove">🗑 Remove</button>
+      <button type="button" class="btn-danger" data-action="block">🚫 Block</button>
     </div>
   `, { popupClass: 'popup-profile' })
   o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
@@ -1493,10 +1529,130 @@ function openFriendActions(friend, alreadyNooted) {
   o.querySelector('[data-action="noot"]').addEventListener('click', () => {
     o.remove()
     playNootSound()
-    if (alreadyNooted) { openNootCooldownInfo(friend.display_name); return }
+    if (alreadyNooted) { openNootCooldownInfo(chefName(friend.display_name)); return }
     confirmNoot(friend)
   })
-  o.querySelector('[data-action="remove"]').addEventListener('click', () => { o.remove(); confirmRemoveFriend(friend.id, friend.display_name) })
+  o.querySelector('[data-action="report"]').addEventListener('click', () => { o.remove(); openReportPopup(friend) })
+  o.querySelector('[data-action="remove"]').addEventListener('click', () => { o.remove(); confirmRemoveFriend(friend.id, chefName(friend.display_name)) })
+  o.querySelector('[data-action="block"]').addEventListener('click', () => { o.remove(); confirmBlockFriend(friend) })
+}
+
+const REPORT_REASONS = ['Spam', 'Harassment', 'Inappropriate name or picture', 'Other']
+
+function openReportPopup(friend) {
+  let selected = null
+  const o = overlay(`
+    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
+    <h3>Report ${escapeHtml(chefName(friend.display_name))}</h3>
+    <p>What's going on? Our team will review this.</p>
+    <div class="report-reasons">
+      ${REPORT_REASONS.map(r => `<button type="button" class="chip report-reason" data-reason="${escapeHtml(r)}">${escapeHtml(r)}</button>`).join('')}
+    </div>
+    <textarea id="report-details" class="rename-input report-details" maxlength="300" placeholder="Add details (optional)"></textarea>
+    <div class="home-btn-col" style="margin-top:0.25rem">
+      <button type="button" class="btn-danger" data-action="submit" disabled>Submit report</button>
+      <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+  const submitBtn = o.querySelector('[data-action="submit"]')
+  o.querySelectorAll('.report-reason').forEach(btn => {
+    btn.addEventListener('click', () => {
+      selected = btn.dataset.reason
+      o.querySelectorAll('.report-reason').forEach(b => b.classList.toggle('selected', b === btn))
+      submitBtn.disabled = false
+    })
+  })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
+  submitBtn.addEventListener('click', async () => {
+    if (!selected) return
+    const details = o.querySelector('#report-details').value.trim().slice(0, 300) || null
+    const { error } = await supabase.rpc('report_user', { target_id: friend.id, reason: selected, details })
+    if (error) { toast(error.message); return }
+    o.remove()
+    toast('Report submitted. Thank you.')
+  })
+}
+
+function confirmBlockFriend(friend) {
+  const o = overlay(`
+    <h3>Block ${escapeHtml(chefName(friend.display_name))}?</h3>
+    <p>They'll be removed as a friend and won't be able to add you back or contact you. You can unblock them later in Settings.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Yes, block</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    const { error } = await supabase.rpc('block_user', { target_id: friend.id })
+    if (error) { toast(error.message); return }
+    o.remove()
+    toast(`Blocked ${chefName(friend.display_name)}`)
+    loadFriendsList()
+  })
+}
+
+async function openBlockedUsers() {
+  const o = overlay(`
+    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
+    <h3>Blocked users</h3>
+    <div class="blocked-list" id="blocked-list"><p class="editpic-empty">Loading&hellip;</p></div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
+  await renderBlockedList(o)
+}
+
+async function renderBlockedList(o) {
+  const list = o.querySelector('#blocked-list')
+  if (!list) return
+  const { data, error } = await supabase
+    .from('blocked_users')
+    .select('blocked_id, blocked_name')
+    .eq('blocker_id', currentUser.id)
+    .order('created_at', { ascending: false })
+  if (error) { list.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
+  if (!data || !data.length) { list.innerHTML = '<p class="editpic-empty">You haven\'t blocked anyone.</p>'; return }
+  list.innerHTML = data.map(b => `
+    <div class="blocked-row">
+      <span class="blocked-name">${escapeHtml(chefName(b.blocked_name))}</span>
+      <button type="button" class="btn-secondary blocked-unblock" data-id="${escapeHtml(b.blocked_id)}">Unblock</button>
+    </div>
+  `).join('')
+  list.querySelectorAll('.blocked-unblock').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true
+      const { error: unErr } = await supabase.rpc('unblock_user', { target_id: btn.dataset.id })
+      if (unErr) { btn.disabled = false; toast(unErr.message); return }
+      toast('Unblocked')
+      await renderBlockedList(o)
+    })
+  })
+}
+
+function confirmDeleteAccount() {
+  const o = overlay(`
+    <h3>Delete account?</h3>
+    <p>This permanently erases your account, progress, friends and coins. This can't be undone.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Delete my account</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    const btn = o.querySelector('[data-action="yes"]')
+    btn.disabled = true
+    btn.textContent = 'Deleting…'
+    const { error } = await supabase.rpc('delete_own_account')
+    if (error) { btn.disabled = false; btn.textContent = 'Delete my account'; toast(error.message); return }
+    await supabase.auth.signOut()
+    currentUser = null
+    currentProfile = null
+    o.remove()
+    renderHome()
+    toast('Your account has been deleted.')
+  })
 }
 
 function confirmGiftCoin(friend) {
@@ -1513,7 +1669,7 @@ function confirmGiftCoin(friend) {
   }
   const o = overlay(`
     ${coinImg('xl')}
-    <h3>Gift 1 Penguino Coin to ${escapeHtml(friend.display_name)}?</h3>
+    <h3>Gift 1 Penguino Coin to ${escapeHtml(chefName(friend.display_name))}?</h3>
     <p>You have ${bal} coin${bal === 1 ? '' : 's'}. This can't be undone.</p>
     <div class="home-btn-col">
       <button type="button" data-action="yes">Yes, gift 1 coin</button>
@@ -1529,13 +1685,13 @@ function confirmGiftCoin(friend) {
     await refreshProfile()
     const chip = app.querySelector('.coin-chip span:last-child')
     if (chip) chip.textContent = coinBalance()
-    toast(`Gifted 1 coin to ${friend.display_name}! 🎁`)
+    toast(`Gifted 1 coin to ${chefName(friend.display_name)}! 🎁`)
   })
 }
 
 function confirmNoot(friend) {
   const o = overlay(`
-    <h3>Do you want to Noot ${escapeHtml(friend.display_name)}?</h3>
+    <h3>Do you want to Noot ${escapeHtml(chefName(friend.display_name))}?</h3>
     <div class="popup-emoji-xl">🐧</div>
     <div class="home-btn-col">
       <button type="button" data-action="yes">Yes</button>
@@ -1548,7 +1704,7 @@ function confirmNoot(friend) {
     playNootSound()
     const { error } = await supabase.rpc('send_noot', { target_id: friend.id })
     if (error) { toast(error.message); return }
-    toast(`Nooted ${friend.display_name}!`)
+    toast(`Nooted ${chefName(friend.display_name)}!`)
   })
 }
 
@@ -1585,7 +1741,7 @@ function showNootReceivedPopup(noot) {
   })
   const o = overlay(`
     <img class="popup-profile-avatar" src="${noot.sender?.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
-    <h3>${escapeHtml(noot.sender?.display_name || 'A friend')} Nooted you!</h3>
+    <h3>${escapeHtml(noot.sender?.display_name ? chefName(noot.sender.display_name) : 'A friend')} Nooted you!</h3>
     <p>${escapeHtml(when)}</p>
     <button type="button" data-action="ok">Got it!</button>
   `, { popupClass: 'popup-profile', dismissable: false })
@@ -1616,7 +1772,7 @@ function showCoinGiftReceivedPopup(gift) {
   playNootSound()
   const o = overlay(`
     <img class="popup-profile-avatar" src="${gift.sender?.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
-    <h3>${escapeHtml(gift.sender?.display_name || 'A friend')} gifted you a Penguino Coin! 🎁</h3>
+    <h3>${escapeHtml(gift.sender?.display_name ? chefName(gift.sender.display_name) : 'A friend')} gifted you a Penguino Coin! 🎁</h3>
     <div class="gift-coin-wrap">${coinImg('lg')}</div>
     <button type="button" data-action="ok">Got it!</button>
   `, { popupClass: 'popup-profile', dismissable: false })
@@ -1649,7 +1805,7 @@ function renderFriendHome(friend) {
   const heroSrc = pizzaImagePath(stash)
 
   const content = `
-    <div class="viewing-banner" id="viewing-banner" role="button" tabindex="0">Viewing: ${escapeHtml(friend.display_name)}'s Pizzeria</div>
+    <div class="viewing-banner" id="viewing-banner" role="button" tabindex="0">Viewing: ${escapeHtml(chefName(friend.display_name))}'s Pizzeria</div>
     <div class="hero-card" id="hero-card" role="button" tabindex="0">
       <img class="hero-still" src="${heroSrc}" alt="" />
       <div class="glow"></div>
@@ -2059,35 +2215,19 @@ async function deleteLogEntry(id, pizzas) {
 // =================================================================
 //  Avatar upload + crop (unchanged mechanics)
 // =================================================================
-async function uploadAvatarBlob(blob) {
-  const path = `${currentUser.id}/avatar.jpg`
-  const { error: uploadError } = await supabase.storage
-    .from('avatars')
-    .upload(path, blob, { upsert: true, contentType: 'image/jpeg' })
-  if (uploadError) { toast(uploadError.message); return }
-  const { data } = supabase.storage.from('avatars').getPublicUrl(path)
-  const url = `${data.publicUrl}?t=${Date.now()}`
-  await supabase.from('profiles').update({ avatar_url: url }).eq('id', currentUser.id)
-  currentProfile.avatar_url = url
-  renderSettings()
-}
-
+// Users can only choose from the admin-curated preset list - no custom photo
+// upload - so nobody can set a profane/inappropriate picture.
 function openEditPicturePopup() {
   const o = overlay(`
     <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
     <h3>Edit Picture</h3>
     <div class="editpic-avatar-wrap">
       <img class="editpic-avatar" src="${myAvatar()}" alt="" />
-      <button class="editpic-cam" type="button" data-action="camera" aria-label="Take or upload photo">${CAMERA_SVG}</button>
     </div>
-    <label class="field-label">Or pick a preset</label>
+    <label class="field-label">Pick a preset</label>
     <div class="editpic-presets" id="editpic-presets"><p class="editpic-empty">Loading&hellip;</p></div>
   `, { popupClass: 'popup-wide' })
   o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
-  o.querySelector('[data-action="camera"]').addEventListener('click', () => {
-    o.remove()
-    app.querySelector('#avatar-input')?.click()
-  })
   loadEditPicPresets(o)
 }
 
@@ -2266,7 +2406,6 @@ function renderSettings(highlightProfile) {
         </div>
       </div>
     </div>
-    <input type="file" accept="image/*" id="avatar-input" hidden />
   ` : ''
 
   const accountGroup = `
@@ -2274,7 +2413,15 @@ function renderSettings(highlightProfile) {
       <p class="glab">Account</p>
       <div class="glist">
         ${signed
-          ? `<div class="grow"><div><div class="gt">Google</div><div class="gs">${escapeHtml(currentUser.email || '')}</div></div><div class="right"><span class="linkish signout" data-action="sign-out">Sign out</span></div></div>`
+          ? `<div class="grow"><div><div class="gt">Signed in</div><div class="gs">${escapeHtml(currentUser.email || '')}</div></div><div class="right"><span class="linkish signout" data-action="sign-out">Sign out</span></div></div>
+             <div class="grow" role="button" tabindex="0" data-action="blocked-users">
+               <div><div class="gt">Blocked users</div><div class="gs">Manage who you've blocked</div></div>
+               <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
+             </div>
+             <div class="grow" role="button" tabindex="0" data-action="delete-account">
+               <div><div class="gt danger-text">Delete account</div><div class="gs">Permanently erase your account and data</div></div>
+               <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
+             </div>`
           : `<div class="account-guest"><p class="gs">Sign in to sync your progress across devices and add friends.</p>${googleBtn()}</div>`}
       </div>
     </div>
@@ -2317,9 +2464,17 @@ function renderSettings(highlightProfile) {
     ${accountGroup}
     <div class="group">
       <p class="glab">About</p>
-      <div class="glist">
+      <div class="glist about-glist">
         <div class="grow" role="button" tabindex="0" data-action="lore">
           <div><div class="gt">Lore</div><div class="gs">Click to learn about Chef Penguino lore</div></div>
+          <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
+        </div>
+        <div class="grow" role="button" tabindex="0" data-action="steam">
+          <div><div class="gt">Check out the game!</div><div class="gs">Characters are taken from "The Greatest Penguin Heist of All Time", by That Other Fish</div></div>
+          <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
+        </div>
+        <div class="grow" role="button" tabindex="0" data-action="legal">
+          <div><div class="gt">Legal and Disclaimers</div><div class="gs">We do not own the copyright</div></div>
           <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
         </div>
         <div class="grow"><div><div class="gt">Version</div><div class="gs">${APP_VERSION}</div></div></div>
@@ -2336,6 +2491,10 @@ function renderSettings(highlightProfile) {
 
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="lore"]')?.addEventListener('click', renderLore)
+    app.querySelector('[data-action="steam"]')?.addEventListener('click', () => {
+      window.open('https://store.steampowered.com/app/1451480/The_Greatest_Penguin_Heist_of_All_Time/', '_blank', 'noopener')
+    })
+    app.querySelector('[data-action="legal"]')?.addEventListener('click', renderLegal)
     app.querySelector('[data-action="admin-dashboard"]')?.addEventListener('click', renderAdminDashboard)
     app.querySelector('#volume-slider').addEventListener('input', (e) => {
       const v = Number(e.target.value) / 100
@@ -2359,15 +2518,13 @@ function renderSettings(highlightProfile) {
     app.querySelector('[data-action="toggle-theme"]').addEventListener('click', (e) => {
       state.lightMode = !state.lightMode; save(); applyTheme(); e.currentTarget.classList.toggle('off', state.lightMode)
     })
-    app.querySelector('[data-action="google"]')?.addEventListener('click', signInWithGoogle)
+    wireSignInButtons(app)
     app.querySelector('[data-action="sign-out"]')?.addEventListener('click', signOut)
     app.querySelector('[data-action="rename"]')?.addEventListener('click', openRenamePopup)
 
     app.querySelector('[data-action="change-photo"]')?.addEventListener('click', openEditPicturePopup)
-    app.querySelector('#avatar-input')?.addEventListener('change', (e) => {
-      const file = e.target.files[0]; e.target.value = ''
-      if (file) openAvatarCropper(file, (blob) => uploadAvatarBlob(blob))
-    })
+    app.querySelector('[data-action="blocked-users"]')?.addEventListener('click', openBlockedUsers)
+    app.querySelector('[data-action="delete-account"]')?.addEventListener('click', confirmDeleteAccount)
 
     if (highlightProfile) {
       const row = app.querySelector('#profile-row')
@@ -2401,6 +2558,25 @@ function renderLore() {
       card.addEventListener('click', () => playLoreVideo(LORE_VIDEOS[Number(card.dataset.lore)]))
     })
   })
+}
+
+function renderLegal() {
+  const content = `
+    <div class="section-h" style="margin-top:6px"><h2>Legal and Disclaimers</h2></div>
+    <div class="legal-list">
+      <div class="legal-card">
+        <div class="legal-card-title">Copyright</div>
+        <p>Chef Penguino (original name = Chef Panguino) and other characters in this app are from the game "The Greatest Penguin Heist of All Time", by the indie development team That Other Fish.</p>
+        <p>This app is fan-made and NOT officially from That Other Fish.</p>
+        <p>Therefore, all copyright and character rights belong to That Other Fish.</p>
+      </div>
+      <div class="legal-card">
+        <div class="legal-card-title">Non-profit</div>
+        <p>As this app is fan-made and solely for fun, we do not charge users anything nor do we profit in any way. Any future commercialisation of this app will require consent from That Other Fish, as long as we continue using their characters.</p>
+      </div>
+    </div>
+  `
+  mountScreen('settings', content)
 }
 
 // Plays a lore video fullscreen with sound, ducking the bg music for the
@@ -2922,9 +3098,14 @@ function isNameAllowed(name) {
 }
 
 function openRenamePopup() {
+  // The "Chef" prefix is fixed and shown as a non-editable label; the user
+  // only edits the [name] part (max 15 chars), stored raw in display_name.
   const o = overlay(`
     <h3>Edit name</h3>
-    <input id="rename-input" class="rename-input" type="text" maxlength="15" value="${escapeHtml(currentProfile?.display_name || '')}" placeholder="Display name" />
+    <div class="rename-chef-row">
+      <span class="rename-chef-prefix">Chef</span>
+      <input id="rename-input" class="rename-input" type="text" maxlength="15" value="${escapeHtml(myRawName())}" placeholder="Your name" />
+    </div>
     <p class="inline-error" id="rename-error">That name isn't allowed &mdash; please choose another.</p>
     <div class="home-btn-col">
       <button type="button" data-action="save">Save</button>
@@ -2935,9 +3116,10 @@ function openRenamePopup() {
   const errEl = o.querySelector('#rename-error')
   const saveBtn = o.querySelector('[data-action="save"]')
   const validate = () => {
-    const ok = isNameAllowed(input.value)
-    errEl.classList.toggle('show', !ok)
-    input.classList.toggle('err', !ok)
+    const val = input.value.trim()
+    const ok = !!val && isNameAllowed(input.value)
+    errEl.classList.toggle('show', !!val && !isNameAllowed(input.value))
+    input.classList.toggle('err', !!val && !isNameAllowed(input.value))
     saveBtn.disabled = !ok
     return ok
   }
@@ -2946,7 +3128,7 @@ function openRenamePopup() {
   setTimeout(() => input.focus(), 50)
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="save"]').addEventListener('click', async () => {
-    const newName = input.value.trim().slice(0, 15)
+    const newName = stripChef(input.value).slice(0, 15)
     if (!newName) return
     if (!validate()) return
     const { error } = await supabase.from('profiles').update({ display_name: newName }).eq('id', currentUser.id)
@@ -2963,11 +3145,11 @@ function showNotSignedInWarning() {
     <h3>Not signed in</h3>
     <p>Your progress may not be saved since you're not signed in.</p>
     <div class="home-btn-col">
-      <button type="button" data-action="sign-in">Sign in with Google</button>
+      ${googleBtn()}
       <button type="button" class="btn-secondary" data-action="risk">I'll risk it</button>
     </div>
   `)
-  o.querySelector('[data-action="sign-in"]').addEventListener('click', signInWithGoogle)
+  wireSignInButtons(o)
   o.querySelector('[data-action="risk"]').addEventListener('click', () => { o.remove(); renderIntro(renderDurationPicker, false) })
 }
 
