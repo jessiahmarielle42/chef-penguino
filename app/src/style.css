@@ -727,6 +727,9 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   display: flex; gap:0.5rem; margin-top:0.5rem;
   background: var(--card-2); border: 1px solid var(--line); border-radius:0.8125rem; padding:0.625rem;
 }
+/* the [hidden] attribute must win over the flex rule above - same specificity,
+   but author CSS otherwise beats the UA's built-in [hidden]{display:none}. */
+.icon-options-row[hidden] { display: none; }
 .popup .icon-pick2 {
   flex: 1; aspect-ratio: 1/1; border-radius:0.625rem; font-size:1.1875rem;
   background: var(--card); border: 1px solid var(--line); color: inherit;
