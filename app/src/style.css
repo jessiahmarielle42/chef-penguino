@@ -802,6 +802,13 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .adm-mod-who { font-size:0.8125rem; color:var(--cream); font-weight:700; }
 .adm-mod-arrow { color:var(--muted); font-weight:700; margin:0 0.25rem; }
 .adm-mod-details { margin-top:0.5rem; font-size:0.8125rem; color:var(--muted-2); line-height:1.45; background:var(--card); border-radius:0.5rem; padding:0.5rem 0.625rem; }
+.adm-mod-actions { display:flex; gap:0.5rem; margin-top:0.625rem; }
+.adm-mod-btn { flex:1; border:none; border-radius:0.625rem; padding:0.5rem 0.75rem; font-family:var(--font-display); font-weight:800; font-size:0.8125rem; cursor:pointer; }
+.adm-mod-btn.warn { background:linear-gradient(180deg, #E4571C, var(--ember)); color:#fff; }
+.adm-mod-btn.dismiss { background:var(--card); color:var(--cream); border:1px solid var(--line); }
+.adm-mod-btn:active { transform:scale(0.97); }
+.warning-msg { font-size:1rem; color:var(--cream); font-weight:700; line-height:1.5; margin:0.5rem 0; }
+.warning-note { font-size:0.8125rem; color:var(--muted); margin-top:0.5rem; }
 .popup-info-badge { position: absolute; top:1.125rem; left:1.125rem; width:1.375rem; height:1.375rem; font-size:0.75rem; }
 
 /* profile popup */
