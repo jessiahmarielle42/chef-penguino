@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.8.2'
+const APP_VERSION = 'v2.8.3'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -620,7 +620,7 @@ function renderHome() {
     <div class="section-h" style="margin-top:2.75rem"><h2>Recent sessions</h2></div>
     <p class="swipe-line" style="margin:0.25rem 0 1rem">Swipe left on a session to edit</p>
     <div class="log-list" id="home-log"><p class="log-empty">Loading&hellip;</p></div>
-    <button class="cal-seeall-btn" type="button" data-action="see-all-sessions">See All Sessions</button>
+    <button class="cal-seeall-btn" type="button" data-action="see-all-sessions">📅 See All Sessions</button>
   `
 
   mountScreen('home', content, () => {
