@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.7.1'
+const APP_VERSION = 'v2.7.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -2511,23 +2511,27 @@ function renderTimePickerUI({ title, onPick, onBack }) {
           <button class="picker-btn" data-custom="1">Custom</button>
         </div>
         <div class="custom-row" hidden>
-          <input type="number" min="1" max="360" inputmode="numeric" placeholder="Minutes" class="custom-input" />
+          <input type="number" min="0" max="6" inputmode="numeric" placeholder="Hrs" class="custom-input custom-hrs" />
+          <input type="number" min="0" max="59" inputmode="numeric" placeholder="Min" class="custom-input custom-mins" />
           <button class="custom-go" type="button">Go</button>
         </div>
       </div>
     </div>
   `
   const customRow = app.querySelector('.custom-row')
-  const customInput = app.querySelector('.custom-input')
+  const customHrs = app.querySelector('.custom-hrs')
+  const customMins = app.querySelector('.custom-mins')
   app.querySelectorAll('.picker-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      if (btn.dataset.custom) { customRow.hidden = false; customInput.focus(); return }
+      if (btn.dataset.custom) { customRow.hidden = false; customHrs.focus(); return }
       onPick(Number(btn.dataset.minutes))
     })
   })
   app.querySelector('.custom-go').addEventListener('click', () => {
-    const minutes = Math.floor(Number(customInput.value))
-    if (minutes > 0) onPick(minutes)
+    const hrs = Math.floor(Number(customHrs.value)) || 0
+    const mins = Math.floor(Number(customMins.value)) || 0
+    const minutes = hrs * 60 + mins
+    if (minutes > 0) onPick(Math.min(minutes, 360))
   })
   if (onBack) app.querySelector('.back-arrow-btn').addEventListener('click', onBack)
 }
