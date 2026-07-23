@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Throwaway headless-review harness (fake admin/user + fixtures, Playwright
+# screenshot script) and its output - never shipped, never committed.
+review/

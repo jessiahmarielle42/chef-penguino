@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.10.2'
+const APP_VERSION = 'v2.11.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -18,6 +18,12 @@ function isAdmin() { return currentUser?.email === ADMIN_EMAIL }
 
 let currentUser = null
 let currentProfile = null
+
+// Best-known count of unread items (warnings + system_notifications) for the
+// signed-in user, driving both the bottom tab-bar dot and the Settings row
+// badge. Refreshed via refreshNotifBadges() - see the "System Notifications"
+// section below.
+let notifUnread = 0
 
 // Whichever of renderHome() / renderHistory() is currently on screen, so a
 // session edit or delete (fired from either screen's swipe actions or the
@@ -52,6 +58,7 @@ async function signOut() {
   await supabase.auth.signOut()
   currentUser = null
   currentProfile = null
+  clearNotifBadges()
   renderHome()
 }
 
@@ -104,9 +111,13 @@ function subscribeToSocial() {
     .channel(`social-${uid}`)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'noots', filter: `recipient_id=eq.${uid}` }, () => checkPendingNoots())
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'coin_gifts', filter: `recipient_id=eq.${uid}` }, () => checkPendingCoinGifts())
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'warnings', filter: `user_id=eq.${uid}` }, () => checkPendingWarnings())
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'warnings', filter: `user_id=eq.${uid}` }, () => { checkPendingWarnings(); refreshNotifBadges() })
+    // system_notifications are announcements, not interruptions - unlike a
+    // warning, a new one never pops a popup. Just keep the unread badges
+    // (tab bar + Settings row) fresh; see migration_system_notifications.sql.
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'system_notifications', filter: `user_id=eq.${uid}` }, () => refreshNotifBadges())
     .subscribe((status) => {
-      if (status === 'SUBSCRIBED') { checkPendingNoots(); checkPendingCoinGifts(); checkPendingWarnings() }
+      if (status === 'SUBSCRIBED') { checkPendingNoots(); checkPendingCoinGifts(); checkPendingWarnings(); refreshNotifBadges() }
     })
 }
 function unsubscribeFromSocial() {
@@ -331,6 +342,7 @@ async function boot() {
       unsubscribeFromSocial()
       currentUser = null
       currentProfile = null
+      clearNotifBadges()
     }
   })
 
@@ -355,7 +367,23 @@ async function boot() {
   checkPendingWarnings()
 }
 
-boot()
+// ---------------------------------------------------------------
+// Review harness hook - headless screenshot review only, see app/review/.
+// import.meta.env.VITE_REVIEW is only ever set by `VITE_REVIEW=1 npx vite
+// build` (app/review/shots.mjs); it's statically undefined in every normal
+// build, so this whole branch - including the dynamic import - is dead-code
+// eliminated from production bundles (verified by grepping dist/ for the
+// harness's fixture sentinel string as part of the build check).
+// ---------------------------------------------------------------
+if (import.meta.env.VITE_REVIEW) {
+  import('../review/reviewHarness.js').then((mod) => mod.installReviewHarness({
+    supabase,
+    setUser: (user, profile) => { currentUser = user; currentProfile = profile },
+    renderers: { renderAdminDashboard, renderModerationCenter, renderSystemNotifications, renderComposeNotification, renderSettings },
+  }))
+} else {
+  boot()
+}
 
 // =================================================================
 //  Coin + emote economy (all derived from lifetime pizzas)
@@ -576,7 +604,15 @@ const TABS = [
 
 function tabBarHtml(active) {
   const [home, shop, friends, settings] = TABS
-  const tab = (t) => `<button class="tab ${active === t.id ? 'active' : ''}" type="button" data-tab="${t.id}"><span class="ti">${t.icon}</span>${t.label}</button>`
+  const tab = (t) => {
+    // Only the Settings tab can carry the unread-notifications badge. The
+    // badge span is always in the markup (so later updates can just toggle
+    // it) but starts hidden unless we already know there's something unread.
+    const icon = t.id === 'settings'
+      ? `<span class="tab-ic-wrap"><span class="ti">${t.icon}</span><span class="tab-notif-badge" ${notifUnread > 0 ? '' : 'hidden'}>${notifBadgeText(notifUnread)}</span></span>`
+      : `<span class="ti">${t.icon}</span>`
+    return `<button class="tab ${active === t.id ? 'active' : ''}" type="button" data-tab="${t.id}">${icon}${t.label}</button>`
+  }
   return `
     <div class="tabbar">
       ${tab(home)}
@@ -602,6 +638,56 @@ function mountScreen(active, contentHtml, after, opts = {}) {
   if (!opts.hideStatusBar) wireStatusBar()
   wireTabBar()
   if (after) after()
+  // Keep the unread-notifications badges fresh on every screen render - see
+  // refreshNotifBadges() below. No-ops instantly for guests.
+  if (isSignedIn()) refreshNotifBadges()
+}
+
+// =================================================================
+//  System Notifications: unread badge (tab bar + Settings row)
+// =================================================================
+// Two independent timestamps drive different things (see
+// migration_system_notifications.sql): a warning's acknowledged_at fires the
+// instant the user dismisses the live popup, so it can't drive an unread
+// count (it'd read ~0 almost always). read_at is set only when that specific
+// message scrolls into view on the System Notifications page - see
+// wireNotifReadObserver() - and is what these badges count.
+function notifBadgeText(n) { return n > 9 ? '9+' : String(n) }
+
+async function computeUnreadNotifCount() {
+  if (!currentUser) return 0
+  const [{ count: wc }, { count: nc }] = await Promise.all([
+    supabase.from('warnings').select('id', { count: 'exact', head: true }).eq('user_id', currentUser.id).is('read_at', null),
+    supabase.from('system_notifications').select('id', { count: 'exact', head: true }).eq('user_id', currentUser.id).is('read_at', null),
+  ])
+  return (wc || 0) + (nc || 0)
+}
+
+async function refreshNotifBadges() {
+  notifUnread = await computeUnreadNotifCount()
+  updateNotifBadgeDom()
+}
+
+// Called when the session ends (sign out / delete account). Without this the
+// tab-bar dot keeps showing the previous user's unread count, since
+// refreshNotifBadges() only runs for signed-in users.
+function clearNotifBadges() {
+  notifUnread = 0
+  updateNotifBadgeDom()
+}
+
+function updateNotifBadgeDom() {
+  const n = notifUnread
+  const text = notifBadgeText(n)
+  app.querySelectorAll('.tab-notif-badge').forEach(el => {
+    el.textContent = text
+    el.hidden = n <= 0
+  })
+  const rowBadge = app.querySelector('#settings-notif-badge')
+  if (rowBadge) {
+    rowBadge.textContent = text
+    rowBadge.hidden = n <= 0
+  }
 }
 
 function wireStatusBar() {
@@ -1717,6 +1803,7 @@ function confirmDeleteAccountFinal() {
     await supabase.auth.signOut()
     currentUser = null
     currentProfile = null
+    clearNotifBadges()
     o.remove()
     renderHome()
     toast('Your account has been deleted.')
@@ -2524,6 +2611,10 @@ function renderSettings(highlightProfile) {
                <div><div class="gt">Blocked users</div><div class="gs">Manage who you've blocked</div></div>
                <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
              </div>
+             <div class="grow" role="button" tabindex="0" data-action="system-notifications">
+               <div><div class="gt">System Notifications</div><div class="gs">View messages from the Admin team</div></div>
+               <div class="right"><span class="notif-badge" id="settings-notif-badge" hidden></span><span class="chevron" aria-hidden="true">›</span></div>
+             </div>
              <div class="grow" role="button" tabindex="0" data-action="delete-account">
                <div><div class="gt danger-text">Delete account ⚠️</div><div class="gs">Permanently erase your account and data</div></div>
                <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
@@ -2630,6 +2721,7 @@ function renderSettings(highlightProfile) {
 
     app.querySelector('[data-action="change-photo"]')?.addEventListener('click', openEditPicturePopup)
     app.querySelector('[data-action="blocked-users"]')?.addEventListener('click', openBlockedUsers)
+    app.querySelector('[data-action="system-notifications"]')?.addEventListener('click', renderSystemNotifications)
     app.querySelector('[data-action="delete-account"]')?.addEventListener('click', confirmDeleteAccount)
 
     if (highlightProfile) {
@@ -2640,6 +2732,141 @@ function renderSettings(highlightProfile) {
       }
     }
   })
+}
+
+// =================================================================
+//  System Notifications page (renderSystemNotifications) - the archive.
+//  The live ⚠️ popup (showWarningPopup, above) is untouched; this page is
+//  just where every message ever sent - warning or plain announcement -
+//  can be re-read.
+// =================================================================
+let notifReadObserver = null
+
+function notifTime(ts) {
+  return new Date(ts).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+}
+
+function notifMsgRowHtml({ id, kind, title, body, ts, unread, details }) {
+  return `
+    <div class="notif-msg ${kind === 'sys' ? 'sys' : ''}" data-notif-id="${escapeHtml(id)}" data-notif-kind="${kind}" data-unread="${unread ? '1' : '0'}">
+      <div class="notif-msg-top">
+        <span class="notif-msg-title">${unread ? '<span class="notif-unread-dot"></span>' : ''}${escapeHtml(title)}</span>
+        <span class="notif-msg-time">${notifTime(ts)}</span>
+      </div>
+      <div class="notif-msg-body">${escapeHtml(body)}</div>
+      ${details ? `<div class="notif-msg-details">${escapeHtml(details)}</div>` : ''}
+    </div>
+  `
+}
+
+function renderSystemNotifications() {
+  if (!isSignedIn()) { renderSettings(); return }
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-settings">‹ Settings</div>
+    <div class="section-h" style="margin-top:2px"><h2>System Notifications</h2></div>
+    <div class="notif-card">
+      <div class="notif-card-head"><span class="notif-card-ic">📣</span><span class="notif-card-title">System Notifications</span></div>
+      <div class="notif-msg-list" id="notif-sys-list"><p class="editpic-empty">Loading&hellip;</p></div>
+    </div>
+    <div class="notif-card">
+      <div class="notif-card-head"><span class="notif-card-ic">⚠️</span><span class="notif-card-title">Past warnings</span></div>
+      <div class="notif-msg-list" id="notif-warn-list"><p class="editpic-empty">Loading&hellip;</p></div>
+    </div>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-settings"]').addEventListener('click', () => {
+      if (notifReadObserver) { notifReadObserver.disconnect(); notifReadObserver = null }
+      renderSettings()
+    })
+    loadSystemNotificationsPage()
+  })
+}
+
+async function loadSystemNotificationsPage() {
+  if (notifReadObserver) { notifReadObserver.disconnect(); notifReadObserver = null }
+  const sysListEl = app.querySelector('#notif-sys-list')
+  const warnListEl = app.querySelector('#notif-warn-list')
+  const [{ data: notifs, error: notifErr }, { data: warnings, error: warnErr }] = await Promise.all([
+    supabase.from('system_notifications').select('id, title, body, created_at, read_at').eq('user_id', currentUser.id).order('created_at', { ascending: false }).limit(100),
+    supabase.from('warnings').select('id, message, details, created_at, acknowledged_at, read_at').eq('user_id', currentUser.id).order('created_at', { ascending: false }).limit(100),
+  ])
+  if (sysListEl) {
+    if (notifErr) sysListEl.innerHTML = `<p class="editpic-empty">${escapeHtml(notifErr.message)}</p>`
+    else if (!notifs || !notifs.length) sysListEl.innerHTML = '<p class="editpic-empty">No messages yet.</p>'
+    else sysListEl.innerHTML = notifs.map(n => notifMsgRowHtml({
+      id: n.id, kind: 'sys', title: n.title, body: n.body, ts: n.created_at, unread: !n.read_at, details: null,
+    })).join('')
+  }
+  if (warnListEl) {
+    if (warnErr) warnListEl.innerHTML = `<p class="editpic-empty">${escapeHtml(warnErr.message)}</p>`
+    else if (!warnings || !warnings.length) warnListEl.innerHTML = '<p class="editpic-empty">No warnings — keep it up! 🐧</p>'
+    else warnListEl.innerHTML = warnings.map(w => {
+      const ackPart = w.acknowledged_at ? `You acknowledged this on ${calFmtShortDate(w.acknowledged_at)}` : 'Not yet acknowledged'
+      const detailsLine = [w.details ? `Reason: ${w.details}` : null, ackPart].filter(Boolean).join(' · ')
+      return notifMsgRowHtml({
+        id: w.id, kind: 'warn', title: 'Warning', body: w.message, ts: w.created_at, unread: !w.read_at, details: detailsLine,
+      })
+    }).join('')
+  }
+  wireNotifReadObserver()
+}
+
+// Scroll-to-read: a message only clears its unread dot (and its share of the
+// badge) once it has actually dwelt in view, not the instant the page opens
+// - see migration_system_notifications.sql's read_at columns for why
+// acknowledged_at alone can't drive this.
+function wireNotifReadObserver() {
+  const rows = app.querySelectorAll('.notif-msg[data-unread="1"]')
+  if (!rows.length) return
+  const scrollRoot = app.querySelector('.scroll.view.active') || null
+  const timers = new Map()
+  notifReadObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      const row = entry.target
+      if (entry.isIntersecting && entry.intersectionRatio >= 0.6) {
+        if (!timers.has(row)) {
+          timers.set(row, setTimeout(() => { timers.delete(row); markNotifRowRead(row) }, 450))
+        }
+      } else if (timers.has(row)) {
+        clearTimeout(timers.get(row))
+        timers.delete(row)
+      }
+    })
+  }, { root: scrollRoot, threshold: [0.6] })
+  rows.forEach(row => notifReadObserver.observe(row))
+}
+
+async function markNotifRowRead(row) {
+  if (!row.isConnected || row.dataset.unread !== '1') return
+  // Optimistically clear the dot + badge so scrolling feels instant.
+  row.dataset.unread = '0'
+  const titleEl = row.querySelector('.notif-msg-title')
+  row.querySelector('.notif-unread-dot')?.remove()
+  notifReadObserver?.unobserve(row)
+  notifUnread = Math.max(0, notifUnread - 1)
+  updateNotifBadgeDom()
+
+  const kind = row.dataset.notifKind
+  const id = row.dataset.notifId
+  const { error } = kind === 'sys'
+    ? await supabase.rpc('mark_system_notification_read', { notif_id: id })
+    : await supabase.rpc('mark_warning_read', { warning_id: id })
+
+  // Roll back on failure so the client doesn't silently diverge from the
+  // server (row would otherwise read as "read" locally but stay unread in the
+  // DB, and never retry). Restoring the dot + re-observing lets it try again.
+  if (error) {
+    row.dataset.unread = '1'
+    if (titleEl && !titleEl.querySelector('.notif-unread-dot')) {
+      const dot = document.createElement('span')
+      dot.className = 'notif-unread-dot'
+      titleEl.prepend(dot)
+    }
+    notifUnread += 1
+    updateNotifBadgeDom()
+    if (notifReadObserver && row.isConnected) notifReadObserver.observe(row)
+  }
 }
 
 // =================================================================
@@ -2745,13 +2972,28 @@ function renderAdminDashboard() {
 
     <div class="admin-dash">
       <div class="group">
-        <p class="glab">Reports</p>
-        <div class="adm-mod-list" id="adm-reports"><p class="editpic-empty">Loading&hellip;</p></div>
+        <p class="glab">Moderation</p>
+        <div class="glist">
+          <div class="grow mod-summary-row" role="button" tabindex="0" data-action="open-moderation">
+            <div class="mod-summary-body">
+              <div class="gt">Reports and Blocks</div>
+              <div class="mod-summary-counts" id="mod-summary-counts">
+                <span class="count-pip"><span class="pip-dot rep"></span>Loading&hellip;</span>
+              </div>
+            </div>
+            <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
+          </div>
+        </div>
       </div>
 
       <div class="group">
-        <p class="glab">Blocks</p>
-        <div class="adm-mod-list" id="adm-blocks"><p class="editpic-empty">Loading&hellip;</p></div>
+        <p class="glab">Notifications</p>
+        <div class="glist">
+          <div class="grow" role="button" tabindex="0" data-action="open-compose">
+            <div><div class="gt">Send Notification</div><div class="gs">Message one chef, a few, or everyone</div></div>
+            <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
+          </div>
+        </div>
       </div>
 
       <div class="group">
@@ -2788,8 +3030,9 @@ function renderAdminDashboard() {
 
   presetEditMode = false
   mountScreen('settings', content, () => {
-    loadAdminReports()
-    loadAdminBlocks()
+    loadModSummary()
+    app.querySelector('[data-action="open-moderation"]').addEventListener('click', () => renderModerationCenter())
+    app.querySelector('[data-action="open-compose"]').addEventListener('click', renderComposeNotification)
     loadPresetAvatars()
     app.querySelector('#preset-input').addEventListener('change', (e) => {
       const file = e.target.files[0]; e.target.value = ''
@@ -2809,57 +3052,427 @@ function renderAdminDashboard() {
   })
 }
 
-// ---------- admin: moderation (reports + blocks) ----------
+// The dashboard's one-line "Reports and Blocks" summary AND the Moderation
+// Center's segmented-control counts share this: pending reports = open
+// queue size; new blocks = blocks created after this admin's last visit to
+// the Blocks tab (admin_meta.blocks_seen_at - everything is "new" if that
+// row doesn't exist yet).
+async function fetchModerationCounts() {
+  const [{ count: openReports }, metaRes] = await Promise.all([
+    supabase.from('reports').select('id', { count: 'exact', head: true }).eq('status', 'open'),
+    supabase.from('admin_meta').select('blocks_seen_at').eq('admin_id', currentUser.id).maybeSingle(),
+  ])
+  let blocksQuery = supabase.from('blocked_users').select('id', { count: 'exact', head: true })
+  if (metaRes.data?.blocks_seen_at) blocksQuery = blocksQuery.gt('created_at', metaRes.data.blocks_seen_at)
+  const { count: newBlocks } = await blocksQuery
+  return { openReports: openReports || 0, newBlocks: newBlocks || 0 }
+}
+
+async function loadModSummary() {
+  const el = app.querySelector('#mod-summary-counts')
+  if (!el) return
+  const { openReports, newBlocks } = await fetchModerationCounts()
+  el.innerHTML = `
+    <span class="count-pip"><span class="pip-dot rep"></span><b>${openReports}</b>&nbsp;pending report${openReports === 1 ? '' : 's'}</span>
+    <span class="count-pip"><span class="pip-dot blk"></span><b>${newBlocks}</b>&nbsp;new block${newBlocks === 1 ? '' : 's'}</span>
+  `
+}
+
+// Removes a report row that just got resolved (warned or dismissed) from
+// whichever Moderation Center list is currently mounted, decrements the
+// Reports segment count, and swaps in the empty state if the queue is now
+// empty. Shared by dismissReportInCenter() and openWarnUserPopup() above.
+function removeResolvedReportRow(reportId) {
+  const row = app.querySelector(`.adm-mod-row[data-report-id="${cssEscape(reportId)}"]`)
+  row?.remove()
+  bumpSegCount('seg-reports-n', -1)
+  const body = app.querySelector('#mod-body')
+  if (body && !body.querySelector('.adm-mod-row')) body.innerHTML = '<p class="editpic-empty">No open reports. Nice and quiet. 🐧</p>'
+}
+
+function bumpSegCount(id, delta) {
+  const el = document.getElementById(id)
+  if (!el) return
+  el.textContent = String(Math.max(0, (parseInt(el.textContent, 10) || 0) + delta))
+}
+
+// CSS.escape isn't available in every test/SSR-ish environment this file
+// might run under - a tiny inline fallback keeps the selector safe either way.
+function cssEscape(s) { return window.CSS?.escape ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&') }
+
+// =================================================================
+//  Moderation Center (admin-only) - renderModerationCenter()
+//  Reports (open queue) / Blocks (read-only, "new" flagged) / History (log)
+// =================================================================
 function calFmtShortDate(ts) {
   return new Date(ts).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
-async function loadAdminReports() {
-  const el = app.querySelector('#adm-reports')
-  if (!el) return
+let modCurrentTab = 'reports'
+
+function renderModerationCenter(tab = 'reports') {
+  if (!isAdmin()) { renderSettings(); return }
+  modCurrentTab = tab
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Reports &amp; Blocks</h2></div>
+    <div class="seg" id="mod-seg">
+      <span data-seg="reports" class="${tab === 'reports' ? 'on' : ''}">Reports · <b id="seg-reports-n">–</b></span>
+      <span data-seg="blocks" class="${tab === 'blocks' ? 'on' : ''}">Blocks · <b id="seg-blocks-n">–</b></span>
+      <span data-seg="history" class="${tab === 'history' ? 'on' : ''}">History</span>
+    </div>
+    <div id="mod-body"><p class="editpic-empty">Loading&hellip;</p></div>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+    app.querySelectorAll('#mod-seg [data-seg]').forEach(btn => {
+      btn.addEventListener('click', () => switchModTab(btn.dataset.seg))
+    })
+    loadModSegCounts()
+    switchModTab(tab)
+  })
+}
+
+async function loadModSegCounts() {
+  const { openReports, newBlocks } = await fetchModerationCounts()
+  const rn = app.querySelector('#seg-reports-n'); if (rn) rn.textContent = openReports
+  const bn = app.querySelector('#seg-blocks-n'); if (bn) bn.textContent = newBlocks
+}
+
+function switchModTab(tab) {
+  modCurrentTab = tab
+  app.querySelectorAll('#mod-seg [data-seg]').forEach(el => el.classList.toggle('on', el.dataset.seg === tab))
+  if (tab === 'reports') loadModReportsTab()
+  else if (tab === 'blocks') loadModBlocksTab()
+  else loadModHistoryTab()
+}
+
+// ---------- Reports tab: the open queue ----------
+async function loadModReportsTab() {
+  const body = app.querySelector('#mod-body')
+  if (!body) return
+  body.innerHTML = '<p class="editpic-empty">Loading&hellip;</p>'
   const { data, error } = await supabase
     .from('reports')
     .select('id, reason, details, created_at, reported_id, reporter:reporter_id(display_name), reported:reported_id(display_name)')
+    .eq('status', 'open')
     .order('created_at', { ascending: false })
     .limit(100)
-  if (error) { el.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
-  if (!data || !data.length) { el.innerHTML = '<p class="editpic-empty">No reports yet.</p>'; return }
-  el.innerHTML = data.map(r => {
+  if (modCurrentTab !== 'reports') return // tab switched away while this was in flight
+  if (error) { body.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
+  if (!data || !data.length) { body.innerHTML = '<p class="editpic-empty">No open reports. Nice and quiet. 🐧</p>'; return }
+  body.innerHTML = `<div class="adm-mod-list">${data.map(r => {
     const reportedName = chefName(r.reported?.display_name)
     return `
     <div class="adm-mod-row" data-report-id="${escapeHtml(r.id)}">
       <div class="adm-mod-head">
         <span class="adm-mod-reason">🚩 ${escapeHtml(r.reason)}</span>
-        <span class="adm-mod-date">${calFmtShortDate(r.created_at)}</span>
+        <span class="adm-mod-chip open">● Open</span>
       </div>
-      <div class="adm-mod-who">${escapeHtml(chefName(r.reporter?.display_name))} <span class="adm-mod-arrow">reported</span> ${escapeHtml(reportedName)}</div>
+      <div class="adm-mod-who">${escapeHtml(chefName(r.reporter?.display_name))} <span class="adm-mod-arrow">reported</span> ${escapeHtml(reportedName)} · ${calFmtShortDate(r.created_at)}</div>
       ${r.details ? `<div class="adm-mod-details">${escapeHtml(r.details)}</div>` : ''}
       <div class="adm-mod-actions">
-        <button type="button" class="adm-mod-btn warn" data-action="warn" data-reported="${escapeHtml(r.reported_id)}" data-name="${escapeHtml(reportedName)}">⚠️ Warn user</button>
+        <button type="button" class="adm-mod-btn warn" data-action="warn" data-reported="${escapeHtml(r.reported_id)}" data-name="${escapeHtml(reportedName)}">⚠️ Warn ${escapeHtml(reportedName)}</button>
         <button type="button" class="adm-mod-btn dismiss" data-action="dismiss">Dismiss</button>
       </div>
     </div>`
-  }).join('')
-  el.querySelectorAll('[data-action="dismiss"]').forEach(btn => {
-    btn.addEventListener('click', () => dismissReport(btn.closest('.adm-mod-row')))
+  }).join('')}</div>`
+  body.querySelectorAll('[data-action="dismiss"]').forEach(btn => {
+    btn.addEventListener('click', () => dismissReportInCenter(btn.closest('.adm-mod-row')))
   })
-  el.querySelectorAll('[data-action="warn"]').forEach(btn => {
-    btn.addEventListener('click', () => openWarnUserPopup(btn.dataset.reported, btn.dataset.name))
+  body.querySelectorAll('[data-action="warn"]').forEach(btn => {
+    const row = btn.closest('.adm-mod-row')
+    btn.addEventListener('click', () => openWarnUserPopup(btn.dataset.reported, btn.dataset.name, row.dataset.reportId))
   })
 }
 
-async function dismissReport(rowEl) {
+async function dismissReportInCenter(rowEl) {
   const id = rowEl?.dataset.reportId
   if (!id) return
   const { error } = await supabase.rpc('dismiss_report', { report_id: id })
   if (error) { toast(error.message); return }
-  rowEl.remove()
   toast('Report dismissed')
-  const el = app.querySelector('#adm-reports')
-  if (el && !el.querySelector('.adm-mod-row')) el.innerHTML = '<p class="editpic-empty">No reports yet.</p>'
+  removeResolvedReportRow(id)
 }
 
-function openWarnUserPopup(reportedId, name) {
+// ---------- Blocks tab: read-only context, flags new ones ----------
+async function loadModBlocksTab() {
+  const body = app.querySelector('#mod-body')
+  if (!body) return
+  body.innerHTML = '<p class="editpic-empty">Loading&hellip;</p>'
+  // Read blocks_seen_at BEFORE marking seen below, so rows added since the
+  // admin's last visit here still render with the "New" chip this time.
+  const { data: meta } = await supabase.from('admin_meta').select('blocks_seen_at').eq('admin_id', currentUser.id).maybeSingle()
+  const seenAt = meta?.blocks_seen_at ? new Date(meta.blocks_seen_at) : null
+  const { data, error } = await supabase
+    .from('blocked_users')
+    .select('id, created_at, blocked_name, blocker:blocker_id(display_name), blocked:blocked_id(display_name)')
+    .order('created_at', { ascending: false })
+    .limit(100)
+  if (modCurrentTab !== 'blocks') return
+  if (error) { body.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
+  if (!data || !data.length) {
+    body.innerHTML = '<p class="editpic-empty">No blocks yet.</p>'
+    // Still mark seen so the behaviour matches the non-empty case (count is
+    // already 0 here, but this keeps the "opening this tab marks blocks as
+    // seen" contract honest).
+    await supabase.rpc('mark_blocks_seen')
+    return
+  }
+  body.innerHTML = `<div class="adm-mod-list">${data.map(b => {
+    const isNew = !seenAt || new Date(b.created_at) > seenAt
+    return `
+    <div class="adm-mod-row">
+      <div class="adm-mod-head">
+        <span class="adm-mod-reason">🚫 Block</span>
+        ${isNew ? '<span class="adm-mod-chip new">New</span>' : `<span class="adm-mod-date">${calFmtShortDate(b.created_at)}</span>`}
+      </div>
+      <div class="adm-mod-who">${escapeHtml(chefName(b.blocker?.display_name))} <span class="adm-mod-arrow">blocked</span> ${escapeHtml(chefName(b.blocked?.display_name || b.blocked_name))} · ${calFmtShortDate(b.created_at)}</div>
+    </div>`
+  }).join('')}</div>
+  <p class="mod-blocks-note">Opening this tab marks blocks as seen — the dashboard "new blocks" count clears to 0.</p>`
+  const { error: seenError } = await supabase.rpc('mark_blocks_seen')
+  if (!seenError) { const n = app.querySelector('#seg-blocks-n'); if (n) n.textContent = '0' }
+}
+
+// ---------- History tab: a client-side merge of 3 admin-visible queries ----------
+async function loadModHistoryTab() {
+  const body = app.querySelector('#mod-body')
+  if (!body) return
+  body.innerHTML = '<p class="editpic-empty">Loading&hellip;</p>'
+  const [reportsRes, warningsRes, notifsRes] = await Promise.all([
+    supabase.from('reports').select('id, reason, resolution, status, resolved_at, reported:reported_id(display_name)').neq('status', 'open').order('resolved_at', { ascending: false }).limit(100),
+    supabase.from('warnings').select('id, message, created_at, acknowledged_at, report_id, user:user_id(display_name)').order('created_at', { ascending: false }).limit(100),
+    supabase.from('system_notifications').select('id, title, body, created_at, user:user_id(display_name)').order('created_at', { ascending: false }).limit(100),
+  ])
+  if (modCurrentTab !== 'history') return
+  const err = reportsRes.error || warningsRes.error || notifsRes.error
+  if (err) { body.innerHTML = `<p class="editpic-empty">${escapeHtml(err.message)}</p>`; return }
+
+  const entries = []
+  // A report that ended in 'actioned' is already fully represented by its
+  // linked warning entry below (same event, admin's point of view) - only
+  // 'dismissed' reports get their own log line.
+  ;(reportsRes.data || []).forEach(r => {
+    if (r.status !== 'dismissed') return
+    const targetName = chefName(r.reported?.display_name)
+    entries.push({
+      ts: r.resolved_at, icon: '✕', cls: 'dismiss',
+      title: `Dismissed report on <b>${escapeHtml(targetName)}</b>`,
+      sub: `${escapeHtml(r.reason)}${r.resolution ? ` · "${escapeHtml(r.resolution)}"` : ''}`,
+    })
+  })
+  ;(warningsRes.data || []).forEach(w => {
+    const targetName = chefName(w.user?.display_name)
+    const source = w.report_id ? 'from report' : 'direct'
+    const ack = w.acknowledged_at ? 'acknowledged ✓' : 'not yet acknowledged'
+    entries.push({
+      ts: w.created_at, icon: '⚠️', cls: 'warn',
+      title: `Warned <b>${escapeHtml(targetName)}</b> <span class="adm-log-tag">· ${source}</span>`,
+      sub: `"${escapeHtml(w.message)}" · ${ack}`,
+    })
+  })
+  // Broadcast/multi-recipient sends insert one row per user in a single
+  // statement, so they share an identical created_at - group on
+  // (title, body, created_at) to collapse them back into one log line.
+  const notifGroups = new Map()
+  ;(notifsRes.data || []).forEach(n => {
+    const key = `${n.title}\u0000${n.body}\u0000${n.created_at}`
+    if (!notifGroups.has(key)) notifGroups.set(key, { title: n.title, body: n.body, ts: n.created_at, names: [] })
+    notifGroups.get(key).names.push(chefName(n.user?.display_name))
+  })
+  notifGroups.forEach(g => {
+    const who = g.names.length > 3 ? `${g.names.length} chefs` : g.names.join(', ')
+    entries.push({
+      ts: g.ts, icon: '📣', cls: 'msg',
+      title: `Sent message <span class="adm-log-tag">· ${escapeHtml(who)}</span>`,
+      sub: `"${escapeHtml(g.body)}"`,
+    })
+  })
+
+  entries.sort((a, b) => new Date(b.ts) - new Date(a.ts))
+  const capped = entries.slice(0, 100)
+  if (!capped.length) { body.innerHTML = '<p class="editpic-empty">No moderation history yet.</p>'; return }
+  body.innerHTML = `<div class="adm-log-list">${capped.map(e => `
+    <div class="adm-log">
+      <div class="adm-log-ic ${e.cls}">${e.icon}</div>
+      <div class="adm-log-mid">
+        <div class="adm-log-lt">${e.title}</div>
+        <div class="adm-log-ls">${e.sub}</div>
+      </div>
+      <div class="adm-log-ts">${calFmtShortDate(e.ts)}</div>
+    </div>
+  `).join('')}</div>`
+}
+
+// =================================================================
+//  Compose a System Notification (admin-only) - renderComposeNotification()
+//  Everyone (broadcast_system_notification) or Specific chefs
+//  (send_system_notification), reusing the same profiles data the admin
+//  user list already loads.
+// =================================================================
+let composeState = { audience: 'everyone', selectedIds: new Set(), usersCache: [] }
+
+function renderComposeNotification() {
+  if (!isAdmin()) { renderSettings(); return }
+  composeState = { audience: 'everyone', selectedIds: new Set(), usersCache: [] }
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Send Notification</h2></div>
+
+    <p class="field-lab-standalone">Audience</p>
+    <div class="seg" id="compose-audience-seg">
+      <span data-aud="everyone" class="on">📣 Everyone</span>
+      <span data-aud="specific">👤 Specific chefs</span>
+    </div>
+    <p class="aud-help" id="compose-aud-help">Goes to everyone. Appears in each chef's System Notifications.</p>
+
+    <div id="compose-picker-wrap" hidden>
+      <p class="field-lab-standalone" id="compose-recipients-lab">Recipients</p>
+      <div class="compose-picker">
+        <div class="picker-search"><span aria-hidden="true">🔍</span><input type="text" id="compose-search" placeholder="Search chefs by name or code…" /></div>
+        <div class="chip-row" id="compose-chip-row"></div>
+        <div class="u-opt-list" id="compose-user-list"><p class="editpic-empty">Loading&hellip;</p></div>
+      </div>
+    </div>
+
+    <p class="field-lab-standalone">Title</p>
+    <input class="compose-input" id="compose-title" type="text" maxlength="60" placeholder="e.g. Server maintenance tonight" />
+    <p class="field-lab-standalone">Message</p>
+    <textarea class="compose-input compose-textarea" id="compose-body" maxlength="300" placeholder="Write your announcement…"></textarea>
+
+    <button class="send-big" type="button" id="compose-send" disabled>Send to everyone</button>
+    <p class="recip-note" id="compose-recip-note"></p>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+    wireComposeNotification()
+  })
+}
+
+function wireComposeNotification() {
+  const segEl = app.querySelector('#compose-audience-seg')
+  const pickerWrap = app.querySelector('#compose-picker-wrap')
+  const audHelp = app.querySelector('#compose-aud-help')
+  const titleEl = app.querySelector('#compose-title')
+  const bodyEl = app.querySelector('#compose-body')
+  const sendBtn = app.querySelector('#compose-send')
+  const recipNote = app.querySelector('#compose-recip-note')
+  let totalUsers = null
+
+  async function loadTotalUserCount() {
+    const { count } = await supabase.from('profiles').select('id', { count: 'exact', head: true })
+    totalUsers = count || 0
+    updateEverything()
+  }
+
+  async function loadComposeUsers() {
+    const { data, error } = await supabase.from('profiles').select('id, display_name, friend_code, avatar_url').order('display_name', { ascending: true }).limit(200)
+    if (!error) composeState.usersCache = data || []
+    renderUserOptions()
+  }
+
+  function renderUserOptions(filterText) {
+    const listEl = app.querySelector('#compose-user-list')
+    if (!listEl) return
+    const q = (filterText || '').trim().toLowerCase()
+    const list = q
+      ? composeState.usersCache.filter(u => (u.display_name || '').toLowerCase().includes(q) || (u.friend_code || '').toLowerCase().includes(q))
+      : composeState.usersCache
+    if (!list.length) { listEl.innerHTML = '<p class="editpic-empty">No chefs found.</p>'; return }
+    listEl.innerHTML = list.map(u => `
+      <div class="u-opt" data-uid="${u.id}">
+        <img class="u-opt-av" src="${u.avatar_url || DEFAULT_AVATAR}" alt="" />
+        <div class="u-opt-info"><div class="u-opt-name">${escapeHtml(chefName(u.display_name))}</div><div class="u-opt-code">${escapeHtml(u.friend_code || '')}</div></div>
+        <span class="u-opt-tick ${composeState.selectedIds.has(u.id) ? 'on' : ''}">✓</span>
+      </div>
+    `).join('')
+    listEl.querySelectorAll('.u-opt').forEach(row => {
+      row.addEventListener('click', () => toggleUser(row.dataset.uid))
+    })
+  }
+
+  function toggleUser(id) {
+    if (composeState.selectedIds.has(id)) composeState.selectedIds.delete(id)
+    else composeState.selectedIds.add(id)
+    renderChips()
+    renderUserOptions(app.querySelector('#compose-search')?.value)
+    updateEverything()
+  }
+
+  function renderChips() {
+    const chipRow = app.querySelector('#compose-chip-row')
+    if (!chipRow) return
+    const byId = Object.fromEntries(composeState.usersCache.map(u => [u.id, u]))
+    chipRow.innerHTML = [...composeState.selectedIds].map(id => `
+      <span class="u-chip" data-uid="${id}">${escapeHtml(chefName(byId[id]?.display_name))}<span class="u-chip-x">✕</span></span>
+    `).join('')
+    chipRow.querySelectorAll('.u-chip').forEach(chip => {
+      chip.addEventListener('click', () => toggleUser(chip.dataset.uid))
+    })
+    const lab = app.querySelector('#compose-recipients-lab')
+    if (lab) lab.textContent = `Recipients${composeState.selectedIds.size ? ' · ' + composeState.selectedIds.size + ' selected' : ''}`
+  }
+
+  function updateEverything() {
+    const title = titleEl.value.trim()
+    const body = bodyEl.value.trim()
+    const hasContent = title.length > 0 && body.length > 0
+    if (composeState.audience === 'everyone') {
+      sendBtn.textContent = 'Send to everyone'
+      recipNote.textContent = totalUsers != null ? `Sends to ${totalUsers} chef${totalUsers === 1 ? '' : 's'} · can't be undone` : ''
+      sendBtn.disabled = !hasContent || !totalUsers
+    } else {
+      const n = composeState.selectedIds.size
+      sendBtn.textContent = `Send to ${n} chef${n === 1 ? '' : 's'}`
+      const byId = Object.fromEntries(composeState.usersCache.map(u => [u.id, u]))
+      recipNote.textContent = n ? [...composeState.selectedIds].map(id => chefName(byId[id]?.display_name)).join(', ') : ''
+      sendBtn.disabled = !hasContent || n === 0
+    }
+  }
+
+  segEl.querySelectorAll('[data-aud]').forEach(seg => {
+    seg.addEventListener('click', () => {
+      composeState.audience = seg.dataset.aud
+      segEl.querySelectorAll('[data-aud]').forEach(s => s.classList.toggle('on', s === seg))
+      const isEveryone = composeState.audience === 'everyone'
+      pickerWrap.hidden = isEveryone
+      audHelp.hidden = !isEveryone
+      audHelp.textContent = totalUsers != null
+        ? `Goes to all ${totalUsers} chefs. Appears in each one's System Notifications.`
+        : `Goes to everyone. Appears in each chef's System Notifications.`
+      updateEverything()
+    })
+  })
+
+  titleEl.addEventListener('input', updateEverything)
+  bodyEl.addEventListener('input', updateEverything)
+  app.querySelector('#compose-search')?.addEventListener('input', (e) => renderUserOptions(e.target.value))
+
+  sendBtn.addEventListener('click', async () => {
+    const title = titleEl.value.trim().slice(0, 60)
+    const body = bodyEl.value.trim().slice(0, 300)
+    if (!title || !body) return
+    sendBtn.disabled = true
+    const { error } = composeState.audience === 'everyone'
+      ? await supabase.rpc('broadcast_system_notification', { title, body })
+      : await supabase.rpc('send_system_notification', { target_ids: [...composeState.selectedIds], title, body })
+    if (error) { sendBtn.disabled = false; toast(error.message); return }
+    toast('Notification sent')
+    renderAdminDashboard()
+  })
+
+  loadTotalUserCount()
+  loadComposeUsers()
+  updateEverything()
+}
+
+// reportId is optional - passed when warning is raised from a specific open
+// report (Moderation Center), so warn_user() can resolve that one report to
+// "actioned" in the same transaction. Omitted, it's just a direct warning.
+function openWarnUserPopup(reportedId, name, reportId) {
   const o = overlay(`
     <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
     <h3>Warn ${escapeHtml(name || 'this user')}</h3>
@@ -2879,32 +3492,15 @@ function openWarnUserPopup(reportedId, name) {
     const message = msgEl.value.trim().slice(0, 300)
     if (message.length < 3) return
     sendBtn.disabled = true
-    const { error } = await supabase.rpc('warn_user', { target_id: reportedId, message })
+    const { error } = await supabase.rpc('warn_user', { target_id: reportedId, message, report_id: reportId ?? null })
     if (error) { sendBtn.disabled = false; toast(error.message); return }
     o.remove()
     toast('Warning sent')
+    // If this warning resolved a specific report, the Moderation Center's
+    // Reports tab (if that's where we were called from) needs to drop the
+    // row and decrement its live count, same as a Dismiss.
+    if (reportId) removeResolvedReportRow(reportId)
   })
-}
-
-async function loadAdminBlocks() {
-  const el = app.querySelector('#adm-blocks')
-  if (!el) return
-  const { data, error } = await supabase
-    .from('blocked_users')
-    .select('id, created_at, blocked_name, blocker:blocker_id(display_name), blocked:blocked_id(display_name)')
-    .order('created_at', { ascending: false })
-    .limit(100)
-  if (error) { el.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
-  if (!data || !data.length) { el.innerHTML = '<p class="editpic-empty">No blocks yet.</p>'; return }
-  el.innerHTML = data.map(b => `
-    <div class="adm-mod-row">
-      <div class="adm-mod-head">
-        <span class="adm-mod-reason">🚫 Block</span>
-        <span class="adm-mod-date">${calFmtShortDate(b.created_at)}</span>
-      </div>
-      <div class="adm-mod-who">${escapeHtml(chefName(b.blocker?.display_name))} <span class="adm-mod-arrow">blocked</span> ${escapeHtml(chefName(b.blocked?.display_name || b.blocked_name))}</div>
-    </div>
-  `).join('')
 }
 
 // ---------- admin: emote type tags + per-emote overrides ----------
