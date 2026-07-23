@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.11.1'
+const APP_VERSION = 'v2.11.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -511,6 +511,19 @@ function parkVideo(v) {
   document.body.appendChild(v)
 }
 
+// iOS in particular often defers the actual network fetch for a
+// preload="auto" video until something nudges it, even though the element
+// is already in the DOM - so the very first tap-to-emote can stall waiting
+// on that fetch. warmEmote() gives it that nudge (once per id) by calling
+// .load() on the parked hidden <video>. No play()/pause(), no visible
+// change - it's a no-op if the id has no preloaded clip.
+const warmedEmoteIds = new Set()
+function warmEmote(id) {
+  if (!id || warmedEmoteIds.has(id)) return
+  warmedEmoteIds.add(id)
+  preloadedEmotes[id]?.load()
+}
+
 // Swap an <img> for the equipped/given emote clip, play it, then revert.
 function playEmoteInto(imgEl, emoteId, revertSrc, onRevert) {
   const v = preloadedEmotes[emoteId]
@@ -813,6 +826,7 @@ function renderHome() {
       })
     }
     attachEmoteTap(app.querySelector('#hero-card'))
+    warmEmote(equippedEmote())
 
     loadHomeLog()
     maybeShowCoinMilestone()
@@ -2033,6 +2047,7 @@ function renderFriendHome(friend) {
 
   mountScreen('friends', content, () => {
     loadHomeLog(friend.id)
+    warmEmote(friend.equipped_emote || 'waving')
     app.querySelector('#hero-card')?.addEventListener('click', () => {
       const img = app.querySelector('#hero-card .hero-still')
       if (img && img.tagName === 'IMG') playEmoteInto(img, friend.equipped_emote || 'waving', heroSrc)
@@ -3261,13 +3276,12 @@ async function loadModHistoryTab() {
   const body = app.querySelector('#mod-body')
   if (!body) return
   body.innerHTML = '<p class="editpic-empty">Loading&hellip;</p>'
-  const [reportsRes, warningsRes, notifsRes] = await Promise.all([
+  const [reportsRes, warningsRes] = await Promise.all([
     supabase.from('reports').select('id, reason, resolution, status, resolved_at, reported:reported_id(display_name)').neq('status', 'open').order('resolved_at', { ascending: false }).limit(100),
     supabase.from('warnings').select('id, message, created_at, acknowledged_at, report_id, user:user_id(display_name)').order('created_at', { ascending: false }).limit(100),
-    supabase.from('system_notifications').select('id, title, body, created_at, batch_id, user:user_id(display_name)').order('created_at', { ascending: false }).limit(100),
   ])
   if (modCurrentTab !== 'history') return
-  const err = reportsRes.error || warningsRes.error || notifsRes.error
+  const err = reportsRes.error || warningsRes.error
   if (err) { body.innerHTML = `<p class="editpic-empty">${escapeHtml(err.message)}</p>`; return }
 
   const entries = []
@@ -3297,26 +3311,10 @@ async function loadModHistoryTab() {
       unsend: { kind: 'warn', id: w.id },
     })
   })
-  // Broadcast/multi-recipient sends insert one row per user in a single
-  // statement, sharing one batch_id (see migration_unsend_messages.sql) -
-  // group on batch_id to collapse them back into one log line, and to know
-  // which id unsends the whole send at once.
-  const notifGroups = new Map()
-  ;(notifsRes.data || []).forEach(n => {
-    const key = n.batch_id || n.id
-    if (!notifGroups.has(key)) notifGroups.set(key, { batchId: key, title: n.title, body: n.body, ts: n.created_at, names: [] })
-    notifGroups.get(key).names.push(chefName(n.user?.display_name))
-  })
-  notifGroups.forEach(g => {
-    const who = g.names.length > 3 ? `${g.names.length} chefs` : g.names.join(', ')
-    entries.push({
-      ts: g.ts, icon: '📣', cls: 'msg',
-      title: `Sent message <span class="adm-log-tag">· ${escapeHtml(who)}</span>`,
-      sub: `"${escapeHtml(g.body)}"`,
-      key: `notif-${g.batchId}`,
-      unsend: { kind: 'notif', id: g.batchId },
-    })
-  })
+  // Sent notifications no longer appear here - they moved to their own
+  // "Sent" tab on the Notifications screen (see loadSentNotifications() /
+  // renderComposeNotification()), which also shows read counts. History is
+  // now strictly dismissed reports + warnings.
 
   entries.sort((a, b) => new Date(b.ts) - new Date(a.ts))
   const capped = entries.slice(0, 100)
@@ -3378,13 +3376,38 @@ function confirmUnsendHistoryEntry(kind, id, rowEl) {
 // =================================================================
 let composeState = { audience: 'everyone', selectedIds: new Set(), usersCache: [] }
 
+// Screen has two tabs: Compose (the form below, unchanged behaviour) and
+// Sent (loadSentNotifications() - a history of past sends with read
+// counts). Both tab bodies are rendered upfront and toggled with [hidden]
+// rather than swapped in/out, so switching tabs never wipes an in-progress
+// draft in the Compose form.
 function renderComposeNotification() {
   if (!isAdmin()) { renderSettings(); return }
   composeState = { audience: 'everyone', selectedIds: new Set(), usersCache: [] }
   const content = `
     <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
-    <div class="section-h" style="margin-top:2px"><h2>Send Notification</h2></div>
+    <div class="section-h" style="margin-top:2px"><h2>Notifications</h2></div>
+    <div class="seg" id="compose-tab-seg">
+      <span data-tab="compose" class="on">Compose</span>
+      <span data-tab="sent">Sent</span>
+    </div>
 
+    <div id="compose-tab-compose">${composeFormHtml()}</div>
+    <div id="compose-tab-sent" hidden>
+      <div id="sent-list"><p class="editpic-empty">Loading&hellip;</p></div>
+    </div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+    app.querySelectorAll('#compose-tab-seg [data-tab]').forEach(btn => {
+      btn.addEventListener('click', () => switchComposeTab(btn.dataset.tab))
+    })
+    wireComposeNotification()
+  })
+}
+
+function composeFormHtml() {
+  return `
     <p class="field-lab-standalone">Audience</p>
     <div class="seg" id="compose-audience-seg">
       <span data-aud="everyone" class="on">📣 Everyone</span>
@@ -3410,10 +3433,18 @@ function renderComposeNotification() {
     <p class="recip-note" id="compose-recip-note"></p>
     <div style="height:8px"></div>
   `
-  mountScreen('settings', content, () => {
-    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
-    wireComposeNotification()
-  })
+}
+
+// Tab bodies are both already in the DOM (see renderComposeNotification) -
+// switching just toggles which one is visible, and kicks off a fresh Sent
+// load each time that tab is opened so an admin sees any just-sent message.
+function switchComposeTab(tab) {
+  app.querySelectorAll('#compose-tab-seg [data-tab]').forEach(el => el.classList.toggle('on', el.dataset.tab === tab))
+  const composeBody = app.querySelector('#compose-tab-compose')
+  const sentBody = app.querySelector('#compose-tab-sent')
+  if (composeBody) composeBody.hidden = tab !== 'compose'
+  if (sentBody) sentBody.hidden = tab !== 'sent'
+  if (tab === 'sent') loadSentNotifications()
 }
 
 function wireComposeNotification() {
@@ -3531,6 +3562,177 @@ function wireComposeNotification() {
   loadTotalUserCount()
   loadComposeUsers()
   updateEverything()
+}
+
+// =================================================================
+//  Sent tab - loadSentNotifications() / openSentNotificationDetail()
+//  A history of past sends (one card per SEND, not per recipient), with
+//  read counts and an Unsend action. Admin has an all-rows SELECT policy on
+//  system_notifications (migration_system_notifications.sql).
+// =================================================================
+let sentNotifsCache = []
+
+async function loadSentNotifications() {
+  const listEl = app.querySelector('#sent-list')
+  if (!listEl) return
+  listEl.innerHTML = '<p class="editpic-empty">Loading&hellip;</p>'
+  // Capped at the most recent rows. Since a send fans out to one row per
+  // recipient, this is a per-row (not per-send) cap: newest sends are always
+  // complete, but a card old enough to fall past the cap could undercount its
+  // "X / Y read". 5000 is comfortable headroom at this app's scale (dozens of
+  // chefs = dozens of rows per broadcast); if history ever grows past that,
+  // move to a server-side per-batch aggregate RPC instead of pulling every
+  // recipient row into the client.
+  const { data, error } = await supabase
+    .from('system_notifications')
+    .select('id, title, body, created_at, batch_id, audience, read_at, user:user_id(display_name)')
+    .order('created_at', { ascending: false })
+    .limit(5000)
+  if (!app.querySelector('#sent-list')) return // tab/screen changed while this was in flight
+  if (error) { listEl.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
+
+  // A single send fans out into one row per recipient sharing one batch_id
+  // (see migration_unsend_messages.sql) - group those back into one card per
+  // SEND. Older rows that predate batch_id fall back to their own id, same
+  // pattern as the Moderation History grouping this replaces.
+  const groups = new Map()
+  ;(data || []).forEach(n => {
+    const key = n.batch_id || n.id
+    if (!groups.has(key)) groups.set(key, { batchId: key, title: n.title, body: n.body, ts: n.created_at, audience: n.audience, total: 0, readCount: 0, recipients: [] })
+    const g = groups.get(key)
+    g.total += 1
+    if (n.read_at) g.readCount += 1
+    g.recipients.push({ name: chefName(n.user?.display_name), read_at: n.read_at })
+  })
+  sentNotifsCache = [...groups.values()].sort((a, b) => new Date(b.ts) - new Date(a.ts))
+
+  if (!sentNotifsCache.length) { listEl.innerHTML = '<p class="editpic-empty">You haven\'t sent any notifications yet.</p>'; return }
+  listEl.innerHTML = `<div class="sent-card-list">${sentNotifsCache.map(sentCardHtml).join('')}</div>`
+  wireSentCards(listEl)
+}
+
+// null audience means the send predates the audience column (see
+// migration_sent_audience.sql) - treat it the same as 'specific', not
+// 'everyone', since every pre-migration send here was to a chosen list.
+function sentAudienceChip(g) {
+  if (g.audience === 'everyone') return 'Everyone'
+  const names = g.recipients.map(r => r.name)
+  const shown = names.slice(0, 2).join(', ') + (names.length > 2 ? '…' : '')
+  return `${g.total} chef${g.total === 1 ? '' : 's'}${shown ? ` · ${shown}` : ''}`
+}
+
+function truncateText(str, max) {
+  const s = (str || '').trim()
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s
+}
+
+function sentCardHtml(g) {
+  const pct = g.total ? Math.round((g.readCount / g.total) * 100) : 0
+  return `
+    <div class="sent-card" data-batch-id="${escapeHtml(g.batchId)}" role="button" tabindex="0">
+      <div class="sent-card-top">
+        <span class="sent-aud-chip">${escapeHtml(sentAudienceChip(g))}</span>
+        <span class="sent-card-ts">${calFmtShortDate(g.ts)}</span>
+      </div>
+      <div class="sent-card-title">${escapeHtml(g.title)}</div>
+      <div class="sent-card-body">${escapeHtml(truncateText(g.body, 90))}</div>
+      <div class="sent-readstat">
+        <span>${g.readCount} / ${g.total} read</span>
+        <div class="sent-readbar"><i style="width:${pct}%"></i></div>
+      </div>
+      <button type="button" class="adm-log-unsend" data-action="unsend" data-batch="${escapeHtml(g.batchId)}">Unsend</button>
+    </div>
+  `
+}
+
+function wireSentCards(listEl) {
+  listEl.querySelectorAll('.sent-card').forEach(card => {
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('[data-action="unsend"]')) return
+      const g = sentNotifsCache.find(x => x.batchId === card.dataset.batchId)
+      if (g) openSentNotificationDetail(g)
+    })
+  })
+  listEl.querySelectorAll('[data-action="unsend"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      confirmUnsendBatch(btn.dataset.batch, () => {
+        btn.closest('.sent-card')?.remove()
+        if (!app.querySelector('#sent-list .sent-card')) {
+          const listEl2 = app.querySelector('#sent-list')
+          if (listEl2) listEl2.innerHTML = '<p class="editpic-empty">You haven\'t sent any notifications yet.</p>'
+        }
+      })
+    })
+  })
+}
+
+// Unsend = permanent delete (unsend_system_notifications RPC, see
+// migration_unsend_messages.sql) - destructive, so it gets the same
+// confirm-popup treatment as elsewhere (e.g. confirmUnsendHistoryEntry).
+// onSuccess lets the caller decide how to update its own view (remove a
+// card from the list, or close the detail popup and refresh the list).
+function confirmUnsendBatch(batchId, onSuccess) {
+  const o = overlay(`
+    <h3>Unsend this message?</h3>
+    <p>It will be removed for everyone who received it and disappear from their records. This can't be undone.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Unsend</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    const btn = o.querySelector('[data-action="yes"]')
+    btn.disabled = true
+    const { error } = await supabase.rpc('unsend_system_notifications', { p_batch_id: batchId })
+    if (error) { btn.disabled = false; toast(error.message); return }
+    o.remove()
+    toast('Message unsent')
+    sentNotifsCache = sentNotifsCache.filter(g => g.batchId !== batchId)
+    onSuccess?.()
+  })
+}
+
+// Detail popup - modelled on openBlockedUsers/renderBlockedList: popup-wide,
+// with a scrollable recipient list below the send's own summary.
+function openSentNotificationDetail(group) {
+  const pct = group.total ? Math.round((group.readCount / group.total) * 100) : 0
+  const audienceLabel = group.audience === 'everyone' ? 'Everyone' : `${group.total} chef${group.total === 1 ? '' : 's'}`
+  const o = overlay(`
+    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
+    <h3>${escapeHtml(group.title)}</h3>
+    <p class="sent-detail-body">${escapeHtml(group.body)}</p>
+    <div class="sent-detail-meta">
+      <span>${escapeHtml(audienceLabel)}</span>
+      <span>${calFmtShortDate(group.ts)}</span>
+    </div>
+    <div class="sent-readstat">
+      <span>${group.readCount} / ${group.total} read</span>
+      <div class="sent-readbar"><i style="width:${pct}%"></i></div>
+    </div>
+    <p class="field-lab-standalone" style="margin-top:1rem">Recipients</p>
+    <div class="sent-recip-list" id="sent-recip-list">${group.recipients.map(r => `
+      <div class="sent-recip-row">
+        <span class="sent-recip-dot ${r.read_at ? 'read' : ''}"></span>
+        <span class="sent-recip-name">${escapeHtml(r.name)}</span>
+        <span class="sent-recip-when">${r.read_at ? `Read · ${calFmtShortDate(r.read_at)}` : 'Unread'}</span>
+      </div>
+    `).join('')}</div>
+    <button type="button" class="btn-danger sent-detail-unsend" data-action="unsend" style="margin-top:1rem">Unsend</button>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="unsend"]').addEventListener('click', () => {
+    confirmUnsendBatch(group.batchId, () => {
+      o.remove()
+      const card = app.querySelector(`.sent-card[data-batch-id="${cssEscape(group.batchId)}"]`)
+      card?.remove()
+      if (!app.querySelector('#sent-list .sent-card')) {
+        const listEl = app.querySelector('#sent-list')
+        if (listEl) listEl.innerHTML = '<p class="editpic-empty">You haven\'t sent any notifications yet.</p>'
+      }
+    })
+  })
 }
 
 // reportId is optional - passed when warning is raised from a specific open

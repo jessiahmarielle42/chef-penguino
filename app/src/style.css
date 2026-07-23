@@ -2154,3 +2154,43 @@ img.shop-image {
 }
 .send-big:disabled { opacity:0.45; cursor: not-allowed; filter: grayscale(0.35); }
 .recip-note { font-size:0.6875rem; color: var(--muted); text-align: center; margin-top:0.5rem; min-height:1em; }
+
+/* ---------- Sent tab (Notifications screen) ---------- */
+.sent-card-list { display:flex; flex-direction:column; gap:0.625rem; }
+.sent-card {
+  background: var(--card-2); border: 1px solid var(--line); border-radius:0.75rem;
+  padding:0.75rem 0.875rem; cursor: pointer;
+}
+.sent-card-top { display:flex; align-items:center; justify-content:space-between; gap:0.625rem; margin-bottom:0.375rem; }
+.sent-aud-chip {
+  font-size:0.65625rem; font-weight: 800; color: var(--muted); background: var(--card);
+  border: 1px solid var(--line); border-radius:999px; padding:0.1875rem 0.5625rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width:70%;
+}
+.sent-card-ts { font-size:0.6875rem; color: var(--muted-2); white-space: nowrap; flex: none; }
+.sent-card-title { font-size:0.8125rem; font-weight: 750; color: var(--cream); margin-bottom:0.1875rem; }
+.sent-card-body { font-size:0.75rem; color: var(--muted-2); line-height: 1.4; }
+.sent-readstat { display:flex; align-items:center; gap:0.5625rem; margin-top:0.625rem; }
+.sent-readstat span { font-size:0.6875rem; font-weight: 700; color: var(--muted); white-space: nowrap; }
+.sent-readbar {
+  flex: 1; height:0.3125rem; border-radius:999px; background: var(--soft-fill, rgba(255,255,255,0.08));
+  overflow: hidden;
+}
+.sent-readbar i { display:block; height:100%; background: var(--fire); border-radius:999px; }
+.sent-card > .adm-log-unsend { margin-top:0.625rem; }
+
+.sent-detail-body { font-size:0.84375rem; color: var(--cream); opacity:0.9; line-height:1.5; margin:0.5rem 0 0.75rem; }
+.sent-detail-meta {
+  display:flex; align-items:center; justify-content:space-between; gap:0.625rem;
+  font-size:0.71875rem; color: var(--muted-2); font-weight: 700; margin-bottom:0.625rem;
+}
+.sent-recip-list { max-height:14rem; overflow-y:auto; margin-top:0.5rem; }
+.sent-recip-row {
+  display:flex; align-items:center; gap:0.5625rem; padding:0.5rem 0.125rem;
+}
+.sent-recip-row + .sent-recip-row { border-top: 1px solid var(--line); }
+.sent-recip-dot { width:0.5rem; height:0.5rem; border-radius:50%; background: var(--muted-2); flex: none; opacity:0.5; }
+.sent-recip-dot.read { background: var(--fire); opacity:1; }
+.sent-recip-name { font-size:0.78125rem; color: var(--cream); font-weight: 650; flex:1; min-width:0; }
+.sent-recip-when { font-size:0.6875rem; color: var(--muted-2); white-space: nowrap; }
+.sent-detail-unsend { margin-top:1rem; width:100%; text-align:center; }
