@@ -188,13 +188,13 @@ const DURATIONS = [
 // state.taskTypeLabels for guests). See migration_task_types.sql.
 const TASK_TYPES = [
   { key: 'deep',     emoji: '🍅', title: 'Deep Work',        desc: 'Impt projects, studying, etc.' },
-  { key: 'shallow',  emoji: '🥦', title: 'Shallow Work',     desc: 'Admin, errands, etc.' },
+  { key: 'shallow',  emoji: '🥦', title: 'Admin',             desc: 'Emails, errands, etc.' },
   { key: 'chores',   emoji: '🍄‍🟫', title: 'Chores',           desc: '' },
   { key: 'exercise', emoji: '🧀', title: 'Exercise',         desc: '' },
-  { key: 'planning', emoji: '🥖', title: 'Planning / Other', desc: '' },
+  { key: 'planning', emoji: '🥖', title: 'Other',            desc: '', fixed: true },
 ]
 const TASK_TYPE_EMOJI = Object.fromEntries(TASK_TYPES.map(t => [t.key, t.emoji]))
-const TASK_TITLE_MAX = 18
+const TASK_TITLE_MAX = 10
 const TASK_DESC_MAX = 45
 
 // Where per-user label overrides live: currentProfile.task_type_labels when
@@ -211,11 +211,12 @@ function resolvedTaskTypes() {
   const ov = taskLabelOverrides()
   return TASK_TYPES.map(t => {
     const o = ov[t.key] || {}
-    const title = (typeof o.title === 'string' && o.title.trim())
-      ? o.title.trim().slice(0, TASK_TITLE_MAX) : t.title
+    const title = t.fixed
+      ? t.title
+      : ((typeof o.title === 'string' && o.title.trim()) ? o.title.trim().slice(0, TASK_TITLE_MAX) : t.title)
     const desc = (typeof o.desc === 'string')
       ? o.desc.slice(0, TASK_DESC_MAX) : t.desc
-    return { key: t.key, emoji: t.emoji, title, desc }
+    return { key: t.key, emoji: t.emoji, title, desc, fixed: !!t.fixed }
   })
 }
 
@@ -980,7 +981,7 @@ let calSelKey = null         // selected day key 'YYYY-MM-DD' (week/day nav + mo
 let calSheetDate = null      // day key currently open in the bottom sheet, or null if closed
 let calSheetFocusId = null   // entry id to scroll-to + flash inside the sheet, once
 let calSheetFreshOpen = false // true right before a user-initiated (animated) sheet open
-let calTypeFilter = null     // null = "All"; else a Set of task-type keys (+ 'untagged'). Persists across month/week/day.
+let calTypeFilter = null     // null = "All"; else a Set of task-type keys. Persists across month/week/day.
 
 const CAL_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 const CAL_MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -1030,11 +1031,10 @@ function calMonthTotals(map, y, mo) {
 }
 
 // ---------- task-type filter (calendar) ----------
-// The bucket key an entry counts toward: its task-type, or 'untagged' for
-// legacy/typeless sessions. Coin/admin audit rows carry 0 minutes so they
-// never move a type total.
+// The bucket key an entry counts toward: its task-type, or 'planning' (Other)
+// for legacy/typeless sessions and admin/coin audit rows.
 function calBucketOf(e) {
-  return (e.type && TASK_TYPE_EMOJI[e.type]) ? e.type : 'untagged'
+  return (e.type && TASK_TYPE_EMOJI[e.type]) ? e.type : 'planning'
 }
 
 // Every entry within the currently-displayed scope (month / week / day).
@@ -1051,18 +1051,9 @@ function calScopeEntries(map) {
   return out
 }
 
-// Minutes per task-type key (+ 'untagged') across the current scope. Only used
-// now to decide whether the Untagged pill should appear.
-function calTypeTotals(map) {
-  const totals = { untagged: 0 }
-  for (const k of Object.keys(TASK_TYPE_EMOJI)) totals[k] = 0
-  for (const e of calScopeEntries(map)) totals[calBucketOf(e)] += e.minutes || 0
-  return totals
-}
-
-// Every selectable filter key (the 5 task types + Untagged). The filter is
-// "all selected" by default; users deselect pills to narrow the summary cards.
-const ALL_FILTER_KEYS = [...Object.keys(TASK_TYPE_EMOJI), 'untagged']
+// Every selectable filter key (the 5 task types). The filter is "all
+// selected" by default; users deselect pills to narrow the summary cards.
+const ALL_FILTER_KEYS = [...Object.keys(TASK_TYPE_EMOJI)]
 function ensureCalFilterInit() {
   if (calTypeFilter === null) calTypeFilter = new Set(ALL_FILTER_KEYS)
 }
@@ -1084,7 +1075,6 @@ function calSelectedTotals(map) {
 }
 
 function calTypeChipLabel(key) {
-  if (key === 'untagged') return '• Untagged'
   const t = taskTypeLabel(key)
   return `${TASK_TYPE_EMOJI[key]} ${escapeHtml(t ? t.title : key)}`
 }
@@ -1094,9 +1084,7 @@ function calTypeChipLabel(key) {
 function calFilterBarHtml(map) {
   if (calScopeEntries(map).length === 0) return '' // nothing to filter on an empty scope
   ensureCalFilterInit()
-  const totals = calTypeTotals(map)
-  const keys = [...Object.keys(TASK_TYPE_EMOJI)]
-  if (totals.untagged > 0) keys.push('untagged')
+  const keys = Object.keys(TASK_TYPE_EMOJI)
   const chips = keys.map(k =>
     `<button type="button" class="tt-chip${calTypeFilter.has(k) ? ' active' : ''}" data-tk="${k}">${calTypeChipLabel(k)}</button>`
   ).join('')
@@ -3128,12 +3116,14 @@ function renderTaskTypesEditor() {
     <p class="tt-emoji-note">Each type's emoji is fixed — only the name and description can be edited.</p>
     <div class="tt-edit-list">
       ${types.map(t => `
-        <div class="tt-edit-row" data-key="${t.key}">
+        <div class="tt-edit-row" data-key="${t.key}"${t.fixed ? ' data-fixed="1"' : ''}>
           <div class="tt-edit-emoji">${t.emoji}</div>
           <div class="tt-edit-fields">
             <label class="field-label">Title</label>
-            <input class="rename-input tt-title-input" maxlength="${TASK_TITLE_MAX}" value="${escapeHtml(t.title)}">
-            <div class="tt-counter"><span class="tt-title-count">${t.title.length}</span>/${TASK_TITLE_MAX}</div>
+            <input class="rename-input tt-title-input" maxlength="${TASK_TITLE_MAX}" value="${escapeHtml(t.title)}"${t.fixed ? ' disabled' : ''}>
+            ${t.fixed
+              ? `<div class="tt-counter">Fixed</div>`
+              : `<div class="tt-counter"><span class="tt-title-count">${t.title.length}</span>/${TASK_TITLE_MAX}</div>`}
             <label class="field-label">Description</label>
             <input class="rename-input tt-desc-input" maxlength="${TASK_DESC_MAX}" placeholder="Optional" value="${escapeHtml(t.desc)}">
             <div class="tt-counter"><span class="tt-desc-count">${t.desc.length}</span>/${TASK_DESC_MAX}</div>
@@ -3151,16 +3141,20 @@ function renderTaskTypesEditor() {
       const descInput = row.querySelector('.tt-desc-input')
       const titleCount = row.querySelector('.tt-title-count')
       const descCount = row.querySelector('.tt-desc-count')
-      titleInput.addEventListener('input', () => { titleCount.textContent = titleInput.value.length })
+      if (titleCount) titleInput.addEventListener('input', () => { titleCount.textContent = titleInput.value.length })
       descInput.addEventListener('input', () => { descCount.textContent = descInput.value.length })
     })
     app.querySelector('#tt-save-btn').addEventListener('click', async () => {
       const overrides = {}
       app.querySelectorAll('.tt-edit-row').forEach(row => {
         const key = row.dataset.key
-        const title = row.querySelector('.tt-title-input').value.trim().slice(0, TASK_TITLE_MAX)
         const desc = row.querySelector('.tt-desc-input').value.trim().slice(0, TASK_DESC_MAX)
-        overrides[key] = { title, desc }
+        if (row.dataset.fixed) {
+          overrides[key] = { desc }
+        } else {
+          const title = row.querySelector('.tt-title-input').value.trim().slice(0, TASK_TITLE_MAX)
+          overrides[key] = { title, desc }
+        }
       })
       try {
         await saveTaskTypeLabels(overrides)
