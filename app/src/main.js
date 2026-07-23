@@ -3286,17 +3286,19 @@ function bugAdmCardHtml(r) {
   const who = escapeHtml(r.reporter?.display_name || 'Unknown chef')
   const when = dateLabel(new Date(r.created_at).getTime())
   const replied = r.status === 'replied'
+  const dismissed = r.status === 'dismissed'
   const sent = !!r.sent_to_claude_at
   const shot = r.screenshot_url
     ? `<div class="bug-adm-shot" data-shot role="button" tabindex="0" aria-label="View full screenshot"><img src="${escapeHtml(r.screenshot_url)}" alt="" style="width:100%;height:100%;object-fit:cover;object-position:top center;display:block" /></div>`
     : ''
-  return `<div class="bug-adm-card" data-report="${r.id}">
+  return `<div class="bug-adm-card${dismissed ? ' bug-adm-dismissed' : ''}" data-report="${r.id}">
     ${shot}
     <div class="bug-adm-desc">${escapeHtml(r.description)}</div>
-    <div class="bug-adm-meta">${who} &middot; ${when}${replied ? ' &middot; ✅ Replied' : ''}${sent ? ' &middot; 🤖 Sent to Claude' : ''}</div>
+    <div class="bug-adm-meta">${who} &middot; ${when}${replied ? ' &middot; ✅ Replied' : ''}${dismissed ? ' &middot; 🚫 Dismissed' : ''}${sent ? ' &middot; 🤖 Sent to Claude' : ''}</div>
     <div class="bug-adm-actions">
       <button type="button" data-action="respond">${replied ? 'Reply again' : 'Respond'}</button>
       <button type="button" data-action="send-claude"${sent ? ' disabled' : ''} style="margin-top:0.5rem;background:var(--card-2);color:var(--cream);border:1px solid var(--line);box-shadow:none">${sent ? '✅ Sent to Claude' : '🤖 Send to Claude'}</button>
+      ${dismissed ? '' : `<button type="button" data-action="dismiss" style="margin-top:0.5rem;background:transparent;color:var(--ember);border:1px solid var(--line);box-shadow:none">Dismiss</button>`}
     </div>
   </div>`
 }
@@ -3334,7 +3336,27 @@ async function loadBugReports() {
       btn.textContent = '✅ Sent to Claude'
       toast('Sent to Claude 🤖')
     })
+    card.querySelector('[data-action="dismiss"]')?.addEventListener('click', (e) => confirmDismissBugReport(r, e.currentTarget))
     if (r.screenshot_url) card.querySelector('[data-shot]')?.addEventListener('click', () => window.open(r.screenshot_url, '_blank', 'noopener'))
+  })
+}
+
+function confirmDismissBugReport(r, btn) {
+  const o = overlay(`
+    <h3>Dismiss report?</h3>
+    <p class="swipe-line" style="margin-bottom:0.75rem">No reply is sent to ${escapeHtml(r.reporter?.display_name || 'this chef')} — this just closes it out of your queue.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="confirm-dismiss">Dismiss</button>
+      <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="confirm-dismiss"]').addEventListener('click', async () => {
+    const { error } = await supabase.rpc('dismiss_bug_report', { report_id: r.id })
+    o.remove()
+    if (error) { toast('Could not dismiss — try again'); return }
+    toast('Report dismissed')
+    loadBugReports()
   })
 }
 

@@ -2320,6 +2320,7 @@ img.shop-image {
 .bug-adm-card {
   background: var(--card); border: 1px solid var(--line); border-radius: 1rem; padding: 0.9375rem 1rem;
 }
+.bug-adm-card.bug-adm-dismissed { opacity: 0.55; }
 .bug-adm-shot {
   height: 90px; border-radius: 0.625rem; overflow: hidden; position: relative; margin-bottom: 0.625rem;
   background: linear-gradient(160deg, #3a2a1e 0%, #1d130d 60%, #120c09 100%);
