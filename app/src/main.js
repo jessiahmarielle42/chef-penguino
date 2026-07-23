@@ -3286,23 +3286,36 @@ function bugAdmCardHtml(r) {
   const who = escapeHtml(r.reporter?.display_name || 'Unknown chef')
   const when = dateLabel(new Date(r.created_at).getTime())
   const replied = r.status === 'replied'
+  const sent = !!r.sent_to_claude_at
   const shot = r.screenshot_url
     ? `<div class="bug-adm-shot" data-shot role="button" tabindex="0" aria-label="View full screenshot"><img src="${escapeHtml(r.screenshot_url)}" alt="" style="width:100%;height:100%;object-fit:cover;object-position:top center;display:block" /></div>`
     : ''
   return `<div class="bug-adm-card" data-report="${r.id}">
     ${shot}
     <div class="bug-adm-desc">${escapeHtml(r.description)}</div>
-    <div class="bug-adm-meta">${who} &middot; ${when}${replied ? ' &middot; ✅ Replied' : ''}</div>
-    <div class="bug-adm-actions"><button type="button" data-action="respond">${replied ? 'Reply again' : 'Respond'}</button></div>
+    <div class="bug-adm-meta">${who} &middot; ${when}${replied ? ' &middot; ✅ Replied' : ''}${sent ? ' &middot; 🤖 Sent to Claude' : ''}</div>
+    <div class="bug-adm-actions">
+      <button type="button" data-action="respond">${replied ? 'Reply again' : 'Respond'}</button>
+      <button type="button" data-action="send-claude"${sent ? ' disabled' : ''} style="margin-top:0.5rem;background:var(--card-2);color:var(--cream);border:1px solid var(--line);box-shadow:none">${sent ? '✅ Sent to Claude' : '🤖 Send to Claude'}</button>
+    </div>
   </div>`
 }
 
 async function loadBugReports() {
-  const { data, error } = await supabase
+  // `sent_to_claude_at` may not exist pre-migration; fall back so the list
+  // still loads if migration_bug_claude.sql hasn't been run yet.
+  let { data, error } = await supabase
     .from('bug_reports')
-    .select('id, description, screenshot_url, status, admin_reply, created_at, replied_at, reporter:reporter_id(display_name)')
+    .select('id, description, screenshot_url, status, admin_reply, created_at, replied_at, sent_to_claude_at, reporter:reporter_id(display_name)')
     .order('created_at', { ascending: false })
     .limit(200)
+  if (error) {
+    ({ data, error } = await supabase
+      .from('bug_reports')
+      .select('id, description, screenshot_url, status, admin_reply, created_at, replied_at, reporter:reporter_id(display_name)')
+      .order('created_at', { ascending: false })
+      .limit(200))
+  }
   const list = app.querySelector('#bug-adm-list')
   if (!list) return
   if (error) { list.innerHTML = `<p class="editpic-empty">Couldn't load reports.</p>`; return }
@@ -3312,6 +3325,15 @@ async function loadBugReports() {
     const card = list.querySelector(`[data-report="${r.id}"]`)
     if (!card) return
     card.querySelector('[data-action="respond"]')?.addEventListener('click', () => openBugReplyPopup(r))
+    card.querySelector('[data-action="send-claude"]')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget
+      btn.disabled = true
+      btn.textContent = 'Sending…'
+      const { error: sendErr } = await supabase.rpc('flag_bug_report_for_claude', { report_id: r.id })
+      if (sendErr) { btn.disabled = false; btn.textContent = '🤖 Send to Claude'; toast('Could not send — try again'); return }
+      btn.textContent = '✅ Sent to Claude'
+      toast('Sent to Claude 🤖')
+    })
     if (r.screenshot_url) card.querySelector('[data-shot]')?.addEventListener('click', () => window.open(r.screenshot_url, '_blank', 'noopener'))
   })
 }
