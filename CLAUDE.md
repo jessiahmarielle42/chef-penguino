@@ -31,9 +31,16 @@ Opus reviews using **real screenshots**, not assumptions about how something
 looks:
 - Guest-visible / non-auth screens: screenshot directly (headless
   Chromium / the review harness).
-- Auth-gated or admin screens: fire up local dev, sign in / seed dummy
-  data, and capture real screenshots from that running instance — not the
-  mockup, not guesses.
+- Auth-gated or admin screens: use the gitignored review harness at
+  `app/review/` — it monkeypatches the real Supabase client's
+  `.from()`/`.rpc()`/`.channel()` with an in-memory fixture layer
+  (`reviewHarness.js`), sets the app's module-level `currentUser`/
+  `currentProfile` directly to a fake admin/user object (no real OAuth or
+  Supabase session needed), and exposes `window.__review(screenName)` for
+  Playwright to call the matching render function and screenshot it. Only
+  imported behind a `VITE_REVIEW` env-guarded dynamic import so it's
+  dead-code-eliminated from production builds — never guess how an
+  auth-gated screen looks, always capture it this way.
 
 ## 5. UI/functionality/design QA
 Every review pass checks:
@@ -55,12 +62,14 @@ same pass, then note it was added.
 ## 7. Maximize autonomous progress
 Don't stall waiting on user input. If genuinely blocked on one thing, keep
 working on everything else that doesn't depend on it. Only stop fully when
-truly nothing else can proceed without the user's answer.
+truly nothing else can proceed without the user's answer. Reasonable
+defaults get chosen and flagged in the report, not asked about upfront.
 
 ## 8. Fix-in-real-time vs. deploy-on-command
 When the user reports errors/bugs live, fix and commit them immediately.
-**Never push live** (merge to `main` / push `main`) until the user
-explicitly says to push — then push everything queued at once, in one go.
+**Never push live** (merge to `main` / push `main`) until the user's message
+contains the literal trigger word **"push"** — then push everything queued
+at once, in one go.
 
 ## 9. SQL migrations
 Any new SQL (schema changes, RPCs, RLS, storage buckets) is written as a
@@ -77,5 +86,5 @@ changes added to the app.
 2. Commit as work completes (small, clear commits).
 3. Hold any SQL-dependent merge until the user confirms they've run the
    migration in Supabase.
-4. Only merge `--no-ff` into `main` and push `main` when the user says to
-   deploy — that's what goes live via Vercel.
+4. Only merge `--no-ff` into `main` and push `main` when the user says
+   "push" — that's what goes live via Vercel.
