@@ -64,11 +64,21 @@ async function signOut() {
 
 async function refreshProfile() {
   if (!currentUser) { currentProfile = null; return }
-  const { data } = await supabase
+  // Falls back to the pre-migration column set if `task_type_labels` doesn't
+  // exist yet (migration_task_types.sql hasn't been run), so the profile still
+  // loads and the app doesn't break for signed-in users before the migration.
+  let { data } = await supabase
     .from('profiles')
-    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment')
+    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels')
     .eq('id', currentUser.id)
     .single()
+  if (!data) {
+    ({ data } = await supabase
+      .from('profiles')
+      .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment')
+      .eq('id', currentUser.id)
+      .single())
+  }
   currentProfile = data || null
   if (currentProfile && !Array.isArray(currentProfile.owned_emotes)) currentProfile.owned_emotes = []
 }
@@ -155,11 +165,75 @@ function displayPizzas() {
   return currentProfile ? currentProfile.pizzas : state.pizzas
 }
 
+// Date of the upcoming Monday (when the weekly leaderboard resets), e.g.
+// "27 Jul". If today is Monday, the current week resets next Monday (7 days).
+function nextMondayLabel() {
+  const now = new Date()
+  let add = (8 - now.getDay()) % 7
+  if (add === 0) add = 7
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + add)
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+}
+
 const DURATIONS = [
   { label: '15 min', minutes: 15 },
   { label: '30 min', minutes: 30 },
   { label: '1 hour', minutes: 60 },
 ]
+
+// ---------- Task types ----------
+// Five fixed-emoji task categories (priority order). The emoji<->key mapping is
+// permanent and never user-editable; only the title + description labels can be
+// overridden per-user (profiles.task_type_labels JSONB for signed-in users,
+// state.taskTypeLabels for guests). See migration_task_types.sql.
+const TASK_TYPES = [
+  { key: 'deep',     emoji: '🍅', title: 'Deep Work',        desc: 'Impt projects, studying, etc.' },
+  { key: 'shallow',  emoji: '🥦', title: 'Shallow Work',     desc: 'Admin, errands, etc.' },
+  { key: 'chores',   emoji: '🍄‍🟫', title: 'Chores',           desc: '' },
+  { key: 'exercise', emoji: '🧀', title: 'Exercise',         desc: '' },
+  { key: 'planning', emoji: '🥖', title: 'Planning / Other', desc: '' },
+]
+const TASK_TYPE_EMOJI = Object.fromEntries(TASK_TYPES.map(t => [t.key, t.emoji]))
+const TASK_TITLE_MAX = 18
+const TASK_DESC_MAX = 45
+
+// Where per-user label overrides live: currentProfile.task_type_labels when
+// signed in, else the guest's local state. Shape: { deep: {title, desc}, ... }.
+function taskLabelOverrides() {
+  const src = currentProfile ? currentProfile.task_type_labels : state.taskTypeLabels
+  return (src && typeof src === 'object') ? src : {}
+}
+
+// Default labels overlaid with any per-user override. An override title only
+// wins if non-empty (so clearing a title falls back to the default, never
+// blank); description may be intentionally empty. Both are length-clamped.
+function resolvedTaskTypes() {
+  const ov = taskLabelOverrides()
+  return TASK_TYPES.map(t => {
+    const o = ov[t.key] || {}
+    const title = (typeof o.title === 'string' && o.title.trim())
+      ? o.title.trim().slice(0, TASK_TITLE_MAX) : t.title
+    const desc = (typeof o.desc === 'string')
+      ? o.desc.slice(0, TASK_DESC_MAX) : t.desc
+    return { key: t.key, emoji: t.emoji, title, desc }
+  })
+}
+
+function taskTypeLabel(key) {
+  return resolvedTaskTypes().find(t => t.key === key) || null
+}
+
+// Persist label overrides (profile column for signed-in, localStorage for guest).
+async function saveTaskTypeLabels(overrides) {
+  if (currentProfile) {
+    currentProfile.task_type_labels = overrides
+    const { error } = await supabase.from('profiles').update({ task_type_labels: overrides }).eq('id', currentUser.id)
+    if (error) throw error
+  } else {
+    state.taskTypeLabels = overrides
+    save()
+  }
+}
 
 const state = load()
 
@@ -168,7 +242,7 @@ function load() {
     pizzas: 0, muted: false, volume: 0.5, lastVolume: 0.5, darkenLevel: 1, autoDarken: true,
     timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null,
     pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', lastSeenCoins: null,
-    lightMode: false,
+    lightMode: false, taskTypeLabels: {},
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -273,9 +347,10 @@ function addSessionPizzas(minutes) {
   save()
 }
 
-function logSession({ completedAt, minutes, pizzas, task, icon }) {
+function logSession({ completedAt, minutes, pizzas, task, icon, type }) {
   const entry = { id: crypto.randomUUID(), completedAt, minutes, pizzas, task }
   if (icon) entry.icon = icon
+  if (type) entry.type = type
   state.log.unshift(entry)
   save()
 }
@@ -307,7 +382,7 @@ async function finalizeSession(playAlarm) {
   const oldTotal = Number(displayPizzas()) || 0
   const coinsBefore = Math.floor(Math.floor(oldTotal) / 12)
   addSessionPizzas(minutes)
-  logSession({ completedAt, minutes, pizzas: pizzasEarned, task: t.task })
+  logSession({ completedAt, minutes, pizzas: pizzasEarned, task: t.task, type: t.type })
   state.timer = null
   save()
 
@@ -318,8 +393,15 @@ async function finalizeSession(playAlarm) {
       pizzas: pizzasEarned,
       task: t.task || '',
     }
-    const { error } = await supabase.from('sessions').insert({ ...row, user_id: currentUser.id })
-    if (error) {
+    if (t.type) row.type = t.type
+    // Retry without `type` if the column doesn't exist yet (migration_task_types
+    // .sql not run) so a session is never lost to a schema mismatch.
+    let { error } = await supabase.from('sessions').insert({ ...row, user_id: currentUser.id })
+    if (error && t.type) {
+      const { type, ...rowNoType } = row
+      ;({ error } = await supabase.from('sessions').insert({ ...rowNoType, user_id: currentUser.id }))
+      if (error) { state.pendingSessions.push(rowNoType); save() }
+    } else if (error) {
       state.pendingSessions.push(row)
       save()
     }
@@ -351,12 +433,14 @@ async function boot() {
         checkPendingNoots()
         checkPendingCoinGifts()
         checkPendingWarnings()
+        ensureBugFab()
       })
     } else if (event === 'SIGNED_OUT') {
       unsubscribeFromSocial()
       currentUser = null
       currentProfile = null
       clearNotifBadges()
+      ensureBugFab()
     }
   })
 
@@ -376,6 +460,7 @@ async function boot() {
   } else {
     renderHome()
   }
+  ensureBugFab()
   checkPendingNoots()
   checkPendingCoinGifts()
   checkPendingWarnings()
@@ -393,7 +478,15 @@ if (import.meta.env.VITE_REVIEW) {
   import('../review/reviewHarness.js').then((mod) => mod.installReviewHarness({
     supabase,
     setUser: (user, profile) => { currentUser = user; currentProfile = profile },
-    renderers: { renderAdminDashboard, renderModerationCenter, renderSystemNotifications, renderComposeNotification, renderSettings, renderFriends },
+    renderers: {
+      renderAdminDashboard, renderModerationCenter, renderSystemNotifications,
+      renderComposeNotification, renderSettings, renderFriends,
+      renderTaskTypesEditor, renderBugReports, renderHistory, renderHome,
+      renderTypePicker: () => renderTypePicker(30, 'Essay writing'),
+      openBugReport: () => { renderSettings(); return openBugReport() },
+      startTypedTimer: () => startSession(30, 'Essay writing', 'deep'),
+      ensureBugFab,
+    },
   }))
 } else {
   boot()
@@ -668,6 +761,9 @@ function mountScreen(active, contentHtml, after, opts = {}) {
   // Keep the unread-notifications badges fresh on every screen render - see
   // refreshNotifBadges() below. No-ops instantly for guests.
   if (isSignedIn()) refreshNotifBadges()
+  // The persistent bug-report FAB lives on <body>; ensure it exists and its
+  // visibility matches the current auth/modal state on every render.
+  ensureBugFab()
 }
 
 // =================================================================
@@ -884,6 +980,7 @@ let calSelKey = null         // selected day key 'YYYY-MM-DD' (week/day nav + mo
 let calSheetDate = null      // day key currently open in the bottom sheet, or null if closed
 let calSheetFocusId = null   // entry id to scroll-to + flash inside the sheet, once
 let calSheetFreshOpen = false // true right before a user-initiated (animated) sheet open
+let calTypeFilter = null     // null = "All"; else a Set of task-type keys (+ 'untagged'). Persists across month/week/day.
 
 const CAL_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
 const CAL_MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -930,6 +1027,78 @@ function calMonthTotals(map, y, mo) {
     arr.forEach(e => { pz += e.pizzas; mn += e.minutes })
   }
   return { pz, mn }
+}
+
+// ---------- task-type filter (calendar) ----------
+// The bucket key an entry counts toward: its task-type, or 'untagged' for
+// legacy/typeless sessions. Coin/admin audit rows carry 0 minutes so they
+// never move a type total.
+function calBucketOf(e) {
+  return (e.type && TASK_TYPE_EMOJI[e.type]) ? e.type : 'untagged'
+}
+
+// Every entry within the currently-displayed scope (month / week / day).
+function calScopeEntries(map) {
+  const out = []
+  if (calView === 'month') {
+    const prefix = `${calY}-${calPad2(calMo + 1)}-`
+    for (const [key, arr] of map) { if (key.startsWith(prefix)) out.push(...arr) }
+  } else if (calView === 'week') {
+    for (const d of calWeekDays(calSelKey)) { const a = map.get(calKeyFromDate(d)); if (a) out.push(...a) }
+  } else {
+    const a = map.get(calSelKey); if (a) out.push(...a)
+  }
+  return out
+}
+
+// Minutes per task-type key (+ 'untagged') across the current scope.
+function calTypeTotals(map) {
+  const totals = { untagged: 0 }
+  for (const k of Object.keys(TASK_TYPE_EMOJI)) totals[k] = 0
+  for (const e of calScopeEntries(map)) totals[calBucketOf(e)] += e.minutes || 0
+  return totals
+}
+
+function calToggleTypeFilter(key) {
+  if (key === 'all') { calTypeFilter = null; return }
+  if (calTypeFilter === null) calTypeFilter = new Set()
+  if (calTypeFilter.has(key)) calTypeFilter.delete(key); else calTypeFilter.add(key)
+  if (calTypeFilter.size === 0) calTypeFilter = null
+}
+
+function calTypeChipLabel(key) {
+  if (key === 'untagged') return '• Untagged'
+  const t = taskTypeLabel(key)
+  return `${TASK_TYPE_EMOJI[key]} ${escapeHtml(t ? t.title : key)}`
+}
+
+// Chip row (All + the 5 types + Untagged-if-present) and the per-type totals
+// panel, injected under the calendar summary. Reflects the current scope.
+function calFilterBarHtml(map) {
+  // Nothing to filter on an empty scope — hide the bar unless the user has an
+  // active filter they'd want to clear.
+  if (calTypeFilter === null && calScopeEntries(map).length === 0) return ''
+  const totals = calTypeTotals(map)
+  const chip = (key, active) => `<button type="button" class="tt-chip${active ? ' active' : ''}" data-tk="${key}">${calTypeChipLabel(key)}</button>`
+  let chips = `<button type="button" class="tt-chip${calTypeFilter === null ? ' active' : ''}" data-tk="all">All</button>`
+  for (const t of resolvedTaskTypes()) chips += chip(t.key, calTypeFilter !== null && calTypeFilter.has(t.key))
+  if (totals.untagged > 0) chips += chip('untagged', calTypeFilter !== null && calTypeFilter.has('untagged'))
+
+  const selectedKeys = calTypeFilter === null
+    ? [...resolvedTaskTypes().map(t => t.key), 'untagged']
+    : [...calTypeFilter]
+  const parts = selectedKeys
+    .filter(k => (totals[k] || 0) > 0)
+    .map(k => k === 'untagged'
+      ? `<b>Untagged</b> ${calFmtDur(totals[k])}`
+      : `${TASK_TYPE_EMOJI[k]} <b>${escapeHtml(taskTypeLabel(k)?.title || k)}</b> ${calFmtDur(totals[k])}`)
+  const line = parts.length ? parts.join(' &middot; ') : 'No sessions for this selection'
+  let selLine = ''
+  if (calTypeFilter !== null && calTypeFilter.size > 1) {
+    let sum = 0; calTypeFilter.forEach(k => sum += totals[k] || 0)
+    selLine = `<span class="tt-sel-total">Selected total: ${calFmtDur(sum)}</span>`
+  }
+  return `<div class="tt-cal-filter"><div class="tt-chip-row">${chips}</div><div class="tt-cal-totals">${line}${selLine}</div></div>`
 }
 
 // The Monday-start week containing `key`.
@@ -1020,6 +1189,7 @@ async function renderHistory() {
       <div class="cal-stat"><div class="v">${formatScore(sumPz)} 🍕</div><div class="k">Pizzas</div></div>
       <div class="cal-stat"><div class="v">${calFmtDur(sumMn)}</div><div class="k">Total focus time</div></div>
     </div>
+    ${calFilterBarHtml(dayMap)}
     <div class="cal-viewbody">${bodyHtml}</div>
   `
 
@@ -1053,6 +1223,12 @@ function calWireHistory(dayMap, todayKey) {
       if (b.dataset.v === calView) return
       calView = b.dataset.v
       calCloseSheet()
+      renderHistory()
+    })
+  })
+  app.querySelectorAll('.tt-cal-filter .tt-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      calToggleTypeFilter(chip.dataset.tk)
       renderHistory()
     })
   })
@@ -1263,7 +1439,8 @@ function calRenderDayBody(dayMap) {
     const coinAmt = (COIN_TASK_RE.exec(e.task || '') || [])[1] || ''
     const metric = isCoin ? `${coinImg('log-coin')} ${coinAmt}`.trim() : `🍕 ${formatScore(e.pizzas)}`
     const task = escapeHtml((e.task || '').replace(COIN_TASK_RE, '')) || 'Focus session'
-    h += `<div class="cal-tl-item" data-id="${e.id}" role="button" tabindex="0">
+    const dim = calTypeFilter !== null && !calTypeFilter.has(calBucketOf(e)) ? ' tt-dim' : ''
+    h += `<div class="cal-tl-item${dim}" data-id="${e.id}" role="button" tabindex="0">
       <div class="cal-tl-time">${calFmtTime(e.completedAt)}</div>
       <div class="cal-tl-rail"><div class="cal-tl-dot"></div><div class="cal-tl-line"></div></div>
       <div class="cal-tl-card">
@@ -1585,7 +1762,7 @@ async function renderFriends() {
       <span class="info-badge" aria-hidden="true">i</span>
       <p>Tap a friend to view their Pizzeria. Tap the 3 dots to view more friend actions.</p>
     </div>
-    <div class="section-h" style="margin-top:1.75rem"><h2>Leaderboard</h2><span class="meta">This week&nbsp;· resets Monday</span></div>
+    <div class="section-h" style="margin-top:1.75rem"><h2>This Week's Chef Leaderboard</h2><span class="meta">Resets Monday&nbsp;${nextMondayLabel()}</span></div>
     <div id="friends-list"><p class="log-empty">Loading&hellip;</p></div>
     <div class="section-h" style="margin-top:2.75rem"><h2>Add a friend</h2></div>
     <div class="addfriend"><input id="friend-code-input" placeholder="Friend's code" maxlength="6" /><button type="button" data-action="add">Add</button></div>
@@ -2115,7 +2292,7 @@ async function fetchLog(userId) {
   // (migration_session_edit.sql hasn't been run), so the log still loads.
   let { data, error } = await supabase
     .from('sessions')
-    .select('id, completed_at, minutes, pizzas, task, icon')
+    .select('id, completed_at, minutes, pizzas, task, icon, type')
     .eq('user_id', userId)
     .order('completed_at', { ascending: false })
   if (error) {
@@ -2133,6 +2310,7 @@ async function fetchLog(userId) {
     pizzas: r.pizzas,
     task: r.task,
     icon: r.icon,
+    type: r.type,
   }))
 }
 
@@ -2184,6 +2362,9 @@ const LOG_ICON_NAMES = { '🍅': 'Tomato', '🥦': 'Broccoli', '🍄‍🟫': 'M
 // entry.icon (set via edit or admin) always wins.
 function stableIconFor(entry) {
   if (entry.icon) return entry.icon
+  // A tagged session shows its task-type emoji (the emoji<->type mapping is
+  // fixed). Untagged/legacy sessions fall back to a deterministic hash below.
+  if (entry.type && TASK_TYPE_EMOJI[entry.type]) return TASK_TYPE_EMOJI[entry.type]
   const key = String(entry.id || entry.completedAt || '')
   let h = 0
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0
@@ -2701,6 +2882,10 @@ function renderSettings(highlightProfile) {
           <div><div class="gt">Auto-darken screen</div><div class="gs">Dims after 5s to save battery</div></div>
           <div class="right"><div class="switch ${state.autoDarken ? '' : 'off'}" role="button" tabindex="0" data-action="toggle-darken"></div></div>
         </div>
+        <div class="grow" role="button" tabindex="0" data-action="task-types">
+          <div><div class="gt">Task types</div><div class="gs">Rename your task categories</div></div>
+          <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
+        </div>
       </div>
     </div>
     <div class="group">
@@ -2741,6 +2926,7 @@ function renderSettings(highlightProfile) {
   `
 
   mountScreen('settings', content, () => {
+    app.querySelector('[data-action="task-types"]')?.addEventListener('click', renderTaskTypesEditor)
     app.querySelector('[data-action="lore"]')?.addEventListener('click', renderLore)
     app.querySelector('[data-action="steam"]')?.addEventListener('click', () => {
       window.open('https://store.steampowered.com/app/1451480/The_Greatest_Penguin_Heist_of_All_Time/', '_blank', 'noopener')
@@ -2930,11 +3116,244 @@ async function markNotifRowRead(row) {
 }
 
 // =================================================================
+//  Task Types editor (Settings -> Focus session -> Task types)
+// =================================================================
+function renderTaskTypesEditor() {
+  const types = resolvedTaskTypes()
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-settings">‹ Settings</div>
+    <div class="section-h" style="margin-top:2px"><h2>Task Types</h2></div>
+    <p class="tt-emoji-note">Each type's emoji is fixed — only the name and description can be edited.</p>
+    <div class="tt-edit-list">
+      ${types.map(t => `
+        <div class="tt-edit-row" data-key="${t.key}">
+          <div class="tt-edit-emoji">${t.emoji}</div>
+          <div class="tt-edit-fields">
+            <label class="field-label">Title</label>
+            <input class="rename-input tt-title-input" maxlength="${TASK_TITLE_MAX}" value="${escapeHtml(t.title)}">
+            <div class="tt-counter"><span class="tt-title-count">${t.title.length}</span>/${TASK_TITLE_MAX}</div>
+            <label class="field-label">Description</label>
+            <input class="rename-input tt-desc-input" maxlength="${TASK_DESC_MAX}" placeholder="Optional" value="${escapeHtml(t.desc)}">
+            <div class="tt-counter"><span class="tt-desc-count">${t.desc.length}</span>/${TASK_DESC_MAX}</div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <button class="cta" id="tt-save-btn" type="button">Save</button>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
+    app.querySelectorAll('.tt-edit-row').forEach(row => {
+      const titleInput = row.querySelector('.tt-title-input')
+      const descInput = row.querySelector('.tt-desc-input')
+      const titleCount = row.querySelector('.tt-title-count')
+      const descCount = row.querySelector('.tt-desc-count')
+      titleInput.addEventListener('input', () => { titleCount.textContent = titleInput.value.length })
+      descInput.addEventListener('input', () => { descCount.textContent = descInput.value.length })
+    })
+    app.querySelector('#tt-save-btn').addEventListener('click', async () => {
+      const overrides = {}
+      app.querySelectorAll('.tt-edit-row').forEach(row => {
+        const key = row.dataset.key
+        const title = row.querySelector('.tt-title-input').value.trim().slice(0, TASK_TITLE_MAX)
+        const desc = row.querySelector('.tt-desc-input').value.trim().slice(0, TASK_DESC_MAX)
+        overrides[key] = { title, desc }
+      })
+      try {
+        await saveTaskTypeLabels(overrides)
+        toast('Task types saved')
+      } catch {
+        toast('Could not save — try again')
+      }
+    })
+  })
+}
+
+// =================================================================
+//  Bug reports — persistent "!" FAB, report popup, admin review
+// =================================================================
+// The FAB lives on <body> (a sibling of #app) so it survives every
+// mountScreen()/app.innerHTML rebuild. Because it sits outside the app's
+// stacking context it would paint over in-app popups, so a MutationObserver
+// hides it whenever a modal surface (overlay / calendar sheet / lore player)
+// is on screen. It only shows for signed-in users — a bug report needs an
+// identity so the reporter can receive the ack + admin reply.
+let bugFabEl = null
+function ensureBugFab() {
+  if (!bugFabEl) {
+    bugFabEl = document.createElement('button')
+    bugFabEl.id = 'bug-fab'
+    bugFabEl.type = 'button'
+    bugFabEl.setAttribute('aria-label', 'Report a bug')
+    bugFabEl.textContent = '!'
+    bugFabEl.addEventListener('click', openBugReport)
+    document.body.appendChild(bugFabEl)
+    new MutationObserver(updateBugFabVisibility).observe(app, { childList: true, subtree: true })
+  }
+  updateBugFabVisibility()
+}
+function updateBugFabVisibility() {
+  if (!bugFabEl) return
+  const modalOpen = !!app.querySelector('.overlay.show') || !!app.querySelector('.cal-sheet.show') || !!document.querySelector('.lore-player')
+  bugFabEl.style.display = (isSignedIn() && !modalOpen) ? '' : 'none'
+}
+
+async function openBugReport() {
+  if (!isSignedIn()) return
+  // Capture the current screen (.app, which excludes the body-level FAB)
+  // BEFORE the popup is added to the DOM, so the shot shows the real screen.
+  let shotCanvas = null
+  const target = shellEl()
+  if (target) {
+    try {
+      const { default: html2canvas } = await import('html2canvas')
+      const bg = getComputedStyle(document.documentElement).getPropertyValue('--page-bg').trim() || '#120c09'
+      shotCanvas = await html2canvas(target, {
+        backgroundColor: bg, logging: false, useCORS: true,
+        scale: Math.min(2, window.devicePixelRatio || 1),
+        windowWidth: target.offsetWidth, windowHeight: target.offsetHeight,
+      })
+    } catch { shotCanvas = null }
+  }
+
+  const o = overlay(`
+    <button class="popup-close" data-action="close" aria-label="Close">✕</button>
+    <h3>Report Bugs</h3>
+    <div class="bug-shot" id="bug-shot"><div class="bug-shot-badge">📷</div></div>
+    <div class="bug-shot-cap">${shotCanvas ? 'Screenshot of this screen attached' : 'Screenshot unavailable — describe what you saw'}</div>
+    <label class="field-label">Description</label>
+    <textarea class="rename-input report-details bug-field-gap" id="bug-desc" maxlength="300" placeholder="What went wrong? (min 10 characters)"></textarea>
+    <div class="home-btn-col">
+      <button type="button" id="bug-submit-btn" disabled>Submit</button>
+      <button type="button" class="btn-secondary" data-action="close">Cancel</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+
+  if (shotCanvas) {
+    shotCanvas.style.cssText = 'width:100%;height:100%;object-fit:cover;object-position:top center;display:block'
+    o.querySelector('#bug-shot').insertBefore(shotCanvas, o.querySelector('.bug-shot-badge'))
+  } else {
+    o.querySelector('#bug-shot').style.display = 'none'
+  }
+
+  const ta = o.querySelector('#bug-desc')
+  const submitBtn = o.querySelector('#bug-submit-btn')
+  o.querySelectorAll('[data-action="close"]').forEach(b => b.addEventListener('click', () => o.remove()))
+  ta.addEventListener('input', () => { submitBtn.disabled = ta.value.trim().length < 10 })
+  ta.focus()
+
+  submitBtn.addEventListener('click', async () => {
+    const desc = ta.value.trim()
+    if (desc.length < 10) return
+    submitBtn.disabled = true
+    submitBtn.textContent = 'Sending…'
+    let screenshotUrl = null
+    try {
+      if (shotCanvas) {
+        const blob = await new Promise(res => shotCanvas.toBlob(res, 'image/jpeg', 0.85))
+        if (blob) {
+          const path = `${currentUser.id}/${Date.now()}.jpg`
+          const { error: upErr } = await supabase.storage.from('bug-shots').upload(path, blob, { contentType: 'image/jpeg' })
+          if (!upErr) screenshotUrl = supabase.storage.from('bug-shots').getPublicUrl(path).data.publicUrl
+        }
+      }
+      const { error } = await supabase.rpc('submit_bug_report', { description: desc, screenshot_url: screenshotUrl })
+      if (error) throw error
+      o.remove()
+      toast('Bug report sent 🐧')
+      refreshNotifBadges()
+    } catch {
+      submitBtn.disabled = false
+      submitBtn.textContent = 'Submit'
+      toast('Could not send — try again')
+    }
+  })
+}
+
+// ---------- admin: bug reports review ----------
+async function renderBugReports() {
+  if (!isAdmin()) { renderSettings(); return }
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Bug Reports</h2></div>
+    <div class="bug-adm-list" id="bug-adm-list"><p class="editpic-empty">Loading&hellip;</p></div>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+    loadBugReports()
+  })
+}
+
+function bugAdmCardHtml(r) {
+  const who = escapeHtml(r.reporter?.display_name || 'Unknown chef')
+  const when = dateLabel(new Date(r.created_at).getTime())
+  const replied = r.status === 'replied'
+  const shot = r.screenshot_url
+    ? `<div class="bug-adm-shot" data-shot role="button" tabindex="0" aria-label="View full screenshot"><img src="${escapeHtml(r.screenshot_url)}" alt="" style="width:100%;height:100%;object-fit:cover;object-position:top center;display:block" /></div>`
+    : ''
+  return `<div class="bug-adm-card" data-report="${r.id}">
+    ${shot}
+    <div class="bug-adm-desc">${escapeHtml(r.description)}</div>
+    <div class="bug-adm-meta">${who} &middot; ${when}${replied ? ' &middot; ✅ Replied' : ''}</div>
+    <div class="bug-adm-actions"><button type="button" data-action="respond">${replied ? 'Reply again' : 'Respond'}</button></div>
+  </div>`
+}
+
+async function loadBugReports() {
+  const { data, error } = await supabase
+    .from('bug_reports')
+    .select('id, description, screenshot_url, status, admin_reply, created_at, replied_at, reporter:reporter_id(display_name)')
+    .order('created_at', { ascending: false })
+    .limit(200)
+  const list = app.querySelector('#bug-adm-list')
+  if (!list) return
+  if (error) { list.innerHTML = `<p class="editpic-empty">Couldn't load reports.</p>`; return }
+  if (!data || !data.length) { list.innerHTML = `<p class="editpic-empty">No bug reports yet.</p>`; return }
+  list.innerHTML = data.map(bugAdmCardHtml).join('')
+  data.forEach(r => {
+    const card = list.querySelector(`[data-report="${r.id}"]`)
+    if (!card) return
+    card.querySelector('[data-action="respond"]')?.addEventListener('click', () => openBugReplyPopup(r))
+    if (r.screenshot_url) card.querySelector('[data-shot]')?.addEventListener('click', () => window.open(r.screenshot_url, '_blank', 'noopener'))
+  })
+}
+
+function openBugReplyPopup(r) {
+  const o = overlay(`
+    <button class="popup-close" data-action="close" aria-label="Close">✕</button>
+    <h3>Respond</h3>
+    <p class="swipe-line" style="margin-bottom:0.75rem">Replying to ${escapeHtml(r.reporter?.display_name || 'this chef')}. They'll see it in their System Notifications.</p>
+    <label class="field-label">Message</label>
+    <textarea class="rename-input report-details bug-field-gap" id="bug-reply" maxlength="500" placeholder="Type a reply">${escapeHtml(r.admin_reply || '')}</textarea>
+    <div class="home-btn-col">
+      <button type="button" id="bug-send-btn">Send reply</button>
+      <button type="button" class="btn-secondary" data-action="close">Cancel</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelectorAll('[data-action="close"]').forEach(b => b.addEventListener('click', () => o.remove()))
+  o.querySelector('#bug-send-btn').addEventListener('click', async () => {
+    const msg = o.querySelector('#bug-reply').value.trim()
+    if (!msg) return
+    const btn = o.querySelector('#bug-send-btn')
+    btn.disabled = true
+    btn.textContent = 'Sending…'
+    const { error } = await supabase.rpc('reply_bug_report', { report_id: r.id, message: msg })
+    if (error) { btn.disabled = false; btn.textContent = 'Send reply'; toast('Could not send — try again'); return }
+    o.remove()
+    toast('Reply sent 🐧')
+    loadBugReports()
+  })
+}
+
+// =================================================================
 //  Lore
 // =================================================================
 function renderLore() {
   const content = `
-    <div class="section-h" style="margin-top:6px"><h2>Lore</h2></div>
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-settings">‹ Settings</div>
+    <div class="section-h" style="margin-top:2px"><h2>Lore</h2></div>
     <div class="lore-list">
       ${LORE_VIDEOS.map((v, i) => `
         <div class="lore-card" data-lore="${i}" role="button" tabindex="0">
@@ -2947,6 +3366,7 @@ function renderLore() {
   `
 
   mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
     app.querySelectorAll('[data-lore]').forEach(card => {
       card.addEventListener('click', () => playLoreVideo(LORE_VIDEOS[Number(card.dataset.lore)]))
     })
@@ -2955,7 +3375,8 @@ function renderLore() {
 
 function renderLegal() {
   const content = `
-    <div class="section-h" style="margin-top:6px"><h2>Legal and Disclaimers</h2></div>
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-settings">‹ Settings</div>
+    <div class="section-h" style="margin-top:2px"><h2>Legal and Disclaimers</h2></div>
     <div class="legal-list">
       <div class="legal-card">
         <div class="legal-card-title">Copyright</div>
@@ -2969,7 +3390,9 @@ function renderLegal() {
       </div>
     </div>
   `
-  mountScreen('settings', content)
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
+  })
 }
 
 // Plays a lore video fullscreen with sound, ducking the bg music for the
@@ -3028,7 +3451,8 @@ function renderAdminDashboard() {
   if (!isAdmin()) { renderSettings(); return }
 
   const content = `
-    <div class="section-h" style="margin-top:6px"><h2>Admin Dashboard</h2></div>
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-settings">‹ Settings</div>
+    <div class="section-h" style="margin-top:2px"><h2>Admin Dashboard</h2></div>
 
     <div class="admin-dash">
       <div class="group">
@@ -3041,6 +3465,16 @@ function renderAdminDashboard() {
                 <span class="count-pip"><span class="pip-dot rep"></span>Loading&hellip;</span>
               </div>
             </div>
+            <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <p class="glab">Support</p>
+        <div class="glist">
+          <div class="grow" role="button" tabindex="0" data-action="open-bug-reports">
+            <div><div class="gt">Bug Reports</div><div class="gs">Screenshots + descriptions from chefs; reply to them</div></div>
             <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
           </div>
         </div>
@@ -3091,7 +3525,9 @@ function renderAdminDashboard() {
   presetEditMode = false
   mountScreen('settings', content, () => {
     loadModSummary()
+    app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
     app.querySelector('[data-action="open-moderation"]').addEventListener('click', () => renderModerationCenter())
+    app.querySelector('[data-action="open-bug-reports"]').addEventListener('click', renderBugReports)
     app.querySelector('[data-action="open-compose"]').addEventListener('click', renderComposeNotification)
     loadPresetAvatars()
     app.querySelector('#preset-input').addEventListener('change', (e) => {
@@ -4354,7 +4790,7 @@ function renderTimePickerUI({ title, onPick, onBack }) {
 }
 
 // ---------- Task prompt ----------
-function renderTaskPrompt(minutes) {
+function renderTaskPrompt(minutes, prefill = '') {
   app.innerHTML = `
     <div class="picker">
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
@@ -4362,7 +4798,7 @@ function renderTaskPrompt(minutes) {
       <div class="picker-content">
         <h2>What are you working on?</h2>
         <p class="home-tag">Short phrase, max 30 characters</p>
-        <input type="text" maxlength="30" class="task-input" placeholder="e.g. Essay writing" />
+        <input type="text" maxlength="30" class="task-input" placeholder="e.g. Essay writing" value="${escapeHtml(prefill)}" />
         <button class="start-btn" data-done type="button">Done</button>
       </div>
     </div>
@@ -4371,13 +4807,50 @@ function renderTaskPrompt(minutes) {
   input.focus()
   app.querySelector('.back-arrow-btn').addEventListener('click', renderDurationPicker)
   app.querySelector('[data-done]').addEventListener('click', () => {
-    startSession(minutes, input.value.trim().slice(0, 30))
+    renderTypePicker(minutes, input.value.trim().slice(0, 30))
   })
 }
 
-function startSession(minutes, task) {
+// ---------- Task-type picker (after duration + task name, before the timer) ----------
+function renderTypePicker(minutes, task) {
+  const types = resolvedTaskTypes()
+  let selected = TASK_TYPES[0].key
+  app.innerHTML = `
+    <div class="picker">
+      <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
+      <button class="back-arrow-btn back-arrow-fixed" type="button" aria-label="Back">&larr;</button>
+      <div class="picker-content">
+        <h2>What kind of task?</h2>
+        <p class="home-tag">Pick what you're about to cook up. Customise tags in settings.</p>
+        <div class="tt-type-list">
+          ${types.map(t => `
+            <div class="tt-type-row${t.key === selected ? ' selected' : ''}" data-key="${t.key}" role="button" tabindex="0">
+              <span class="tt-type-emoji">${t.emoji}</span>
+              <div class="tt-type-txt">
+                <div class="tt-type-title">${escapeHtml(t.title)}</div>
+                ${t.desc ? `<div class="tt-type-desc">${escapeHtml(t.desc)}</div>` : ''}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+        <button class="start-btn" data-start type="button">🔥 Start cooking</button>
+      </div>
+    </div>
+  `
+  app.querySelector('.back-arrow-btn').addEventListener('click', () => renderTaskPrompt(minutes, task))
+  app.querySelectorAll('.tt-type-row').forEach(row => {
+    row.addEventListener('click', () => {
+      selected = row.dataset.key
+      app.querySelectorAll('.tt-type-row').forEach(r => r.classList.toggle('selected', r.dataset.key === selected))
+    })
+  })
+  app.querySelector('[data-start]').addEventListener('click', () => startSession(minutes, task, selected))
+}
+
+function startSession(minutes, task, type) {
   state.timer = {
     task: task || '',
+    type: type || null,
     elapsedMs: 0,
     segmentPlannedMs: minutes * 60 * 1000,
     segmentStartedAt: Date.now(),
@@ -4401,6 +4874,7 @@ function renderTimerLoop(justStarted) {
       <div class="timer-hud">
         <button class="timer-value" type="button">--:--</button>
         <span class="timer-caption">Cook with Chef Penguino!</span>
+        ${state.timer.type && taskTypeLabel(state.timer.type) ? `<div class="tt-timer-chip">${TASK_TYPE_EMOJI[state.timer.type]} ${escapeHtml(taskTypeLabel(state.timer.type).title)}</div>` : ''}
       </div>
       <button class="mute-btn" type="button" aria-label="Toggle music"></button>
       <div class="darken-overlay" hidden>
