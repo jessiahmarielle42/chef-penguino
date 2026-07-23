@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.11.2'
+const APP_VERSION = 'v2.11.3'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -393,7 +393,7 @@ if (import.meta.env.VITE_REVIEW) {
   import('../review/reviewHarness.js').then((mod) => mod.installReviewHarness({
     supabase,
     setUser: (user, profile) => { currentUser = user; currentProfile = profile },
-    renderers: { renderAdminDashboard, renderModerationCenter, renderSystemNotifications, renderComposeNotification, renderSettings },
+    renderers: { renderAdminDashboard, renderModerationCenter, renderSystemNotifications, renderComposeNotification, renderSettings, renderFriends },
   }))
 } else {
   boot()
@@ -1585,7 +1585,7 @@ async function renderFriends() {
       <span class="info-badge" aria-hidden="true">i</span>
       <p>Tap a friend to view their Pizzeria. Tap the 3 dots to view more friend actions.</p>
     </div>
-    <div class="section-h" style="margin-top:1.75rem"><h2>Leaderboard</h2></div>
+    <div class="section-h" style="margin-top:1.75rem"><h2>Leaderboard</h2><span class="meta">This week&nbsp;· resets Monday</span></div>
     <div id="friends-list"><p class="log-empty">Loading&hellip;</p></div>
     <div class="section-h" style="margin-top:2.75rem"><h2>Add a friend</h2></div>
     <div class="addfriend"><input id="friend-code-input" placeholder="Friend's code" maxlength="6" /><button type="button" data-action="add">Add</button></div>
@@ -1615,13 +1615,29 @@ async function renderFriends() {
   })
 }
 
+// Start of the current week (Monday 00:00, in the viewer's local time). The
+// leaderboard sums only sessions completed since this instant, so it naturally
+// "resets" every Monday without any stored state or cron - the window just
+// moves forward and last week's pizzas fall off.
+function startOfThisWeek() {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  const mondayOffset = (d.getDay() + 6) % 7 // getDay: 0=Sun..6=Sat -> 0=Mon..6=Sun
+  d.setDate(d.getDate() - mondayOffset)
+  return d
+}
+
 async function loadFriendsList() {
   const listEl = app.querySelector('#friends-list')
   if (!listEl) return
 
-  const [{ data: friendRows }, { data: pendingRows }] = await Promise.all([
+  const weekStartISO = startOfThisWeek().toISOString()
+  const [{ data: friendRows }, { data: pendingRows }, { data: weekSessions }] = await Promise.all([
     supabase.from('friends').select('friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote)'),
     supabase.from('noots').select('recipient_id').eq('sender_id', currentUser.id).is('acknowledged_at', null),
+    // RLS ("sessions are visible to self and friends") scopes this to me + my
+    // friends automatically, so one query gives every board member's week.
+    supabase.from('sessions').select('user_id, pizzas').gte('completed_at', weekStartISO),
   ])
 
   const friends = (friendRows || []).map(r => r.profiles).filter(Boolean)
@@ -1631,8 +1647,17 @@ async function loadFriendsList() {
     return
   }
 
+  // Sum this week's pizzas per user. Anyone with no sessions this week isn't in
+  // the result and correctly falls back to 0. profiles.pizzas (lifetime) stays
+  // untouched on each object, so tapping a friend still shows their all-time
+  // total on their Pizzeria page.
+  const weeklyById = {}
+  ;(weekSessions || []).forEach(s => { weeklyById[s.user_id] = (weeklyById[s.user_id] || 0) + (Number(s.pizzas) || 0) })
+
   const me = { id: currentUser.id, display_name: myName(), pizzas: displayPizzas(), avatar_url: myAvatar(), friend_code: currentProfile?.friend_code, isMe: true }
-  const board = [...friends, me].sort((a, b) => b.pizzas - a.pizzas)
+  const board = [...friends, me]
+  board.forEach(f => { f.weekly = weeklyById[f.id] || 0 })
+  board.sort((a, b) => b.weekly - a.weekly)
 
   const medals = ['🥇', '🥈', '🥉']
   listEl.innerHTML = board.map((f, i) => {
@@ -1643,7 +1668,7 @@ async function loadFriendsList() {
         ${rank}
         <img src="${f.avatar_url || DEFAULT_AVATAR}" alt="" />
         <div><div class="fn">${name}</div><div class="fp">Code ${escapeHtml(f.friend_code || '')}</div></div>
-        <div class="score">🍕 ${formatScore(Number(f.pizzas) || 0)}</div>
+        <div class="score">🍕 ${formatScore(Number(f.weekly) || 0)}</div>
         <button type="button" class="frow-more" data-more="${f.id}" aria-label="More actions">⋮</button>
       </div>
     `
