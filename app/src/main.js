@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.11.0'
+const APP_VERSION = 'v2.11.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -116,6 +116,20 @@ function subscribeToSocial() {
     // warning, a new one never pops a popup. Just keep the unread badges
     // (tab bar + Settings row) fresh; see migration_system_notifications.sql.
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'system_notifications', filter: `user_id=eq.${uid}` }, () => refreshNotifBadges())
+    // Admin "unsend" (see migration_unsend_messages.sql) hard-deletes rows.
+    // DELETE payloads may not carry the old row (needs REPLICA IDENTITY
+    // FULL), so treat this purely as a "something changed, refetch" signal:
+    // refresh the badge count always, and if the user is currently looking
+    // at their System Notifications page, reload it so the unsent item
+    // vanishes live instead of only on next visit.
+    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'system_notifications' }, () => {
+      refreshNotifBadges()
+      if (systemNotificationsPageOpen && app.querySelector('#notif-sys-list')) loadSystemNotificationsPage()
+    })
+    .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'warnings' }, () => {
+      refreshNotifBadges()
+      if (systemNotificationsPageOpen && app.querySelector('#notif-sys-list')) loadSystemNotificationsPage()
+    })
     .subscribe((status) => {
       if (status === 'SUBSCRIBED') { checkPendingNoots(); checkPendingCoinGifts(); checkPendingWarnings(); refreshNotifBadges() }
     })
@@ -2741,6 +2755,10 @@ function renderSettings(highlightProfile) {
 //  can be re-read.
 // =================================================================
 let notifReadObserver = null
+// True only while renderSystemNotifications' screen is mounted - lets the
+// realtime DELETE handlers in subscribeToSocial() know whether to bother
+// re-running loadSystemNotificationsPage() when an admin unsends something.
+let systemNotificationsPageOpen = false
 
 function notifTime(ts) {
   return new Date(ts).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
@@ -2774,8 +2792,10 @@ function renderSystemNotifications() {
     </div>
     <div style="height:8px"></div>
   `
+  systemNotificationsPageOpen = true
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="back-to-settings"]').addEventListener('click', () => {
+      systemNotificationsPageOpen = false
       if (notifReadObserver) { notifReadObserver.disconnect(); notifReadObserver = null }
       renderSettings()
     })
@@ -3244,7 +3264,7 @@ async function loadModHistoryTab() {
   const [reportsRes, warningsRes, notifsRes] = await Promise.all([
     supabase.from('reports').select('id, reason, resolution, status, resolved_at, reported:reported_id(display_name)').neq('status', 'open').order('resolved_at', { ascending: false }).limit(100),
     supabase.from('warnings').select('id, message, created_at, acknowledged_at, report_id, user:user_id(display_name)').order('created_at', { ascending: false }).limit(100),
-    supabase.from('system_notifications').select('id, title, body, created_at, user:user_id(display_name)').order('created_at', { ascending: false }).limit(100),
+    supabase.from('system_notifications').select('id, title, body, created_at, batch_id, user:user_id(display_name)').order('created_at', { ascending: false }).limit(100),
   ])
   if (modCurrentTab !== 'history') return
   const err = reportsRes.error || warningsRes.error || notifsRes.error
@@ -3253,7 +3273,8 @@ async function loadModHistoryTab() {
   const entries = []
   // A report that ended in 'actioned' is already fully represented by its
   // linked warning entry below (same event, admin's point of view) - only
-  // 'dismissed' reports get their own log line.
+  // 'dismissed' reports get their own log line. Dismissed reports aren't
+  // "messages" - nothing was ever sent to a user - so they get no unsend.
   ;(reportsRes.data || []).forEach(r => {
     if (r.status !== 'dismissed') return
     const targetName = chefName(r.reported?.display_name)
@@ -3261,6 +3282,7 @@ async function loadModHistoryTab() {
       ts: r.resolved_at, icon: '✕', cls: 'dismiss',
       title: `Dismissed report on <b>${escapeHtml(targetName)}</b>`,
       sub: `${escapeHtml(r.reason)}${r.resolution ? ` · "${escapeHtml(r.resolution)}"` : ''}`,
+      key: `dismiss-${r.id}`,
     })
   })
   ;(warningsRes.data || []).forEach(w => {
@@ -3271,15 +3293,18 @@ async function loadModHistoryTab() {
       ts: w.created_at, icon: '⚠️', cls: 'warn',
       title: `Warned <b>${escapeHtml(targetName)}</b> <span class="adm-log-tag">· ${source}</span>`,
       sub: `"${escapeHtml(w.message)}" · ${ack}`,
+      key: `warn-${w.id}`,
+      unsend: { kind: 'warn', id: w.id },
     })
   })
   // Broadcast/multi-recipient sends insert one row per user in a single
-  // statement, so they share an identical created_at - group on
-  // (title, body, created_at) to collapse them back into one log line.
+  // statement, sharing one batch_id (see migration_unsend_messages.sql) -
+  // group on batch_id to collapse them back into one log line, and to know
+  // which id unsends the whole send at once.
   const notifGroups = new Map()
   ;(notifsRes.data || []).forEach(n => {
-    const key = `${n.title}\u0000${n.body}\u0000${n.created_at}`
-    if (!notifGroups.has(key)) notifGroups.set(key, { title: n.title, body: n.body, ts: n.created_at, names: [] })
+    const key = n.batch_id || n.id
+    if (!notifGroups.has(key)) notifGroups.set(key, { batchId: key, title: n.title, body: n.body, ts: n.created_at, names: [] })
     notifGroups.get(key).names.push(chefName(n.user?.display_name))
   })
   notifGroups.forEach(g => {
@@ -3288,6 +3313,8 @@ async function loadModHistoryTab() {
       ts: g.ts, icon: '📣', cls: 'msg',
       title: `Sent message <span class="adm-log-tag">· ${escapeHtml(who)}</span>`,
       sub: `"${escapeHtml(g.body)}"`,
+      key: `notif-${g.batchId}`,
+      unsend: { kind: 'notif', id: g.batchId },
     })
   })
 
@@ -3295,15 +3322,52 @@ async function loadModHistoryTab() {
   const capped = entries.slice(0, 100)
   if (!capped.length) { body.innerHTML = '<p class="editpic-empty">No moderation history yet.</p>'; return }
   body.innerHTML = `<div class="adm-log-list">${capped.map(e => `
-    <div class="adm-log">
+    <div class="adm-log" data-entry-key="${escapeHtml(e.key)}">
       <div class="adm-log-ic ${e.cls}">${e.icon}</div>
       <div class="adm-log-mid">
         <div class="adm-log-lt">${e.title}</div>
         <div class="adm-log-ls">${e.sub}</div>
       </div>
-      <div class="adm-log-ts">${calFmtShortDate(e.ts)}</div>
+      <div class="adm-log-right">
+        <div class="adm-log-ts">${calFmtShortDate(e.ts)}</div>
+        ${e.unsend ? `<button type="button" class="adm-log-unsend" data-action="unsend" data-kind="${e.unsend.kind}" data-id="${escapeHtml(e.unsend.id)}">Unsend</button>` : ''}
+      </div>
     </div>
   `).join('')}</div>`
+  body.querySelectorAll('[data-action="unsend"]').forEach(btn => {
+    btn.addEventListener('click', () => confirmUnsendHistoryEntry(btn.dataset.kind, btn.dataset.id, btn.closest('.adm-log')))
+  })
+}
+
+// Unsend = permanent delete (see migration_unsend_messages.sql's
+// unsend_system_notifications / unsend_warning RPCs). Destructive, so it
+// gets the same confirm-popup treatment as block/delete-account elsewhere.
+function confirmUnsendHistoryEntry(kind, id, rowEl) {
+  const isWarn = kind === 'warn'
+  const o = overlay(`
+    <h3>Unsend this ${isWarn ? 'warning' : 'message'}?</h3>
+    <p>It will be removed for everyone who received it and disappear from their records. This can't be undone.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Unsend</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    const btn = o.querySelector('[data-action="yes"]')
+    btn.disabled = true
+    const { error } = isWarn
+      ? await supabase.rpc('unsend_warning', { p_warning_id: id })
+      : await supabase.rpc('unsend_system_notifications', { p_batch_id: id })
+    if (error) { btn.disabled = false; toast(error.message); return }
+    o.remove()
+    toast(isWarn ? 'Warning unsent' : 'Message unsent')
+    rowEl?.remove()
+    const body = app.querySelector('#mod-body')
+    if (body && modCurrentTab === 'history' && !body.querySelector('.adm-log')) {
+      body.innerHTML = '<p class="editpic-empty">No moderation history yet.</p>'
+    }
+  })
 }
 
 // =================================================================
