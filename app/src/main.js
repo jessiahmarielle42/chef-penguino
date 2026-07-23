@@ -1051,7 +1051,8 @@ function calScopeEntries(map) {
   return out
 }
 
-// Minutes per task-type key (+ 'untagged') across the current scope.
+// Minutes per task-type key (+ 'untagged') across the current scope. Only used
+// now to decide whether the Untagged pill should appear.
 function calTypeTotals(map) {
   const totals = { untagged: 0 }
   for (const k of Object.keys(TASK_TYPE_EMOJI)) totals[k] = 0
@@ -1059,11 +1060,27 @@ function calTypeTotals(map) {
   return totals
 }
 
+// Every selectable filter key (the 5 task types + Untagged). The filter is
+// "all selected" by default; users deselect pills to narrow the summary cards.
+const ALL_FILTER_KEYS = [...Object.keys(TASK_TYPE_EMOJI), 'untagged']
+function ensureCalFilterInit() {
+  if (calTypeFilter === null) calTypeFilter = new Set(ALL_FILTER_KEYS)
+}
+
 function calToggleTypeFilter(key) {
-  if (key === 'all') { calTypeFilter = null; return }
-  if (calTypeFilter === null) calTypeFilter = new Set()
+  ensureCalFilterInit()
   if (calTypeFilter.has(key)) calTypeFilter.delete(key); else calTypeFilter.add(key)
-  if (calTypeFilter.size === 0) calTypeFilter = null
+}
+
+// Pizzas + focus-minutes summed over ONLY the selected categories — this drives
+// the two summary cards, so deselecting a pill removes its contribution.
+function calSelectedTotals(map) {
+  ensureCalFilterInit()
+  let pz = 0, mn = 0
+  for (const e of calScopeEntries(map)) {
+    if (calTypeFilter.has(calBucketOf(e))) { pz += e.pizzas; mn += e.minutes }
+  }
+  return { pz, mn }
 }
 
 function calTypeChipLabel(key) {
@@ -1072,33 +1089,18 @@ function calTypeChipLabel(key) {
   return `${TASK_TYPE_EMOJI[key]} ${escapeHtml(t ? t.title : key)}`
 }
 
-// Chip row (All + the 5 types + Untagged-if-present) and the per-type totals
-// panel, injected under the calendar summary. Reflects the current scope.
+// Just the category pill row — no "All" pill, no per-type breakdown panel. All
+// pills start selected; the summary cards above reflect the selected set.
 function calFilterBarHtml(map) {
-  // Nothing to filter on an empty scope — hide the bar unless the user has an
-  // active filter they'd want to clear.
-  if (calTypeFilter === null && calScopeEntries(map).length === 0) return ''
+  if (calScopeEntries(map).length === 0) return '' // nothing to filter on an empty scope
+  ensureCalFilterInit()
   const totals = calTypeTotals(map)
-  const chip = (key, active) => `<button type="button" class="tt-chip${active ? ' active' : ''}" data-tk="${key}">${calTypeChipLabel(key)}</button>`
-  let chips = `<button type="button" class="tt-chip${calTypeFilter === null ? ' active' : ''}" data-tk="all">All</button>`
-  for (const t of resolvedTaskTypes()) chips += chip(t.key, calTypeFilter !== null && calTypeFilter.has(t.key))
-  if (totals.untagged > 0) chips += chip('untagged', calTypeFilter !== null && calTypeFilter.has('untagged'))
-
-  const selectedKeys = calTypeFilter === null
-    ? [...resolvedTaskTypes().map(t => t.key), 'untagged']
-    : [...calTypeFilter]
-  const parts = selectedKeys
-    .filter(k => (totals[k] || 0) > 0)
-    .map(k => k === 'untagged'
-      ? `<b>Untagged</b> ${calFmtDur(totals[k])}`
-      : `${TASK_TYPE_EMOJI[k]} <b>${escapeHtml(taskTypeLabel(k)?.title || k)}</b> ${calFmtDur(totals[k])}`)
-  const line = parts.length ? parts.join(' &middot; ') : 'No sessions for this selection'
-  let selLine = ''
-  if (calTypeFilter !== null && calTypeFilter.size > 1) {
-    let sum = 0; calTypeFilter.forEach(k => sum += totals[k] || 0)
-    selLine = `<span class="tt-sel-total">Selected total: ${calFmtDur(sum)}</span>`
-  }
-  return `<div class="tt-cal-filter"><div class="tt-chip-row">${chips}</div><div class="tt-cal-totals">${line}${selLine}</div></div>`
+  const keys = [...Object.keys(TASK_TYPE_EMOJI)]
+  if (totals.untagged > 0) keys.push('untagged')
+  const chips = keys.map(k =>
+    `<button type="button" class="tt-chip${calTypeFilter.has(k) ? ' active' : ''}" data-tk="${k}">${calTypeChipLabel(k)}</button>`
+  ).join('')
+  return `<div class="tt-cal-filter"><div class="tt-chip-row">${chips}</div></div>`
 }
 
 // The Monday-start week containing `key`.
@@ -1128,9 +1130,11 @@ async function renderHistory() {
 
   const log = await fetchLog(currentUser?.id)
   const dayMap = calGroupByDay(log)
+  // Initialise the "all pills selected" filter before the day body renders,
+  // since its per-row dimming reads the selected set.
+  ensureCalFilterInit()
 
   let navHtml = ''
-  let sumPz = 0, sumMn = 0
   if (calView === 'month') {
     navHtml = `
       <div class="cal-navbar">
@@ -1138,8 +1142,6 @@ async function renderHistory() {
         <div class="cal-navlabel">${CAL_MONTHS[calMo]} ${calY}</div>
         <button class="cal-chev" type="button" data-action="cal-next">›</button>
       </div>`
-    const t = calMonthTotals(dayMap, calY, calMo)
-    sumPz = t.pz; sumMn = t.mn
   } else if (calView === 'week') {
     const days = calWeekDays(calSelKey)
     const first = days[0], last = days[6]
@@ -1152,7 +1154,6 @@ async function renderHistory() {
         <div class="cal-navlabel">${label}</div>
         <button class="cal-chev" type="button" data-action="cal-next">›</button>
       </div>`
-    days.forEach(d => { const t = calDayTotals(dayMap, calKeyFromDate(d)); sumPz += t.pz; sumMn += t.mn })
   } else {
     const dt = calDateFromKey(calSelKey)
     navHtml = `
@@ -1161,9 +1162,10 @@ async function renderHistory() {
         <div class="cal-navlabel">${CAL_DOW[(dt.getDay() + 6) % 7]} ${dt.getDate()} ${CAL_MONTHS[dt.getMonth()]}</div>
         <button class="cal-chev" type="button" data-action="cal-next">›</button>
       </div>`
-    const t = calDayTotals(dayMap, calSelKey)
-    sumPz = t.pz; sumMn = t.mn
   }
+
+  // Summary cards reflect only the selected category pills (all by default).
+  const { pz: sumPz, mn: sumMn } = calSelectedTotals(dayMap)
 
   const subtitle = calView === 'month' ? 'Your cooking calendar'
     : calView === 'week' ? `Week of the ${calOrdinal(calDateFromKey(calSelKey).getDate())}`
@@ -1439,7 +1441,7 @@ function calRenderDayBody(dayMap) {
     const coinAmt = (COIN_TASK_RE.exec(e.task || '') || [])[1] || ''
     const metric = isCoin ? `${coinImg('log-coin')} ${coinAmt}`.trim() : `🍕 ${formatScore(e.pizzas)}`
     const task = escapeHtml((e.task || '').replace(COIN_TASK_RE, '')) || 'Focus session'
-    const dim = calTypeFilter !== null && !calTypeFilter.has(calBucketOf(e)) ? ' tt-dim' : ''
+    const dim = calTypeFilter && !calTypeFilter.has(calBucketOf(e)) ? ' tt-dim' : ''
     h += `<div class="cal-tl-item${dim}" data-id="${e.id}" role="button" tabindex="0">
       <div class="cal-tl-time">${calFmtTime(e.completedAt)}</div>
       <div class="cal-tl-rail"><div class="cal-tl-dot"></div><div class="cal-tl-line"></div></div>
@@ -1762,7 +1764,7 @@ async function renderFriends() {
       <span class="info-badge" aria-hidden="true">i</span>
       <p>Tap a friend to view their Pizzeria. Tap the 3 dots to view more friend actions.</p>
     </div>
-    <div class="section-h" style="margin-top:1.75rem"><h2>This Week's Chef Leaderboard</h2><span class="meta">Resets Monday&nbsp;${nextMondayLabel()}</span></div>
+    <div class="section-h" style="margin-top:1.75rem"><h2>This Week's Leaderboard</h2><span class="meta">Resets Monday&nbsp;${nextMondayLabel()}</span></div>
     <div id="friends-list"><p class="log-empty">Loading&hellip;</p></div>
     <div class="section-h" style="margin-top:2.75rem"><h2>Add a friend</h2></div>
     <div class="addfriend"><input id="friend-code-input" placeholder="Friend's code" maxlength="6" /><button type="button" data-action="add">Add</button></div>
