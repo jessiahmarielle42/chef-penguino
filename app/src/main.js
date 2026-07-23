@@ -3,7 +3,10 @@ import { supabase } from './supabaseClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
-const APP_VERSION = 'v2.10.1'
+// Standard blank profile picture shown when a user hasn't chosen an avatar
+// (or an admin removes theirs) - a neutral silhouette, like other apps.
+const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
+const APP_VERSION = 'v2.10.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -218,11 +221,14 @@ function escapeHtml(str) {
 }
 
 function formatDuration(minutes) {
-  const m = Math.round(minutes)
-  if (m < 60) return `${m} min`
+  // Admin pizza deductions produce negative durations; format the magnitude
+  // with a leading minus so the row reads e.g. "-1h".
+  const sign = minutes < 0 ? '-' : ''
+  const m = Math.round(Math.abs(minutes))
+  if (m < 60) return `${sign}${m} min`
   const h = Math.floor(m / 60)
   const rem = m % 60
-  return rem ? `${h}h ${rem}m` : `${h}h`
+  return sign + (rem ? `${h}h ${rem}m` : `${h}h`)
 }
 
 function formatWorkedDuration(minutes) {
@@ -518,7 +524,7 @@ function myName() {
   return chefName(myRawName())
 }
 function myAvatar() {
-  return currentProfile?.avatar_url || `${BASE}assets/penguin-icon.png`
+  return currentProfile?.avatar_url || DEFAULT_AVATAR
 }
 
 function coinImg(extra = '') {
@@ -1521,7 +1527,7 @@ async function loadFriendsList() {
     return `
       <div class="frow ${f.isMe ? 'me' : ''}" ${f.isMe ? 'role="button" tabindex="0"' : `data-friend="${f.id}" role="button" tabindex="0"`}>
         ${rank}
-        <img src="${f.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
+        <img src="${f.avatar_url || DEFAULT_AVATAR}" alt="" />
         <div><div class="fn">${name}</div><div class="fp">Code ${escapeHtml(f.friend_code || '')}</div></div>
         <div class="score">🍕 ${formatScore(Number(f.pizzas) || 0)}</div>
         <button type="button" class="frow-more" data-more="${f.id}" aria-label="More actions">⋮</button>
@@ -1553,7 +1559,7 @@ function wireFriendRow(row, friend, pendingNootTargets) {
 function openFriendActions(friend, alreadyNooted) {
   const o = overlay(`
     <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
-    <img class="popup-profile-avatar" src="${friend.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
+    <img class="popup-profile-avatar" src="${friend.avatar_url || DEFAULT_AVATAR}" alt="" />
     <div class="popup-profile-name">${escapeHtml(chefName(friend.display_name))}</div>
     <div class="home-btn-col">
       <button type="button" data-action="visit">🏠 Visit Pizzeria</button>
@@ -1803,7 +1809,7 @@ function showNootReceivedPopup(noot) {
     day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit',
   })
   const o = overlay(`
-    <img class="popup-profile-avatar" src="${noot.sender?.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
+    <img class="popup-profile-avatar" src="${noot.sender?.avatar_url || DEFAULT_AVATAR}" alt="" />
     <h3>${escapeHtml(noot.sender?.display_name ? chefName(noot.sender.display_name) : 'A friend')} Nooted you!</h3>
     <p>${escapeHtml(when)}</p>
     <button type="button" data-action="ok">Got it!</button>
@@ -1834,7 +1840,7 @@ function showCoinGiftReceivedPopup(gift) {
   coinGiftPopupOpen = true
   playNootSound()
   const o = overlay(`
-    <img class="popup-profile-avatar" src="${gift.sender?.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
+    <img class="popup-profile-avatar" src="${gift.sender?.avatar_url || DEFAULT_AVATAR}" alt="" />
     <h3>${escapeHtml(gift.sender?.display_name ? chefName(gift.sender.display_name) : 'A friend')} gifted you a Penguino Coin! 🎁</h3>
     <div class="gift-coin-wrap">${coinImg('lg')}</div>
     <button type="button" data-action="ok">Got it!</button>
@@ -3147,7 +3153,7 @@ function renderAdminUserList(filter) {
   if (!list.length) { scrollEl.innerHTML = '<p class="log-empty">No users found.</p>'; return }
   scrollEl.innerHTML = `<div class="glist">${list.map(p => `
     <div class="adm-userrow" data-admin-user="${p.id}" role="button" tabindex="0">
-      <img src="${p.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
+      <img src="${p.avatar_url || DEFAULT_AVATAR}" alt="" />
       <div class="adm-u-info"><div class="adm-u-name">${escapeHtml(p.display_name)}</div><div class="adm-u-code">Code ${escapeHtml(p.friend_code || '')}</div></div>
       <div class="adm-u-stats">
         <span class="adm-stat">🍕 ${formatScore(p.pizzas)}</span>
@@ -3173,7 +3179,7 @@ function openAdminAdjustPopup(profile) {
   const o = overlay(`
     <h3>Edit ${escapeHtml(profile.display_name)}</h3>
     <div class="editpic-avatar-wrap" style="margin-bottom:1.25rem">
-      <img class="editpic-avatar" id="admin-edit-avatar" src="${profile.avatar_url || `${BASE}assets/penguin-icon.png`}" alt="" />
+      <img class="editpic-avatar" id="admin-edit-avatar" src="${profile.avatar_url || DEFAULT_AVATAR}" alt="" />
       <button class="editpic-cam" type="button" data-action="edit-pic" aria-label="Edit picture">${CAMERA_SVG}</button>
     </div>
 
@@ -3194,7 +3200,7 @@ function openAdminAdjustPopup(profile) {
     openAdminPicPicker(profile, avatarChange, (choice) => {
       avatarChange = choice
       const avatarImg = o.querySelector('#admin-edit-avatar')
-      if (avatarImg) avatarImg.src = choice || `${BASE}assets/penguin-icon.png`
+      if (avatarImg) avatarImg.src = choice || DEFAULT_AVATAR
     })
   }
   o.querySelector('#admin-edit-avatar').addEventListener('click', openPicker)
@@ -3238,7 +3244,7 @@ async function openAdminPicPicker(profile, stagedUrl, onChoose) {
     <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
     <h3>Edit Picture</h3>
     <div class="editpic-avatar-wrap">
-      <img class="editpic-avatar" src="${current || `${BASE}assets/penguin-icon.png`}" alt="" />
+      <img class="editpic-avatar" src="${current || DEFAULT_AVATAR}" alt="" />
     </div>
     <button type="button" class="btn-secondary" data-action="remove-pic" style="margin-top:0.875rem">Remove picture</button>
     <label class="field-label" style="margin-top:1.75rem">Or pick a preset</label>
@@ -3267,7 +3273,11 @@ async function openAdminPicPicker(profile, stagedUrl, onChoose) {
 
 async function applyAdminEdit(profile, pizzaDelta, coinDelta) {
   if (pizzaDelta) {
-    const ok = await insertSessionRow({ user_id: profile.id, completed_at: new Date().toISOString(), minutes: 0, pizzas: pizzaDelta, task: 'Admin Edit', icon: '🛠️' })
+    // 1 pizza = 1 hour, so a pizza adjustment moves focus time by the same
+    // amount (positive add, negative deduction). The row then shows e.g. "1h"
+    // for a +1 pizza edit and the day/week/month totals stay consistent.
+    const minutes = Math.round(pizzaDelta * 60)
+    const ok = await insertSessionRow({ user_id: profile.id, completed_at: new Date().toISOString(), minutes, pizzas: pizzaDelta, task: 'Admin Edit', icon: '🛠️' })
     if (!ok) return false
   }
   if (coinDelta) {
