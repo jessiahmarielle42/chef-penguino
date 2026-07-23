@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.12.0'
+const APP_VERSION = 'v2.12.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -172,7 +172,7 @@ function nextMondayLabel() {
   let add = (8 - now.getDay()) % 7
   if (add === 0) add = 7
   const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + add)
-  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+  return `${d.getDate()} ${CAL_MONTHS_SHORT[d.getMonth()]}`
 }
 
 const DURATIONS = [
@@ -486,6 +486,7 @@ if (import.meta.env.VITE_REVIEW) {
       renderTypePicker: () => renderTypePicker(30, 'Essay writing'),
       openBugReport: () => { renderSettings(); return openBugReport() },
       startTypedTimer: () => startSession(30, 'Essay writing', 'deep'),
+      openEditRecord: () => { renderHome(); logEntriesById.set('demo', { entry: { id: 'demo', task: 'rehearse', minutes: 60, pizzas: 1, icon: '🥖' }, icon: '🥖' }); openEditLogPopup('demo') },
       ensureBugFab,
     },
   }))
@@ -748,7 +749,12 @@ function tabBarHtml(active) {
   `
 }
 
+let mountedScreenKey = null
+
 function mountScreen(active, contentHtml, after, opts = {}) {
+  const key = opts.key || active
+  const prevScroll = app.querySelector('.scroll')
+  const carryTop = (prevScroll && key === mountedScreenKey) ? prevScroll.scrollTop : 0
   app.innerHTML = `
     <div class="app">
       ${opts.hideStatusBar ? '' : statusBarHtml()}
@@ -756,6 +762,9 @@ function mountScreen(active, contentHtml, after, opts = {}) {
       ${tabBarHtml(active)}
     </div>
   `
+  mountedScreenKey = key
+  const newScroll = app.querySelector('.scroll')
+  if (newScroll && carryTop) newScroll.scrollTop = carryTop
   if (!opts.hideStatusBar) wireStatusBar()
   wireTabBar()
   if (after) after()
@@ -1033,8 +1042,10 @@ function calMonthTotals(map, y, mo) {
 // ---------- task-type filter (calendar) ----------
 // The bucket key an entry counts toward: its task-type, or 'planning' (Other)
 // for legacy/typeless sessions and admin/coin audit rows.
+const EMOJI_TO_TYPE = Object.fromEntries(Object.entries(TASK_TYPE_EMOJI).map(([k, v]) => [v, k]))
 function calBucketOf(e) {
-  return (e.type && TASK_TYPE_EMOJI[e.type]) ? e.type : 'planning'
+  if (e.type && TASK_TYPE_EMOJI[e.type]) return e.type
+  return EMOJI_TO_TYPE[stableIconFor(e)] || 'planning'
 }
 
 // Every entry within the currently-displayed scope (month / week / day).
@@ -1183,7 +1194,7 @@ async function renderHistory() {
     <div class="cal-viewbody">${bodyHtml}</div>
   `
 
-  mountScreen('home', content, () => calWireHistory(dayMap, todayKey))
+  mountScreen('home', content, () => calWireHistory(dayMap, todayKey), { key: 'history' })
 }
 
 // The scrim + sheet are appended directly onto the `.app` shell (like
@@ -1752,7 +1763,7 @@ async function renderFriends() {
       <span class="info-badge" aria-hidden="true">i</span>
       <p>Tap a friend to view their Pizzeria. Tap the 3 dots to view more friend actions.</p>
     </div>
-    <div class="section-h" style="margin-top:1.75rem"><h2>This Week's Leaderboard</h2><span class="meta">Resets Monday&nbsp;${nextMondayLabel()}</span></div>
+    <div class="section-h" style="margin-top:1.75rem"><h2>Weekly Scoreboard</h2><span class="meta">Resets&nbsp;${nextMondayLabel()}</span></div>
     <div id="friends-list"><p class="log-empty">Loading&hellip;</p></div>
     <div class="section-h" style="margin-top:2.75rem"><h2>Add a friend</h2></div>
     <div class="addfriend"><input id="friend-code-input" placeholder="Friend's code" maxlength="6" /><button type="button" data-action="add">Add</button></div>
@@ -2248,7 +2259,7 @@ function renderFriendHome(friend) {
     app.querySelector('#viewing-banner')?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); renderFriends() }
     })
-  }, { hideStatusBar: true })
+  }, { hideStatusBar: true, key: 'friend-home' })
 }
 
 function confirmRemoveFriend(friendId, name) {
@@ -2528,45 +2539,34 @@ const iconName = (ic) => LOG_ICON_NAMES[ic] || 'Custom'
 function openEditLogPopup(id) {
   const rec = logEntriesById.get(id)
   if (!rec) return
-  let selectedIcon = rec.icon
+  const types = resolvedTaskTypes()
+  // The session's category: its stored type, else inferred from its displayed icon.
+  let selectedType = (rec.entry.type && TASK_TYPE_EMOJI[rec.entry.type])
+    ? rec.entry.type
+    : (EMOJI_TO_TYPE[rec.icon] || 'planning')
   const o = overlay(`
     <h3>Edit Record</h3>
     <label class="field-label" for="edit-log-name">Name:</label>
     <input id="edit-log-name" class="rename-input" type="text" maxlength="30" value="${escapeHtml(rec.entry.task || '')}" placeholder="Focus session" />
-    <label class="field-label">Icon:</label>
-    <div class="icon-field" id="icon-field">
-      <div class="icon-collapsed" data-action="toggle-icons" role="button" tabindex="0">
-        <span class="icon-current-chip">${selectedIcon}</span>
-        <span class="icon-collapsed-label">${iconName(selectedIcon)}</span>
-        <span class="chevron" aria-hidden="true">›</span>
-      </div>
-      <div class="icon-options-row" hidden>
-        ${LOG_ROW_ICONS.map(ic => `<button type="button" class="icon-pick2 ${ic === selectedIcon ? 'selected' : ''}" data-icon="${ic}">${ic}</button>`).join('')}
-      </div>
+    <label class="field-label">Task type:</label>
+    <div class="tt-type-list tt-type-list-compact">
+      ${types.map(t => `
+        <div class="tt-type-row${t.key === selectedType ? ' selected' : ''}" data-type="${t.key}" role="button" tabindex="0">
+          <span class="tt-type-emoji">${t.emoji}</span>
+          <div class="tt-type-txt"><div class="tt-type-title">${escapeHtml(t.title)}</div></div>
+        </div>
+      `).join('')}
     </div>
-    <div class="home-btn-col" style="margin-top:1.25rem">
+    <div class="home-btn-col" style="margin-top:1rem">
       <button type="button" data-action="save">Save</button>
       <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
     </div>
   `, { popupClass: 'popup-wide' })
 
-  const field = o.querySelector('#icon-field')
-  const optionsRow = o.querySelector('.icon-options-row')
-  const chip = o.querySelector('.icon-current-chip')
-  const label = o.querySelector('.icon-collapsed-label')
-  o.querySelector('[data-action="toggle-icons"]').addEventListener('click', () => {
-    const expand = optionsRow.hidden
-    optionsRow.hidden = !expand
-    field.classList.toggle('expanded', expand)
-  })
-  o.querySelectorAll('.icon-pick2').forEach(btn => {
-    btn.addEventListener('click', () => {
-      selectedIcon = btn.dataset.icon
-      chip.textContent = selectedIcon
-      label.textContent = iconName(selectedIcon)
-      o.querySelectorAll('.icon-pick2').forEach(b => b.classList.toggle('selected', b === btn))
-      optionsRow.hidden = true
-      field.classList.remove('expanded')
+  o.querySelectorAll('.tt-type-row').forEach(row => {
+    row.addEventListener('click', () => {
+      selectedType = row.dataset.type
+      o.querySelectorAll('.tt-type-row').forEach(r => r.classList.toggle('selected', r === row))
     })
   })
 
@@ -2575,7 +2575,7 @@ function openEditLogPopup(id) {
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="save"]').addEventListener('click', async () => {
     const newName = input.value.trim().slice(0, 30) || 'Focus session'
-    const ok = await saveLogEdit(id, { task: newName, icon: selectedIcon })
+    const ok = await saveLogEdit(id, { task: newName, icon: TASK_TYPE_EMOJI[selectedType], type: selectedType })
     if (!ok) return
     o.remove()
     afterLogChange()
@@ -3016,7 +3016,7 @@ function renderSystemNotifications() {
       renderSettings()
     })
     loadSystemNotificationsPage()
-  })
+  }, { key: 'sysnotif' })
 }
 
 async function loadSystemNotificationsPage() {
@@ -3163,7 +3163,7 @@ function renderTaskTypesEditor() {
         toast('Could not save — try again')
       }
     })
-  })
+  }, { key: 'task-types' })
 }
 
 // =================================================================
@@ -3191,7 +3191,7 @@ function ensureBugFab() {
 }
 function updateBugFabVisibility() {
   if (!bugFabEl) return
-  const modalOpen = !!app.querySelector('.overlay.show') || !!app.querySelector('.cal-sheet.show') || !!document.querySelector('.lore-player')
+  const modalOpen = !!app.querySelector('.bug-report-overlay')
   bugFabEl.style.display = (isSignedIn() && !modalOpen) ? '' : 'none'
 }
 
@@ -3225,6 +3225,7 @@ async function openBugReport() {
       <button type="button" class="btn-secondary" data-action="close">Cancel</button>
     </div>
   `, { popupClass: 'popup-wide' })
+  o.classList.add('bug-report-overlay')
 
   if (shotCanvas) {
     shotCanvas.style.cssText = 'width:100%;height:100%;object-fit:cover;object-position:top center;display:block'
@@ -3268,18 +3269,28 @@ async function openBugReport() {
 }
 
 // ---------- admin: bug reports review ----------
+let bugTab = 'open' // 'open' | 'history' (history = replied + dismissed)
 async function renderBugReports() {
   if (!isAdmin()) { renderSettings(); return }
   const content = `
     <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
     <div class="section-h" style="margin-top:2px"><h2>Bug Reports</h2></div>
+    <div class="cal-seg" style="margin-bottom:0.5rem">
+      <button type="button" class="${bugTab === 'open' ? 'on' : ''}" data-bugtab="open">Open</button>
+      <button type="button" class="${bugTab === 'history' ? 'on' : ''}" data-bugtab="history">History</button>
+    </div>
     <div class="bug-adm-list" id="bug-adm-list"><p class="editpic-empty">Loading&hellip;</p></div>
     <div style="height:8px"></div>
   `
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+    app.querySelectorAll('[data-bugtab]').forEach(b => b.addEventListener('click', () => {
+      if (b.dataset.bugtab === bugTab) return
+      bugTab = b.dataset.bugtab
+      renderBugReports()
+    }))
     loadBugReports()
-  })
+  }, { key: 'bug-reports' })
 }
 
 function bugAdmCardHtml(r) {
@@ -3321,9 +3332,15 @@ async function loadBugReports() {
   const list = app.querySelector('#bug-adm-list')
   if (!list) return
   if (error) { list.innerHTML = `<p class="editpic-empty">Couldn't load reports.</p>`; return }
-  if (!data || !data.length) { list.innerHTML = `<p class="editpic-empty">No bug reports yet.</p>`; return }
-  list.innerHTML = data.map(bugAdmCardHtml).join('')
-  data.forEach(r => {
+  // Open tab = active reports; History tab = resolved (replied or dismissed).
+  const resolved = r => r.status === 'replied' || r.status === 'dismissed'
+  const shown = (data || []).filter(r => bugTab === 'history' ? resolved(r) : !resolved(r))
+  if (!shown.length) {
+    list.innerHTML = `<p class="editpic-empty">${bugTab === 'history' ? 'No resolved reports yet.' : 'No open reports 🎉'}</p>`
+    return
+  }
+  list.innerHTML = shown.map(bugAdmCardHtml).join('')
+  shown.forEach(r => {
     const card = list.querySelector(`[data-report="${r.id}"]`)
     if (!card) return
     card.querySelector('[data-action="respond"]')?.addEventListener('click', () => openBugReplyPopup(r))
@@ -3337,8 +3354,18 @@ async function loadBugReports() {
       toast('Sent to Claude 🤖')
     })
     card.querySelector('[data-action="dismiss"]')?.addEventListener('click', (e) => confirmDismissBugReport(r, e.currentTarget))
-    if (r.screenshot_url) card.querySelector('[data-shot]')?.addEventListener('click', () => window.open(r.screenshot_url, '_blank', 'noopener'))
+    if (r.screenshot_url) card.querySelector('[data-shot]')?.addEventListener('click', () => openScreenshotLightbox(r.screenshot_url))
   })
+}
+
+// In-app screenshot viewer — an overlay so tapping a report's shot never
+// navigates away from the Bug Reports page.
+function openScreenshotLightbox(url) {
+  const o = overlay(`
+    <button class="popup-close" data-action="close" aria-label="Close">✕</button>
+    <img src="${escapeHtml(url)}" alt="Report screenshot" style="width:100%;max-height:74vh;object-fit:contain;border-radius:0.75rem;display:block;margin-top:0.75rem" />
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
 }
 
 function confirmDismissBugReport(r, btn) {
@@ -3410,7 +3437,7 @@ function renderLore() {
     app.querySelectorAll('[data-lore]').forEach(card => {
       card.addEventListener('click', () => playLoreVideo(LORE_VIDEOS[Number(card.dataset.lore)]))
     })
-  })
+  }, { key: 'lore' })
 }
 
 function renderLegal() {
@@ -3432,7 +3459,7 @@ function renderLegal() {
   `
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
-  })
+  }, { key: 'legal' })
 }
 
 // Plays a lore video fullscreen with sound, ducking the bg music for the
@@ -3585,7 +3612,7 @@ function renderAdminDashboard() {
 
     loadAdminUsers()
     app.querySelector('#admin-search-input').addEventListener('input', (e) => renderAdminUserList(e.target.value))
-  })
+  }, { key: 'admin' })
 }
 
 // The dashboard's one-line "Reports and Blocks" summary AND the Moderation
@@ -3667,7 +3694,7 @@ function renderModerationCenter(tab = 'reports') {
     })
     loadModSegCounts()
     switchModTab(tab)
-  })
+  }, { key: 'moderation' })
 }
 
 async function loadModSegCounts() {
@@ -3904,7 +3931,7 @@ function renderComposeNotification() {
       btn.addEventListener('click', () => switchComposeTab(btn.dataset.tab))
     })
     wireComposeNotification()
-  })
+  }, { key: 'compose' })
 }
 
 function composeFormHtml() {

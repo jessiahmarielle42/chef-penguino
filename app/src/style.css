@@ -2282,7 +2282,7 @@ img.shop-image {
 /* Real full-phone screenshot: a live, scaled-down clone of the screen the user
    was on, in the phone's own portrait aspect (390:844). */
 .bug-shot {
-  width: 190px; aspect-ratio: 390 / 844; margin: 0.5rem auto 0.5rem;
+  width: 120px; aspect-ratio: 390 / 844; margin: 0.5rem auto 0.5rem;
   border-radius: 1rem; overflow: hidden; position: relative;
   border: 1px solid var(--line); background: #120c09;
   box-shadow: 0 8px 22px -8px rgba(0,0,0,0.6);
@@ -2321,6 +2321,9 @@ img.shop-image {
   background: var(--card); border: 1px solid var(--line); border-radius: 1rem; padding: 0.9375rem 1rem;
 }
 .bug-adm-card.bug-adm-dismissed { opacity: 0.55; }
+/* Compact task-type picker inside the Edit Record popup */
+.tt-type-list-compact { gap: 0.4375rem; margin-bottom: 0.25rem; }
+.tt-type-list-compact .tt-type-row { padding: 0.5625rem 0.75rem; }
 .bug-adm-shot {
   height: 90px; border-radius: 0.625rem; overflow: hidden; position: relative; margin-bottom: 0.625rem;
   background: linear-gradient(160deg, #3a2a1e 0%, #1d130d 60%, #120c09 100%);
