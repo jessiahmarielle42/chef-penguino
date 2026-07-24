@@ -3617,8 +3617,13 @@ function renderAdminDashboard() {
       <div class="group">
         <p class="glab">Support</p>
         <div class="glist">
-          <div class="grow" role="button" tabindex="0" data-action="open-bug-reports">
-            <div><div class="gt">Bug Reports</div><div class="gs">Screenshots + descriptions from chefs; reply to them</div></div>
+          <div class="grow mod-summary-row" role="button" tabindex="0" data-action="open-bug-reports">
+            <div class="mod-summary-body">
+              <div class="gt">Bug Reports</div>
+              <div class="mod-summary-counts" id="bug-summary-counts">
+                <span class="count-pip"><span class="pip-dot rep"></span>Loading&hellip;</span>
+              </div>
+            </div>
             <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
           </div>
         </div>
@@ -3669,6 +3674,7 @@ function renderAdminDashboard() {
   presetEditMode = false
   mountScreen('settings', content, () => {
     loadModSummary()
+    loadBugSummary()
     app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
     app.querySelector('[data-action="open-moderation"]').addEventListener('click', () => renderModerationCenter())
     app.querySelector('[data-action="open-bug-reports"]').addEventListener('click', renderBugReports)
@@ -3716,6 +3722,20 @@ async function loadModSummary() {
     <span class="count-pip"><span class="pip-dot rep"></span><b>${openReports}</b>&nbsp;pending report${openReports === 1 ? '' : 's'}</span>
     <span class="count-pip"><span class="pip-dot blk"></span><b>${newBlocks}</b>&nbsp;new block${newBlocks === 1 ? '' : 's'}</span>
   `
+}
+
+// Just the count the admin actually asked for on this dashboard row: how many
+// bug reports are still unresolved (status not 'resolved'/'dismissed') — no
+// other stats.
+async function loadBugSummary() {
+  const el = app.querySelector('#bug-summary-counts')
+  if (!el) return
+  const { count, error } = await supabase
+    .from('bug_reports')
+    .select('id', { count: 'exact', head: true })
+    .not('status', 'in', '(resolved,dismissed)')
+  const n = error ? 0 : (count || 0)
+  el.innerHTML = `<span class="count-pip"><span class="pip-dot rep"></span><b>${n}</b>&nbsp;unresolved report${n === 1 ? '' : 's'}</span>`
 }
 
 // Removes a report row that just got resolved (warned or dismissed) from
