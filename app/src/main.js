@@ -3402,13 +3402,14 @@ async function loadBugReports() {
 // Consolidated per-report action menu (replaces the old stacked buttons).
 function openBugManageMenu(r) {
   const sent = !!r.sent_to_claude_at
+  const resolved = r.status === 'resolved'
   const o = overlay(`
     <button class="popup-close" data-action="close" aria-label="Close">✕</button>
     <h3>Manage report</h3>
     <div class="home-btn-col" style="margin-top:0.5rem">
       <button type="button" data-action="respond">${r.status === 'replied' ? 'Reply again' : 'Respond'}</button>
       <button type="button" class="btn-secondary" data-action="claude">${sent ? '↩︎ Unsend from Claude' : '🤖 Send to Claude'}</button>
-      <button type="button" class="btn-secondary" data-action="resolve">☑️ Mark Resolved</button>
+      <button type="button" class="btn-secondary" data-action="resolve">${resolved ? '↩︎ Move to unresolved' : '☑️ Mark Resolved'}</button>
       <button type="button" class="btn-danger" data-action="dismiss">Dismiss</button>
     </div>
   `, { popupClass: 'popup-wide' })
@@ -3425,9 +3426,10 @@ function openBugManageMenu(r) {
   })
   o.querySelector('[data-action="resolve"]').addEventListener('click', async () => {
     close()
-    const { error } = await supabase.rpc('resolve_bug_report', { report_id: r.id })
-    if (error) { toast('Could not resolve — try again'); return }
-    toast('Marked resolved ☑️')
+    const rpc = resolved ? 'unresolve_bug_report' : 'resolve_bug_report'
+    const { error } = await supabase.rpc(rpc, { report_id: r.id })
+    if (error) { toast('Could not update — try again'); return }
+    toast(resolved ? 'Moved back to open' : 'Marked resolved ☑️')
     loadBugReports()
   })
   o.querySelector('[data-action="dismiss"]').addEventListener('click', () => { close(); confirmDismissBugReport(r) })
