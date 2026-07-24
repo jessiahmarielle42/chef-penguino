@@ -1803,12 +1803,21 @@ img.shop-image {
   color: #3a2708; box-shadow: 0 0.125rem 0 #b56e00;
 }
 /* 4-tab variant (Bug Reports: Open / In Progress / Resolved / Dismissed).
-   Tighter columns + smaller type so longer labels stay on one line. */
+   Equal columns whatever the labels are; counts ride along as badges so a
+   growing number can never widen one tab against the others. */
 .cal-seg-4 { grid-template-columns: repeat(4, 1fr); }
 .cal-seg-4 button {
   font-size:0.6875rem; letter-spacing:0; padding:0.5625rem 0.125rem;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center; justify-content: center; gap:0.25rem;
 }
+.seg-badge {
+  flex: none; min-width:1.0625rem; padding:0 0.25rem; border-radius:62.4375rem;
+  font-size:0.625rem; font-weight:900; line-height:1.0625rem;
+  background: rgba(247,237,223,0.14); color: var(--cream);
+  font-variant-numeric: tabular-nums;
+}
+.cal-seg button.on .seg-badge { background: rgba(58,39,8,0.85); color: var(--gold); }
 
 .cal-navbar { display: flex; align-items: center; gap:0.5rem; padding:0.75rem 0 0.125rem; }
 .cal-chev {

@@ -751,11 +751,17 @@ function tabBarHtml(active) {
 }
 
 let mountedScreenKey = null
+// Where the user was on each screen, keyed by screen. Re-rendering the same
+// screen kept its position already; remembering it per-screen means going
+// *back* to a list (Bug Reports -> a report -> back) also lands where you
+// left off instead of snapping to the top.
+const scrollMemory = new Map()
 
 function mountScreen(active, contentHtml, after, opts = {}) {
   const key = opts.key || active
   const prevScroll = app.querySelector('.scroll')
-  const carryTop = (prevScroll && key === mountedScreenKey) ? prevScroll.scrollTop : 0
+  if (prevScroll && mountedScreenKey) scrollMemory.set(mountedScreenKey, prevScroll.scrollTop)
+  const carryTop = scrollMemory.get(key) || 0
   app.innerHTML = `
     <div class="app">
       ${opts.hideStatusBar ? '' : statusBarHtml()}
@@ -3317,8 +3323,8 @@ async function renderBugReports() {
     <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
     <div class="section-h" style="margin-top:2px"><h2>Bug Reports</h2></div>
     <div class="cal-seg cal-seg-4" style="margin-bottom:0.5rem">
-      <button type="button" class="${bugTab === 'open' ? 'on' : ''}" data-bugtab="open">Open</button>
-      <button type="button" class="${bugTab === 'in_progress' ? 'on' : ''}" data-bugtab="in_progress">In Progress</button>
+      <button type="button" class="${bugTab === 'open' ? 'on' : ''}" data-bugtab="open">Open<span class="seg-badge" id="bugtab-open-n" hidden></span></button>
+      <button type="button" class="${bugTab === 'in_progress' ? 'on' : ''}" data-bugtab="in_progress">In Progress<span class="seg-badge" id="bugtab-prog-n" hidden></span></button>
       <button type="button" class="${bugTab === 'resolved' ? 'on' : ''}" data-bugtab="resolved">Resolved</button>
       <button type="button" class="${bugTab === 'dismissed' ? 'on' : ''}" data-bugtab="dismissed">Dismissed</button>
     </div>
@@ -3386,10 +3392,16 @@ async function loadBugReports() {
   // Surface the counts that need action: untriaged Open, and In Progress.
   const openCount = (data || []).filter(r => tabOf(r) === 'open').length
   const progressCount = (data || []).filter(r => tabOf(r) === 'in_progress').length
-  const openTabBtn = app.querySelector('[data-bugtab="open"]')
-  if (openTabBtn) openTabBtn.textContent = openCount ? `Open (${openCount})` : 'Open'
-  const progressTabBtn = app.querySelector('[data-bugtab="in_progress"]')
-  if (progressTabBtn) progressTabBtn.textContent = progressCount ? `In Progress (${progressCount})` : 'In Progress'
+  // Counts render as badges beside the label (not "(3)" in the text), so the
+  // four tabs keep identical widths whatever the numbers are.
+  const setSegBadge = (id, n) => {
+    const el = app.querySelector('#' + id)
+    if (!el) return
+    el.textContent = n
+    el.hidden = !n
+  }
+  setSegBadge('bugtab-open-n', openCount)
+  setSegBadge('bugtab-prog-n', progressCount)
   const shown = (data || []).filter(r => tabOf(r) === bugTab)
   if (!shown.length) {
     const empty = { open: 'No open reports 🎉', in_progress: 'Nothing in progress — send a report to Claude to start fixing it.', resolved: 'No resolved reports yet.', dismissed: 'No dismissed reports.' }[bugTab]
@@ -3411,20 +3423,32 @@ async function loadBugReports() {
 function openBugManageMenu(r) {
   const sent = !!r.sent_to_claude_at
   const resolved = r.status === 'resolved'
+  const dismissed = r.status === 'dismissed'
+  // A dismissed report used to be a dead end - the only action offered was
+  // "Dismiss" again. Every terminal state now has a way back out.
   const o = overlay(`
     <button class="popup-close" data-action="close" aria-label="Close">✕</button>
     <h3>Manage report</h3>
     <div class="home-btn-col" style="margin-top:0.5rem">
-      <button type="button" data-action="respond">${r.status === 'replied' ? 'Reply again' : 'Respond'}</button>
-      <button type="button" class="btn-secondary" data-action="claude">${sent ? '↩︎ Unsend from Claude' : '🤖 Send to Claude'}</button>
-      <button type="button" class="btn-secondary" data-action="resolve">${resolved ? '↩︎ Move to unresolved' : '☑️ Mark Resolved'}</button>
-      <button type="button" class="btn-danger" data-action="dismiss">Dismiss</button>
+      ${dismissed ? '' : `<button type="button" data-action="respond">${r.status === 'replied' ? 'Reply again' : 'Respond'}</button>`}
+      ${dismissed ? '' : `<button type="button" class="btn-secondary" data-action="claude">${sent ? '↩︎ Unsend from Claude' : '🤖 Send to Claude'}</button>`}
+      ${dismissed ? '' : `<button type="button" class="btn-secondary" data-action="resolve">${resolved ? '↩︎ Move to unresolved' : '☑️ Mark Resolved'}</button>`}
+      ${dismissed
+        ? '<button type="button" class="btn-secondary" data-action="undismiss">↩︎ Restore to Open</button>'
+        : '<button type="button" class="btn-danger" data-action="dismiss">Dismiss</button>'}
     </div>
   `, { popupClass: 'popup-wide' })
   const close = () => o.remove()
   o.querySelector('[data-action="close"]').addEventListener('click', close)
-  o.querySelector('[data-action="respond"]').addEventListener('click', () => { close(); openBugReplyPopup(r) })
-  o.querySelector('[data-action="claude"]').addEventListener('click', async () => {
+  o.querySelector('[data-action="undismiss"]')?.addEventListener('click', async () => {
+    close()
+    const { error } = await supabase.rpc('undismiss_bug_report', { report_id: r.id })
+    if (error) { toast('Could not restore — try again'); return }
+    toast('Restored to Open')
+    loadBugReports()
+  })
+  o.querySelector('[data-action="respond"]')?.addEventListener('click', () => { close(); openBugReplyPopup(r) })
+  o.querySelector('[data-action="claude"]')?.addEventListener('click', async () => {
     close()
     const rpc = sent ? 'unflag_bug_report_for_claude' : 'flag_bug_report_for_claude'
     const { error } = await supabase.rpc(rpc, { report_id: r.id })
@@ -3432,7 +3456,7 @@ function openBugManageMenu(r) {
     toast(sent ? 'Unsent from Claude' : 'Sent to Claude 🤖')
     loadBugReports()
   })
-  o.querySelector('[data-action="resolve"]').addEventListener('click', async () => {
+  o.querySelector('[data-action="resolve"]')?.addEventListener('click', async () => {
     close()
     const rpc = resolved ? 'unresolve_bug_report' : 'resolve_bug_report'
     const { error } = await supabase.rpc(rpc, { report_id: r.id })
@@ -3440,7 +3464,7 @@ function openBugManageMenu(r) {
     toast(resolved ? 'Moved back to open' : 'Marked resolved ☑️')
     loadBugReports()
   })
-  o.querySelector('[data-action="dismiss"]').addEventListener('click', () => { close(); confirmDismissBugReport(r) })
+  o.querySelector('[data-action="dismiss"]')?.addEventListener('click', () => { close(); confirmDismissBugReport(r) })
 }
 
 // In-app screenshot viewer — an overlay so tapping a report's shot never
