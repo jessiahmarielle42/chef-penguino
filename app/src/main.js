@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.1.2.3'
+const APP_VERSION = 'v2.1.2.4'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -488,6 +488,7 @@ if (import.meta.env.VITE_REVIEW) {
       startTypedTimer: () => startSession(30, 'Essay writing', 'deep'),
       openEditRecord: () => { renderHome(); logEntriesById.set('demo', { entry: { id: 'demo', task: 'Admin Edit (+1)', minutes: 60, pizzas: 1 }, icon: '🛠️' }); openEditLogPopup('demo') },
       openBugManage: () => { renderBugReports(); openBugManageMenu({ id: 'demo', status: 'open', sent_to_claude_at: null, reporter: { display_name: 'Jordan' }, description: 'test' }) },
+      bugDismissedTab: () => { bugTab = 'dismissed'; renderBugReports() },
       ensureBugFab,
     },
   }))
@@ -911,13 +912,26 @@ function toast(msg) {
 // =================================================================
 //  Home dashboard
 // =================================================================
-function renderHome() {
+async function renderHome() {
   afterLogChange = renderHome
   const lifetime = displayPizzas()
   const stash = stashCount()
   const toNext = 12 - stash
   const pct = Math.round((stash / 12) * 100)
   const heroSrc = pizzaImagePath(stash)
+
+  // Fetch + build the session log BEFORE mounting, so the screen renders with
+  // its real content already in place. Mounting a "Loading…" placeholder first
+  // and injecting rows async is what made a re-render (e.g. after editing a
+  // session) briefly flash to the top before the saved scroll position could
+  // be restored. Building it up front lets mountScreen restore scroll in one shot.
+  const log = await fetchLog(currentUser?.id)
+  const recent = log.slice(0, 6)
+  const groups = groupLogByDate(recent)
+  logEntriesById.clear()
+  const logHtml = groups.length
+    ? groups.map(g => renderDateGroup(g, true)).join('')
+    : '<p class="log-empty">No sessions yet. Start cooking!</p>'
 
   const content = `
     <div class="hero-card" id="hero-card" role="button" tabindex="0">
@@ -947,7 +961,7 @@ function renderHome() {
 
     <div class="section-h" style="margin-top:2.75rem"><h2 class="section-h-lg">Recent sessions</h2></div>
     <p class="swipe-line" style="margin:0.25rem 0 1rem">Swipe left on a session to edit</p>
-    <div class="log-list" id="home-log"><p class="log-empty">Loading&hellip;</p></div>
+    <div class="log-list" id="home-log">${logHtml}</div>
     <button class="cal-seeall-btn" type="button" data-action="see-all-sessions">📅&nbsp; See All Sessions</button>
   `
 
@@ -970,7 +984,8 @@ function renderHome() {
     attachEmoteTap(app.querySelector('#hero-card'))
     warmEmote(equippedEmote())
 
-    loadHomeLog()
+    // Log content is already in the DOM (built above) — just wire the swipes.
+    wireLogSwipe(app.querySelector('#home-log'))
     maybeShowCoinMilestone()
   })
 }
@@ -3403,14 +3418,15 @@ async function loadBugReports() {
 function openBugManageMenu(r) {
   const sent = !!r.sent_to_claude_at
   const resolved = r.status === 'resolved'
+  const dismissed = r.status === 'dismissed'
   const o = overlay(`
     <button class="popup-close" data-action="close" aria-label="Close">✕</button>
     <h3>Manage report</h3>
     <div class="home-btn-col" style="margin-top:0.5rem">
       <button type="button" data-action="respond">${r.status === 'replied' ? 'Reply again' : 'Respond'}</button>
       <button type="button" class="btn-secondary" data-action="claude">${sent ? '↩︎ Unsend from Claude' : '🤖 Send to Claude'}</button>
-      <button type="button" class="btn-secondary" data-action="resolve">${resolved ? '↩︎ Move to unresolved' : '☑️ Mark Resolved'}</button>
-      <button type="button" class="btn-danger" data-action="dismiss">Dismiss</button>
+      <button type="button" class="${resolved ? 'btn-secondary' : 'btn-success'}" data-action="resolve">${resolved ? '↩︎ Move to unresolved' : '☑️ Mark Resolved'}</button>
+      <button type="button" class="${dismissed ? 'btn-secondary' : 'btn-danger'}" data-action="dismiss">${dismissed ? '↩︎ Mark as Open' : '🚫 Dismiss'}</button>
     </div>
   `, { popupClass: 'popup-wide' })
   const close = () => o.remove()
@@ -3432,7 +3448,18 @@ function openBugManageMenu(r) {
     toast(resolved ? 'Moved back to open' : 'Marked resolved ☑️')
     loadBugReports()
   })
-  o.querySelector('[data-action="dismiss"]').addEventListener('click', () => { close(); confirmDismissBugReport(r) })
+  o.querySelector('[data-action="dismiss"]').addEventListener('click', async () => {
+    if (dismissed) {
+      close()
+      const { error } = await supabase.rpc('unresolve_bug_report', { report_id: r.id })
+      if (error) { toast('Could not update — try again'); return }
+      toast('Moved back to open')
+      loadBugReports()
+    } else {
+      close()
+      confirmDismissBugReport(r)
+    }
+  })
 }
 
 // In-app screenshot viewer — an overlay so tapping a report's shot never

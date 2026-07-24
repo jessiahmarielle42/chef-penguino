@@ -729,6 +729,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .popup .home-btn-col { display: flex; flex-direction: column; gap:0.625rem; max-width: none; margin: 0; }
 .popup button.btn-secondary { background: var(--card-2); color: var(--cream); box-shadow: none; }
 .popup button.btn-danger { background: linear-gradient(180deg, #E4571C, var(--ember)); color: #fff; }
+.popup button.btn-success { background: linear-gradient(180deg, #6FD3A0, var(--owned)); color: #0d2c1c; }
 .rename-input {
   width: 100%; box-sizing: border-box; background: var(--card-2); border: 1px solid var(--line); color: var(--cream);
   border-radius:0.8125rem; padding:0.75rem 0.875rem; font-size:0.9375rem; font-family: var(--font-body); margin-bottom:1rem;
@@ -2323,7 +2324,12 @@ img.shop-image {
 .bug-adm-card {
   background: var(--card); border: 1px solid var(--line); border-radius: 1rem; padding: 0.9375rem 1rem;
 }
-.bug-adm-card.bug-adm-dismissed { opacity: 0.55; }
+/* Closed (resolved/dismissed) cards are visually de-emphasised — but only the
+   text, NOT the Manage button (which is fully functional and shouldn't look
+   disabled). */
+.bug-adm-card.bug-adm-dismissed .bug-adm-desc,
+.bug-adm-card.bug-adm-dismissed .bug-adm-meta,
+.bug-adm-card.bug-adm-dismissed .bug-adm-shot { opacity: 0.5; }
 /* Compact task-type picker inside the Edit Record popup */
 .tt-type-list-compact { gap: 0.4375rem; margin-bottom: 0.25rem; }
 .tt-type-list-compact .tt-type-row { padding: 0.5625rem 0.75rem; }
