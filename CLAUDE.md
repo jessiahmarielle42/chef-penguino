@@ -88,3 +88,37 @@ changes added to the app.
    migration in Supabase.
 4. Only merge `--no-ff` into `main` and push `main` when the user says
    "push" — that's what goes live via Vercel.
+
+## "Send to Claude" bug-report triage workflow
+The in-app admin Bug Reports page (Admin Dashboard → Support → Bug Reports)
+has a per-report **Manage → Send to Claude** action. It flags a report for
+Claude to read and plan a fix. The plumbing:
+- `bug_reports.sent_to_claude_at` marks flagged reports; RPCs
+  `flag_bug_report_for_claude` / `unflag_bug_report_for_claude` (admin-gated)
+  toggle it. See `supabase/migration_bug_claude.sql`.
+- Claude reads the flagged queue with the secret-gated RPC `claude_bug_queue`
+  (only returns reports where `sent_to_claude_at is not null`). Fetch it with:
+  ```
+  curl -s -X POST 'https://jnhshtrfaxpzhonkokwa.supabase.co/rest/v1/rpc/claude_bug_queue' \
+    -H 'apikey: <publishable key from app/src/supabaseClient.js>' \
+    -H 'Authorization: Bearer <same key>' -H 'Content-Type: application/json' \
+    -d '{"token":"a7f3c9e1-4b2d-4e8a-9c6f-1d2e3f4a5b6c"}'
+  ```
+  Each row has `id`, `description`, `screenshot_url`, `reporter_name`, status.
+
+**Triage rules (how to handle flagged reports):**
+1. When the user says **"check reports"**, fetch the queue immediately.
+2. For each report: download the `screenshot_url`, read the screenshot +
+   description, and post a **concise fix PLAN + clarifying questions**.
+   **PLAN ONLY — do NOT write, edit, or deploy code during triage.** Wait for
+   the user to answer questions and say "build" / "push" before implementing.
+3. Track which report ids you've already triaged; only surface NEW ones.
+4. An **hourly Routine** can run this check unattended (fetch queue → plan any
+   newly-flagged report → stay silent if nothing new). Set it up with a
+   self-binding cron trigger firing into the session when the user wants it.
+5. Reports move Open → Resolved (Mark Resolved) / Dismissed via the Manage
+   menu; `resolve_bug_report` / `dismiss_bug_report` RPCs back those.
+
+Note: the queue `token` above is a shared secret living only in this private
+repo (never in the shipped client bundle) — it gates the otherwise
+anon-callable read RPC.
