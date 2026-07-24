@@ -491,6 +491,14 @@ if (import.meta.env.VITE_REVIEW) {
       openEditRecord: () => { renderHome(); logEntriesById.set('demo', { entry: { id: 'demo', task: 'Admin Edit (+1)', minutes: 60, pizzas: 1 }, icon: '🛠️' }); openEditLogPopup('demo') },
       openBugManage: () => { renderBugReports(); openBugManageMenu({ id: 'demo', status: 'open', sent_to_claude_at: null, reporter: { display_name: 'Jordan' }, description: 'test' }) },
       ensureBugFab,
+      // Chefs redesign: renderFriends() above only ever shows the default
+      // Friends tab, so these give the review harness a way to reach the
+      // other tabs/screens for screenshotting.
+      renderChefsGroups: () => { chefsTab = 'groups'; renderChefsScreen() },
+      renderChefsRequests: () => { chefsTab = 'requests'; renderChefsScreen() },
+      renderChefsGroupDetail: () => { chefsTab = 'groups'; openChefsGroup('g1') },
+      renderChefsGroupSettings: () => { chefsTab = 'groups'; openChefsGroupSettings('g1') },
+      renderChefsCreateGroup: async () => { chefsTab = 'groups'; renderChefsScreen(); await openCreateGroupPopup() },
     },
   }))
 } else {
@@ -723,7 +731,9 @@ function statusBarHtml() {
 const TABS = [
   { id: 'home', label: 'Home', icon: '🏠' },
   { id: 'shop', label: 'Shop', icon: '🛍️' },
-  { id: 'friends', label: 'Friends', icon: '🐧' },
+  // id stays 'friends' (wireTabBar/mountScreen/etc. all key off it) - only the
+  // label/icon changed for the Friends/Groups/Requests "Chefs" redesign.
+  { id: 'friends', label: 'Chefs', icon: '🧑‍🍳' },
   { id: 'settings', label: 'Settings', icon: '⚙️' },
 ]
 
@@ -1803,40 +1813,110 @@ async function renderFriends() {
     })
     return
   }
+  renderChefsScreen()
+}
 
+// =================================================================
+//  Chefs: Friends / Groups / Requests (renderFriends() above is the entry
+//  point from the bottom tab bar and the sign-in gate; everything below
+//  builds the three-tab screen it hands off to once signed in). Ported from
+//  the approved mockup at app/review/chefs-page-mockup.html, retokenised
+//  onto this app's own --card/--fire/--gold/etc. variables and rem units.
+//
+//  chefsTab is module state rather than screen-local so re-entering the
+//  Chefs tab (e.g. after backing out of a friend's Pizzeria) lands back on
+//  whichever of Friends/Groups/Requests the chef was last looking at.
+// =================================================================
+let chefsTab = 'friends' // 'friends' | 'groups' | 'requests'
+
+function renderChefsScreen() {
   const content = `
-    <div class="friend-swipe-hint" style="margin-top:6px">
-      <span class="info-badge" aria-hidden="true">i</span>
-      <p>Tap a friend to view their Pizzeria. Tap the 3 dots to view more friend actions.</p>
-    </div>
-    <div class="section-h" style="margin-top:1.75rem"><h2>Weekly Scoreboard</h2><span class="meta">Resets&nbsp;${nextMondayLabel()}</span></div>
-    <div id="friends-list"><p class="log-empty">Loading&hellip;</p></div>
-    <div class="section-h" style="margin-top:2.75rem"><h2>Add a friend</h2></div>
-    <div class="addfriend"><input id="friend-code-input" placeholder="Friend's code" maxlength="6" /><button type="button" data-action="add">Add</button></div>
-    <p class="friends-error" id="friends-error" hidden></p>
-    <p class="code-note">Your code: <b id="friend-code-val">${currentProfile?.friend_code || '…'}</b> <button class="copy-btn" type="button" data-action="copy" aria-label="Copy friend code">${COPY_SVG}</button> — share it to compare pizzas.</p>
+    ${chefsSegHtml(chefsTab)}
+    <div class="chefs-pill-bar" id="chefs-pill-bar" hidden></div>
+    <div id="chefs-body"><p class="log-empty">Loading&hellip;</p></div>
   `
-
   mountScreen('friends', content, () => {
-    const errorEl = app.querySelector('#friends-error')
-    app.querySelector('[data-action="add"]').addEventListener('click', async () => {
-      const input = app.querySelector('#friend-code-input')
-      const code = input.value.trim()
-      if (!code) return
-      errorEl.hidden = true
-      const { error } = await supabase.rpc('add_friend_by_code', { code })
-      if (error) { errorEl.textContent = error.message; errorEl.hidden = false; return }
-      input.value = ''
-      toast('Friend added!')
-      loadFriendsList()
+    wireChefsSeg()
+    refreshChefsPendingBadge()
+    loadChefsTabBody()
+  }, { key: 'chefs-' + chefsTab })
+}
+
+function chefsSegHtml(tab) {
+  const seg = (id, label) => `<button type="button" class="${tab === id ? 'on' : ''}" data-chefs-tab="${id}">${label}${id === 'requests' ? '<span class="seg-badge" id="chefs-req-badge" hidden>0</span>' : ''}</button>`
+  return `<div class="cal-seg" id="chefs-seg">${seg('friends', 'Friends')}${seg('groups', 'Groups')}${seg('requests', 'Requests')}</div>`
+}
+
+function wireChefsSeg() {
+  app.querySelectorAll('#chefs-seg [data-chefs-tab]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tab = btn.dataset.chefsTab
+      if (tab === chefsTab) return
+      chefsTab = tab
+      renderChefsScreen()
     })
-    app.querySelector('[data-action="copy"]').addEventListener('click', () => {
-      const code = app.querySelector('#friend-code-val').textContent.trim()
-      if (navigator.clipboard) navigator.clipboard.writeText(code).then(() => toast('Code copied!')).catch(() => toast('Code copied!'))
-      else toast('Code copied!')
-    })
-    loadFriendsList()
   })
+}
+
+function loadChefsTabBody() {
+  if (chefsTab === 'friends') return loadChefsFriendsTab()
+  if (chefsTab === 'groups') return loadChefsGroupsTab()
+  return loadChefsRequestsTab()
+}
+
+// Friend requests + group invites fetched together so the Requests badge and
+// the Requests tab body never issue two separate round-trips for the same
+// numbers. Both RPCs only exist once migration_friend_requests.sql /
+// migration_groups.sql have been run in Supabase - until then they 404 and
+// that's treated as "nothing pending" rather than surfacing a raw Postgres
+// error anywhere in the UI.
+async function fetchChefsPending() {
+  const [freq, ginv] = await Promise.all([
+    supabase.rpc('incoming_friend_requests'),
+    supabase.rpc('my_group_invites'),
+  ])
+  return {
+    friendRequests: freq.error ? [] : (freq.data || []),
+    groupInvites: ginv.error ? [] : (ginv.data || []),
+  }
+}
+
+async function refreshChefsPendingBadge() {
+  const { friendRequests, groupInvites } = await fetchChefsPending()
+  const n = friendRequests.length + groupInvites.length
+  const badge = app.querySelector('#chefs-req-badge')
+  if (badge) { badge.textContent = String(n); badge.hidden = n === 0 }
+}
+
+// Compact relative-time label for request rows ("2h ago", "3d ago").
+function chefsTimeAgo(iso) {
+  const ms = Date.now() - new Date(iso).getTime()
+  const min = Math.floor(ms / 60000)
+  if (min < 1) return 'just now'
+  if (min < 60) return `${min}m ago`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  return `${Math.floor(hr / 24)}d ago`
+}
+
+// The "N baking" pill below the seg row. count===0 renders the muted/off
+// variant (spec requirement) instead of just looking identical-but-wrong.
+function chefsPillHtml(count) {
+  return `<div class="adm-live-dot chefs-pill ${count === 0 ? 'off' : ''}"><i></i><span>${count} baking</span></div>`
+}
+function showChefsPill(count) {
+  const bar = app.querySelector('#chefs-pill-bar')
+  if (!bar) return
+  bar.hidden = false
+  bar.innerHTML = chefsPillHtml(count)
+}
+// Groups LIST hides the pill entirely (ambiguous across several groups -
+// which one would it even count?); Requests has no baking scope either.
+function hideChefsPill() {
+  const bar = app.querySelector('#chefs-pill-bar')
+  if (!bar) return
+  bar.hidden = true
+  bar.innerHTML = ''
 }
 
 // Start of the current week (Monday 00:00, in the viewer's local time). The
@@ -1851,21 +1931,72 @@ function startOfThisWeek() {
   return d
 }
 
+// ---------------- Friends tab ----------------
+async function loadChefsFriendsTab() {
+  const body = app.querySelector('#chefs-body')
+  if (!body) return
+  body.innerHTML = `
+    <input class="chefs-search" id="chefs-search" placeholder="Search chefs to add" autocomplete="off">
+    <div id="chefs-friends-list"><p class="log-empty">Loading&hellip;</p></div>
+    <div class="section-h" style="margin-top:2.75rem"><h2>Add by code</h2></div>
+    <div class="addfriend"><input id="friend-code-input" placeholder="Friend's code" maxlength="6" /><button type="button" data-action="add">Add</button></div>
+    <p class="friends-error" id="friends-error" hidden></p>
+    <p class="code-note">They'll get a request to approve — it shows up in their <b>Requests</b> tab.</p>
+    <p class="code-note">Your code: <b id="friend-code-val">${escapeHtml(currentProfile?.friend_code || '…')}</b> <button class="copy-btn" type="button" data-action="copy" aria-label="Copy friend code">${COPY_SVG}</button></p>
+  `
+  const errorEl = body.querySelector('#friends-error')
+  body.querySelector('[data-action="add"]').addEventListener('click', async () => {
+    const input = body.querySelector('#friend-code-input')
+    const code = input.value.trim()
+    if (!code) return
+    errorEl.hidden = true
+    const { error } = await supabase.rpc('add_friend_by_code', { code })
+    if (error) { errorEl.textContent = error.message; errorEl.hidden = false; return }
+    input.value = ''
+    toast('Request sent — they approve it from their Requests tab.')
+    loadFriendsList()
+    refreshChefsPendingBadge()
+  })
+  body.querySelector('[data-action="copy"]').addEventListener('click', () => {
+    const code = body.querySelector('#friend-code-val').textContent.trim()
+    if (navigator.clipboard) navigator.clipboard.writeText(code).then(() => toast('Code copied!')).catch(() => toast('Code copied!'))
+    else toast('Code copied!')
+  })
+  let searchTimer
+  body.querySelector('#chefs-search').addEventListener('input', (e) => {
+    clearTimeout(searchTimer)
+    const q = e.target.value.trim()
+    searchTimer = setTimeout(() => (q ? runChefsSearch(q) : loadFriendsList()), 250)
+  })
+  loadFriendsList()
+}
+
+// Empty-search state: the weekly scoreboard. Function name kept from before
+// the Chefs redesign since block/remove/add-by-code below all refresh it by
+// calling it directly.
 async function loadFriendsList() {
-  const listEl = app.querySelector('#friends-list')
+  const listEl = app.querySelector('#chefs-friends-list')
   if (!listEl) return
 
   const weekStartISO = startOfThisWeek().toISOString()
-  const [{ data: friendRows }, { data: pendingRows }, { data: weekSessions }] = await Promise.all([
-    supabase.from('friends').select('friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote)'),
+  const [friendRows, { data: pendingRows }, { data: weekSessions }] = await Promise.all([
+    fetchAcceptedFriends(),
     supabase.from('noots').select('recipient_id').eq('sender_id', currentUser.id).is('acknowledged_at', null),
     // RLS ("sessions are visible to self and friends") scopes this to me + my
     // friends automatically, so one query gives every board member's week.
     supabase.from('sessions').select('user_id, pizzas').gte('completed_at', weekStartISO),
   ])
 
-  const friends = (friendRows || []).map(r => r.profiles).filter(Boolean)
+  const friends = friendRows.map(r => r.profiles).filter(Boolean)
   const pendingNootTargets = new Set((pendingRows || []).map(r => r.recipient_id))
+
+  // TODO: there's no "session currently in progress" table (sessions rows are
+  // only written on completion - see finalizeSession()), so "baking now" can't
+  // actually be computed yet. Same honest stand-in as the admin dashboard's
+  // baking pill (loadAdminDashboardStats): report 0 rather than a made-up
+  // number until presence/live-session tracking exists to swap this for real.
+  showChefsPill(0)
+
   if (!friends.length) {
     listEl.innerHTML = `<div class="frow lonely-card">It's lonely here. Add friends to start climbing the ladder!</div>`
     return
@@ -1878,25 +2009,12 @@ async function loadFriendsList() {
   const weeklyById = {}
   ;(weekSessions || []).forEach(s => { weeklyById[s.user_id] = (weeklyById[s.user_id] || 0) + (Number(s.pizzas) || 0) })
 
-  const me = { id: currentUser.id, display_name: myName(), pizzas: displayPizzas(), avatar_url: myAvatar(), friend_code: currentProfile?.friend_code, isMe: true }
-  const board = [...friends, me]
+  const me = { id: currentUser.id, display_name: myName(), pizzas: displayPizzas(), avatar_url: myAvatar(), isMe: true, baking: false }
+  const board = [...friends.map(f => ({ ...f, baking: false })), me]
   board.forEach(f => { f.weekly = weeklyById[f.id] || 0 })
   board.sort((a, b) => b.weekly - a.weekly)
 
-  const medals = ['🥇', '🥈', '🥉']
-  listEl.innerHTML = board.map((f, i) => {
-    const rank = i < 3 ? `<div class="medal">${medals[i]}</div>` : `<div class="rank">${i + 1}</div>`
-    const name = f.isMe ? `${escapeHtml(f.display_name)} <span class="you-tag">(you)</span>` : escapeHtml(chefName(f.display_name))
-    return `
-      <div class="frow ${f.isMe ? 'me' : ''}" ${f.isMe ? 'role="button" tabindex="0"' : `data-friend="${f.id}" role="button" tabindex="0"`}>
-        ${rank}
-        <img src="${f.avatar_url || DEFAULT_AVATAR}" alt="" />
-        <div><div class="fn">${name}</div><div class="fp">Code ${escapeHtml(f.friend_code || '')}</div></div>
-        <div class="score">🍕 ${formatScore(Number(f.weekly) || 0)}</div>
-        <button type="button" class="frow-more" data-more="${f.id}" aria-label="More actions">⋮</button>
-      </div>
-    `
-  }).join('')
+  listEl.innerHTML = board.map((f, i) => chefsFriendRowHtml(f, i)).join('')
 
   const friendsById = Object.fromEntries(friends.map(f => [f.id, f]))
   // Tap the row = visit Pizzeria; tap the 3 dots = the full action menu.
@@ -1907,6 +2025,600 @@ async function loadFriendsList() {
   // Your own row opens your profile popup instead (same as tapping your avatar/name up top).
   const meRow = listEl.querySelector('.frow.me')
   meRow?.addEventListener('click', openProfilePopup)
+}
+
+// Tries the post-migration_friend_requests.sql shape first (only accepted
+// friendships belong on the scoreboard, not pending ones); falls back to the
+// unfiltered pre-migration query - which only ever contained accepted rows
+// anyway - so the board still loads if that migration hasn't been run yet.
+async function fetchAcceptedFriends() {
+  const sel = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote)'
+  let { data, error } = await supabase.from('friends').select(sel).eq('status', 'accepted')
+  if (error) ({ data } = await supabase.from('friends').select(sel))
+  return data || []
+}
+
+function chefsFriendRowHtml(f, i) {
+  const rank = i < 3 ? `<div class="medal">${['🥇', '🥈', '🥉'][i]}</div>` : `<div class="rank">${i + 1}</div>`
+  const name = f.isMe ? `${escapeHtml(f.display_name)} <span class="you-tag">(you)</span>` : escapeHtml(chefName(f.display_name))
+  // A dot, not a chip, next to the name - a chip would change row height for
+  // every row whenever one friend happens to be baking.
+  const liveDot = f.baking ? '<span class="chefs-live-dot" title="Baking now"></span>' : ''
+  return `
+    <div class="frow ${f.isMe ? 'me' : ''}" ${f.isMe ? 'role="button" tabindex="0"' : `data-friend="${f.id}" role="button" tabindex="0"`}>
+      ${rank}
+      <img src="${f.avatar_url || DEFAULT_AVATAR}" alt="" />
+      <div><div class="chefs-fn-row">${liveDot}<span class="fn">${name}</span></div></div>
+      <div class="score">🍕 ${formatScore(Number(f.weekly) || 0)}</div>
+      ${f.isMe ? '<span class="chefs-more-spacer" aria-hidden="true"></span>' : `<button type="button" class="frow-more" data-more="${f.id}" aria-label="More actions">⋮</button>`}
+    </div>`
+}
+
+// Guards against an in-flight search response landing after a newer
+// keystroke's - without this, typing quickly can flash a stale result set.
+let chefsSearchAbort = 0
+async function runChefsSearch(q) {
+  const listEl = app.querySelector('#chefs-friends-list')
+  if (!listEl) return
+  hideChefsPill() // search results aren't a baking-count scope
+  const myCall = ++chefsSearchAbort
+  listEl.innerHTML = `<p class="log-empty">Searching&hellip;</p>`
+  const { data, error } = await supabase.rpc('search_chefs', { q, lim: 30 })
+  if (myCall !== chefsSearchAbort) return
+  if (error) { listEl.innerHTML = `<p class="chefs-empty-hint">Chef search isn't available yet.</p>`; return }
+  const hits = (data || []).filter(c => c.relationship !== 'self')
+  if (!hits.length) { listEl.innerHTML = `<p class="chefs-empty-hint">No chefs match "${escapeHtml(q)}"</p>`; return }
+  listEl.innerHTML = `<div class="chefs-label">Chefs matching "${escapeHtml(q)}"</div>` + hits.map(chefsSearchRowHtml).join('')
+  listEl.querySelectorAll('[data-send]').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation()
+    btn.disabled = true
+    const { error: sendErr } = await supabase.rpc('send_friend_request', { target_id: btn.dataset.send })
+    if (sendErr) { btn.disabled = false; toast("Friend requests aren't available yet.") ; return }
+    toast('Friend request sent!')
+    refreshChefsPendingBadge()
+    runChefsSearch(q)
+  }))
+}
+
+// Search results deliberately show no friend code (search_chefs() doesn't
+// return one either) - a stranger shouldn't be able to harvest codes.
+function chefsSearchRowHtml(c) {
+  const action = c.relationship === 'friend' ? '<span class="chefs-rel-tag friend">✓ Friend</span>'
+    : c.relationship === 'outgoing' ? '<span class="chefs-rel-tag pending">Pending</span>'
+    : c.relationship === 'incoming' ? '<span class="chefs-rel-tag pending">Wants to add you</span>'
+    : `<button type="button" class="chefs-add-btn" data-send="${c.id}" aria-label="Add ${escapeHtml(chefName(c.display_name))}">＋</button>`
+  return `
+    <div class="frow" style="cursor:default">
+      <img src="${c.avatar_url || DEFAULT_AVATAR}" alt="" />
+      <div><span class="fn">${escapeHtml(chefName(c.display_name))}</span></div>
+      <div class="score">🍕 ${formatScore(Number(c.weekly_pizzas) || 0)}</div>
+      ${action}
+    </div>`
+}
+
+// ---------------- Groups tab ----------------
+async function loadChefsGroupsTab() {
+  const body = app.querySelector('#chefs-body')
+  if (!body) return
+  hideChefsPill() // ambiguous across several groups - only shown once inside one
+  body.innerHTML = `
+    <input class="chefs-search" id="chefs-group-search" placeholder="Search or discover groups" autocomplete="off">
+    <div id="chefs-groups-list"><p class="log-empty">Loading&hellip;</p></div>
+  `
+  let searchTimer
+  body.querySelector('#chefs-group-search').addEventListener('input', (e) => {
+    clearTimeout(searchTimer)
+    const q = e.target.value.trim()
+    searchTimer = setTimeout(() => runChefsGroupSearch(q), 250)
+  })
+  runChefsGroupSearch('')
+}
+
+async function runChefsGroupSearch(q) {
+  const listEl = app.querySelector('#chefs-groups-list')
+  if (!listEl) return
+  const { data: mineData, error: mineErr } = await supabase.rpc('my_groups')
+  if (mineErr) {
+    listEl.innerHTML = `<p class="chefs-empty-hint">Groups aren't available yet.</p>` + chefsGroupActionsHtml(!q)
+    wireChefsGroupActions(listEl)
+    return
+  }
+  const mine = (mineData || []).filter(g => !q || g.name.toLowerCase().includes(q.toLowerCase()))
+  let found = []
+  if (q) {
+    const { data: discData } = await supabase.rpc('discover_groups', { q })
+    found = discData || []
+  }
+  let html = ''
+  if (mine.length) html += (q ? `<div class="chefs-label">Your groups</div>` : '') + mine.map(g => chefsGroupCardHtml(g, false)).join('')
+  else if (q) html += `<p class="chefs-empty-hint">None of your groups match "${escapeHtml(q)}"</p>`
+  if (q && found.length) html += `<div class="chefs-label">Discover</div>` + found.map(g => chefsGroupCardHtml(g, true)).join('')
+  if (!mine.length && !q) html += `<p class="chefs-empty-hint">You're not in any groups yet.</p>`
+  html += chefsGroupActionsHtml(!q)
+  listEl.innerHTML = html
+  listEl.querySelectorAll('.chefs-gcard[data-group]:not([data-joinable])').forEach(card => {
+    card.addEventListener('click', () => openChefsGroup(card.dataset.group))
+  })
+  listEl.querySelectorAll('[data-join]').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation()
+    btn.disabled = true
+    const { error } = await supabase.rpc('join_group', { group_id: btn.dataset.join })
+    if (error) { btn.disabled = false; toast(error.message || 'Could not join that group.'); return }
+    toast('Joined!')
+    openChefsGroup(btn.dataset.join)
+  }))
+  wireChefsGroupActions(listEl)
+}
+
+function wireChefsGroupActions(listEl) {
+  listEl.querySelector('[data-action="create-group"]')?.addEventListener('click', openCreateGroupPopup)
+  listEl.querySelector('[data-action="join-with-code"]')?.addEventListener('click', openJoinGroupByCodePopup)
+}
+
+function chefsGroupActionsHtml(show) {
+  if (!show) return ''
+  return `
+    <div class="chefs-group-actions">
+      <button type="button" class="chefs-grp-btn primary" data-action="create-group">＋ Create group</button>
+      <button type="button" class="chefs-grp-btn secondary" data-action="join-with-code">Join with code</button>
+    </div>`
+}
+
+function chefsGroupCardHtml(g, joinable) {
+  const id = g.group_id || g.id
+  const members = Number(g.member_count) || 0
+  return `
+    <div class="chefs-gcard" data-group="${id}" ${joinable ? 'data-joinable="1"' : ''}>
+      <div class="chefs-gcard-top">
+        <div class="chefs-gavatar">${escapeHtml(g.emoji || '🍕')}</div>
+        <div class="chefs-gcard-info">
+          <div class="chefs-gname">${escapeHtml(g.name)}</div>
+          <div class="chefs-gmeta">${chefsPrivacyChip(g.privacy)} · ${members} member${members === 1 ? '' : 's'}</div>
+        </div>
+        <div class="chefs-gscore"><div class="num">${formatScore(Number(g.weekly_pizzas) || 0)}</div><div class="unit">pizzas</div></div>
+      </div>
+      <div class="chefs-gbottom">
+        <div class="chefs-stack">${chefsAvatarStack(members)}</div>
+        ${joinable
+          ? `<button type="button" class="chefs-join-btn" data-join="${id}">Join</button>`
+          // TODO: same "no live-session tracking" caveat as the Friends tab -
+          // 0 is the honest floor, not a real per-group count (yet).
+          : `<div class="chefs-gbaking">🔥 0 baking</div>`}
+      </div>
+    </div>`
+}
+
+// Decorative only - my_groups()/discover_groups() don't return member
+// identities, so this just visualises "there are N members", not who they are.
+function chefsAvatarStack(memberCount) {
+  const n = Math.min(4, memberCount || 0)
+  return Array.from({ length: n }).map(() => `<div class="chefs-stack-avatar">🐧</div>`).join('')
+}
+
+const CHEFS_ICON_GLOBE = `<svg class="chefs-pic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.7 3.8 5.8 3.8 9S14.5 18.3 12 21c-2.5-2.7-3.8-5.8-3.8-9S9.5 5.7 12 3z"/></svg>`
+const CHEFS_ICON_LOCK = `<svg class="chefs-pic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="4.5" y="10" width="15" height="10.5" rx="2.2"/><path d="M8.2 10V7.2a3.8 3.8 0 0 1 7.6 0V10"/></svg>`
+// White outline icon + label, never emoji - a privacy emoji reads as
+// unreadable/muddy on some platforms' dark chip backgrounds.
+function chefsPrivacyChip(privacy) {
+  const pub = privacy === 'public'
+  return `<span class="chefs-priv-chip">${pub ? CHEFS_ICON_GLOBE : CHEFS_ICON_LOCK}${pub ? 'Public' : 'Private'}</span>`
+}
+
+// ---------------- Create group / Join by code popups ----------------
+let chefsCreateEmoji = null
+async function openCreateGroupPopup() {
+  await loadGroupIcons() // same curated set (+ fallback) as the admin picker
+  chefsCreateEmoji = groupIconsCache[0]?.emoji || '🍕'
+  let privacy = 'public'
+  const o = overlay(`
+    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
+    <h3>Create a group</h3>
+    <label class="chefs-flabel">Group icon</label>
+    <div class="chefs-emoji-picker" id="cg-emoji-picker">${chefsEmojiPickerHtml(chefsCreateEmoji)}</div>
+    <label class="chefs-flabel">Name</label>
+    <input class="rename-input" id="cg-name" maxlength="30" placeholder="e.g. Late Night Bakers">
+    <label class="chefs-flabel">Who can join</label>
+    <div class="chefs-setcard" id="cg-privacy">
+      ${chefsPrivacyOptHtml('public', true)}
+      ${chefsPrivacyOptHtml('private', false)}
+    </div>
+    <div class="home-btn-col" style="margin-top:1rem">
+      <button type="button" data-action="create">Create group</button>
+      <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
+  o.querySelectorAll('#cg-emoji-picker [data-emoji]').forEach(btn => btn.addEventListener('click', () => {
+    chefsCreateEmoji = btn.dataset.emoji
+    o.querySelectorAll('#cg-emoji-picker [data-emoji]').forEach(b => b.classList.toggle('on', b === btn))
+  }))
+  o.querySelectorAll('#cg-privacy [data-privacy-opt]').forEach(row => row.addEventListener('click', () => {
+    privacy = row.dataset.privacyOpt
+    o.querySelectorAll('#cg-privacy [data-privacy-opt]').forEach(r => {
+      const on = r.dataset.privacyOpt === privacy
+      r.classList.toggle('on', on)
+      r.querySelector('.chefs-radio').classList.toggle('on', on)
+    })
+  }))
+  o.querySelector('[data-action="create"]').addEventListener('click', async () => {
+    const name = o.querySelector('#cg-name').value.trim()
+    if (!name) { toast('Give your group a name first'); return }
+    const btn = o.querySelector('[data-action="create"]')
+    btn.disabled = true
+    const { data, error } = await supabase.rpc('create_group', { name, emoji: chefsCreateEmoji, privacy })
+    if (error) { btn.disabled = false; toast(error.message || 'Could not create group.'); return }
+    o.remove()
+    toast(`${name} created!`)
+    chefsTab = 'groups'
+    openChefsGroup(data)
+  })
+}
+
+// Scoped as `.chefs-emoji-picker .chefs-epick` in CSS (not just `.chefs-epick`)
+// so it outranks the generic `.popup button` gold-fill rule these buttons sit
+// inside here - same trick already used for `.popup .gbtn`/`.popup .abtn`.
+function chefsEmojiPickerHtml(selected) {
+  return groupIconsCache.map(g => `<button type="button" class="chefs-epick ${g.emoji === selected ? 'on' : ''}" data-emoji="${escapeHtml(g.emoji)}">${escapeHtml(g.emoji)}</button>`).join('')
+}
+
+function chefsPrivacyOptHtml(val, isOn) {
+  const icon = val === 'public' ? CHEFS_ICON_GLOBE : CHEFS_ICON_LOCK
+  const label = val === 'public' ? 'Public' : 'Private'
+  const sub = val === 'public' ? 'Anyone can find and join instantly' : 'Hidden from search — join by code or invite'
+  return `
+    <div class="chefs-opt ${isOn ? 'on' : ''}" data-privacy-opt="${val}">
+      <div class="chefs-opt-ic">${icon}</div>
+      <div class="chefs-opt-info"><div class="chefs-opt-t">${label}</div><div class="chefs-opt-s">${sub}</div></div>
+      <div class="chefs-radio ${isOn ? 'on' : ''}"></div>
+    </div>`
+}
+
+function openJoinGroupByCodePopup() {
+  const o = overlay(`
+    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
+    <h3>Join a group</h3>
+    <p>Enter the 6-character code a chef shared with you.</p>
+    <input class="rename-input" id="jg-code" maxlength="6" placeholder="Group code" style="text-transform:uppercase;letter-spacing:0.12em">
+    <div class="home-btn-col" style="margin-top:0.5rem">
+      <button type="button" data-action="join">Join group</button>
+      <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="join"]').addEventListener('click', async () => {
+    const code = o.querySelector('#jg-code').value.trim()
+    if (!code) { toast('Enter a code first'); return }
+    const btn = o.querySelector('[data-action="join"]')
+    btn.disabled = true
+    const { data, error } = await supabase.rpc('join_group_by_code', { code })
+    if (error) { btn.disabled = false; toast(error.message || 'No group found with that code.'); return }
+    o.remove()
+    toast('Joined!')
+    chefsTab = 'groups'
+    openChefsGroup(data)
+  })
+}
+
+// ---------------- Group detail ----------------
+function openChefsGroup(groupId) {
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-groups">‹ Groups</div>
+    <div class="chefs-pill-bar" id="chefs-pill-bar" hidden></div>
+    <div id="chefs-group-body"><p class="log-empty">Loading&hellip;</p></div>
+  `
+  mountScreen('friends', content, () => {
+    app.querySelector('[data-action="back-to-groups"]').addEventListener('click', () => { chefsTab = 'groups'; renderChefsScreen() })
+    loadChefsGroupDetail(groupId)
+  }, { key: 'chefs-group-' + groupId })
+}
+
+async function loadChefsGroupDetail(groupId) {
+  const bodyEl = app.querySelector('#chefs-group-body')
+  if (!bodyEl) return
+  const [{ data: mineData }, { data: memberData, error: memErr }] = await Promise.all([
+    supabase.rpc('my_groups'),
+    supabase.rpc('group_members_list', { group_id: groupId }),
+  ])
+  const g = (mineData || []).find(x => x.group_id === groupId)
+  if (!g) { bodyEl.innerHTML = `<p class="chefs-empty-hint">This group is no longer available.</p>`; return }
+  if (memErr) { bodyEl.innerHTML = `<p class="chefs-empty-hint">${escapeHtml(memErr.message || "Couldn't load members.")}</p>`; return }
+  const members = memberData || []
+  const ranked = [...members].sort((a, b) => Number(b.weekly_pizzas) - Number(a.weekly_pizzas))
+
+  // TODO: no live-session tracking exists (see the Friends-tab caveat above) -
+  // 0 is the honest floor for "this group's baking count" until it does.
+  showChefsPill(0)
+
+  bodyEl.innerHTML = `
+    <div class="chefs-ghead">
+      <div class="chefs-gavatar lg">${escapeHtml(g.emoji || '🍕')}</div>
+      <div class="chefs-gcard-info">
+        <div class="chefs-gname lg">${escapeHtml(g.name)}</div>
+        <div class="chefs-gmeta">${chefsPrivacyChip(g.privacy)} · ${members.length} member${members.length === 1 ? '' : 's'}</div>
+      </div>
+      ${g.role === 'owner' ? `<button type="button" class="chefs-gear-btn" data-action="group-settings" aria-label="Group settings">⚙️</button>` : ''}
+    </div>
+    <div class="section-h" style="margin-top:1.25rem"><h2>Leaderboard</h2></div>
+    ${ranked.map((m, i) => chefsMemberRowHtml(m, i)).join('')}
+    <div class="chefs-group-actions">
+      <button type="button" class="chefs-grp-btn secondary" data-action="share-code">Share join code</button>
+      ${g.role === 'owner'
+        ? `<button type="button" class="chefs-grp-btn secondary" data-action="leave-blocked">Leave</button>`
+        : `<button type="button" class="chefs-grp-btn secondary" data-action="leave">Leave group</button>`}
+    </div>
+  `
+  bodyEl.querySelector('[data-action="group-settings"]')?.addEventListener('click', () => openChefsGroupSettings(groupId))
+  bodyEl.querySelector('[data-action="share-code"]').addEventListener('click', () => {
+    const code = g.join_code || ''
+    if (navigator.clipboard) navigator.clipboard.writeText(code).then(() => toast(`Code copied: ${code}`)).catch(() => toast(`Group code: ${code}`))
+    else toast(`Group code: ${code}`)
+  })
+  bodyEl.querySelector('[data-action="leave-blocked"]')?.addEventListener('click', () => toast("The owner can't leave — delete the group instead."))
+  bodyEl.querySelector('[data-action="leave"]')?.addEventListener('click', () => confirmLeaveGroup(groupId, g.name))
+}
+
+function chefsMemberRowHtml(m, i) {
+  const rank = i < 3 ? `<div class="medal">${['🥇', '🥈', '🥉'][i]}</div>` : `<div class="rank">${i + 1}</div>`
+  const isMe = m.user_id === currentUser.id
+  return `
+    <div class="frow ${isMe ? 'me' : ''}" style="cursor:default">
+      ${rank}
+      <img src="${m.avatar_url || DEFAULT_AVATAR}" alt="" />
+      <div><span class="fn">${escapeHtml(chefName(m.display_name))}${isMe ? ' <span class="you-tag">(you)</span>' : ''}${m.role === 'owner' ? ' <span class="chefs-role-tag">Owner</span>' : ''}</span></div>
+      <div class="score">🍕 ${formatScore(Number(m.weekly_pizzas) || 0)}</div>
+    </div>`
+}
+
+function confirmLeaveGroup(groupId, name) {
+  const o = overlay(`
+    <h3>Leave ${escapeHtml(name)}?</h3>
+    <p>You'll lose access to this group's leaderboard. You can rejoin anytime with an invite or the join code.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Yes, leave</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    const { error } = await supabase.rpc('leave_group', { group_id: groupId })
+    if (error) { toast(error.message || 'Could not leave group.'); return }
+    o.remove()
+    toast(`Left ${name}`)
+    chefsTab = 'groups'
+    renderChefsScreen()
+  })
+}
+
+// ---------------- Group settings (owner only) ----------------
+function openChefsGroupSettings(groupId) {
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-group">‹ Group settings</div>
+    <div id="chefs-settings-body"><p class="log-empty">Loading&hellip;</p></div>
+  `
+  mountScreen('friends', content, () => {
+    app.querySelector('[data-action="back-to-group"]').addEventListener('click', () => openChefsGroup(groupId))
+    loadChefsGroupSettings(groupId)
+  }, { key: 'chefs-group-settings-' + groupId })
+}
+
+async function loadChefsGroupSettings(groupId) {
+  const bodyEl = app.querySelector('#chefs-settings-body')
+  if (!bodyEl) return
+  const [{ data: mineData }, { data: memberData, error: memErr }] = await Promise.all([
+    supabase.rpc('my_groups'),
+    supabase.rpc('group_members_list', { group_id: groupId }),
+  ])
+  const g = (mineData || []).find(x => x.group_id === groupId)
+  // Not the owner (or the group's gone) - this screen isn't theirs to see.
+  if (!g || g.role !== 'owner') { openChefsGroup(groupId); return }
+  await loadGroupIcons()
+
+  bodyEl.innerHTML = `
+    <div class="section-h" style="margin-top:2px"><h2>${escapeHtml(g.name)}</h2></div>
+    <div class="chefs-setcard" style="margin-bottom:1.5rem">
+      <label class="chefs-flabel">Group icon</label>
+      <div class="chefs-emoji-picker" id="gs-emoji-picker">${chefsEmojiPickerHtml(g.emoji)}</div>
+      <label class="chefs-flabel">Name</label>
+      <input class="rename-input" id="gs-name" maxlength="30" value="${escapeHtml(g.name)}">
+      <button type="button" class="chefs-wide-btn" data-action="save-details">Save details</button>
+    </div>
+
+    <div class="section-h" style="margin-top:0"><h2>Who can join</h2></div>
+    <div class="chefs-setcard" id="gs-privacy" style="margin-bottom:1.5rem">
+      ${chefsPrivacyOptHtml('public', g.privacy === 'public')}
+      ${chefsPrivacyOptHtml('private', g.privacy !== 'public')}
+    </div>
+
+    <div class="section-h" style="margin-top:0"><h2>Join code</h2></div>
+    <div class="chefs-setcard" style="margin-bottom:1.5rem">
+      <p class="code-note" style="margin-top:0">Code: <b>${escapeHtml(g.join_code || '')}</b> <button class="copy-btn" type="button" data-action="copy-code" aria-label="Copy group code">${COPY_SVG}</button></p>
+      <p class="chefs-empty-hint" style="margin:0.5rem 0 0;text-align:left">Anyone with this code joins instantly, even in a private group.</p>
+    </div>
+
+    <div class="section-h" style="margin-top:0"><h2>Members</h2></div>
+    <div class="chefs-setcard" style="margin-bottom:1.5rem">
+      ${memErr ? `<p class="chefs-empty-hint">${escapeHtml(memErr.message || "Couldn't load members.")}</p>` : (memberData || []).map(chefsSettingsMemberRowHtml).join('')}
+    </div>
+
+    <div class="section-h" style="margin-top:0"><h2>Danger zone</h2></div>
+    <div class="chefs-setcard">
+      <button type="button" class="chefs-wide-btn danger" data-action="delete-group">Delete group</button>
+    </div>
+  `
+  wireChefsGroupSettings(bodyEl, groupId, g)
+}
+
+function chefsSettingsMemberRowHtml(m) {
+  return `
+    <div class="chefs-mrow">
+      <img src="${m.avatar_url || DEFAULT_AVATAR}" alt="" />
+      <div class="fn">${escapeHtml(chefName(m.display_name))}</div>
+      ${m.role === 'owner'
+        ? '<span class="chefs-rel-tag pending">Owner</span>'
+        : `<button type="button" class="chefs-req-btn decline" data-remove-member="${m.user_id}" data-remove-name="${escapeHtml(chefName(m.display_name))}">Remove</button>`}
+    </div>`
+}
+
+function wireChefsGroupSettings(bodyEl, groupId, g) {
+  let selectedEmoji = g.emoji
+  let selectedPrivacy = g.privacy === 'public' ? 'public' : 'private'
+
+  bodyEl.querySelectorAll('#gs-emoji-picker [data-emoji]').forEach(btn => btn.addEventListener('click', () => {
+    selectedEmoji = btn.dataset.emoji
+    bodyEl.querySelectorAll('#gs-emoji-picker [data-emoji]').forEach(b => b.classList.toggle('on', b === btn))
+  }))
+  // Privacy applies instantly on tap (matches the approved mockup) rather
+  // than waiting for a separate Save.
+  bodyEl.querySelectorAll('#gs-privacy [data-privacy-opt]').forEach(row => row.addEventListener('click', async () => {
+    const val = row.dataset.privacyOpt
+    if (val === selectedPrivacy) return
+    selectedPrivacy = val
+    bodyEl.querySelectorAll('#gs-privacy [data-privacy-opt]').forEach(r => {
+      const on = r.dataset.privacyOpt === selectedPrivacy
+      r.classList.toggle('on', on)
+      r.querySelector('.chefs-radio').classList.toggle('on', on)
+    })
+    const name = bodyEl.querySelector('#gs-name').value.trim() || g.name
+    const { error } = await supabase.rpc('update_group_settings', { group_id: groupId, name, emoji: selectedEmoji, privacy: selectedPrivacy })
+    if (error) { toast(error.message || 'Could not change privacy.'); return }
+    toast(selectedPrivacy === 'public' ? 'Now public — anyone can join' : 'Now private')
+  }))
+  bodyEl.querySelector('[data-action="save-details"]').addEventListener('click', async () => {
+    const name = bodyEl.querySelector('#gs-name').value.trim()
+    if (!name) { toast('Group name is required'); return }
+    const { error } = await supabase.rpc('update_group_settings', { group_id: groupId, name, emoji: selectedEmoji, privacy: selectedPrivacy })
+    if (error) { toast(error.message || 'Could not save changes.'); return }
+    toast('Group updated!')
+    loadChefsGroupSettings(groupId)
+  })
+  bodyEl.querySelector('[data-action="copy-code"]').addEventListener('click', () => {
+    const code = g.join_code || ''
+    if (navigator.clipboard) navigator.clipboard.writeText(code).then(() => toast('Code copied!')).catch(() => toast('Code copied!'))
+    else toast('Code copied!')
+  })
+  bodyEl.querySelectorAll('[data-remove-member]').forEach(btn => btn.addEventListener('click', () => {
+    confirmRemoveGroupMember(groupId, btn.dataset.removeMember, btn.dataset.removeName)
+  }))
+  bodyEl.querySelector('[data-action="delete-group"]').addEventListener('click', () => confirmDeleteGroupStep1(groupId, g.name))
+}
+
+function confirmRemoveGroupMember(groupId, targetId, name) {
+  const o = overlay(`
+    <h3>Remove ${escapeHtml(name)}?</h3>
+    <p>They'll lose access to this group's leaderboard. They can rejoin with the group code.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Remove ${escapeHtml(name)}</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    const { error } = await supabase.rpc('remove_group_member', { group_id: groupId, target_id: targetId })
+    if (error) { toast(error.message || 'Could not remove member.'); return }
+    o.remove()
+    toast(`${name} removed from group`)
+    loadChefsGroupSettings(groupId)
+  })
+}
+
+// Delete is destructive and irreversible, so it needs two separate
+// confirmations - same pattern as confirmDeleteAccount/confirmDeleteAccountFinal.
+function confirmDeleteGroupStep1(groupId, name) {
+  const o = overlay(`
+    <h3>Delete ${escapeHtml(name)}? ⚠️</h3>
+    <p>This permanently deletes the group, its leaderboard and all membership. This can't be undone.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Delete group</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', () => { o.remove(); confirmDeleteGroupStep2(groupId, name) })
+}
+function confirmDeleteGroupStep2(groupId, name) {
+  const o = overlay(`
+    <h3>Are you absolutely sure? ⚠️</h3>
+    <p>Last chance — <b>${escapeHtml(name)}</b> and everything in it will be permanently deleted. This cannot be undone.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Yes, delete forever</button>
+      <button type="button" class="btn-secondary" data-action="no">Keep the group</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    const btn = o.querySelector('[data-action="yes"]')
+    btn.disabled = true
+    btn.textContent = 'Deleting…'
+    const { error } = await supabase.rpc('delete_group', { group_id: groupId })
+    if (error) { btn.disabled = false; btn.textContent = 'Yes, delete forever'; toast(error.message || 'Could not delete group.'); return }
+    o.remove()
+    toast(`${name} deleted.`)
+    chefsTab = 'groups'
+    renderChefsScreen()
+  })
+}
+
+// ---------------- Requests tab ----------------
+async function loadChefsRequestsTab() {
+  const body = app.querySelector('#chefs-body')
+  if (!body) return
+  hideChefsPill()
+  body.innerHTML = `<p class="log-empty">Loading&hellip;</p>`
+  const { friendRequests, groupInvites } = await fetchChefsPending()
+  const items = [
+    ...friendRequests.map(r => ({ kind: 'friend', r, at: r.requested_at })),
+    ...groupInvites.map(r => ({ kind: 'group', r, at: r.created_at })),
+  ].sort((a, b) => new Date(b.at) - new Date(a.at))
+
+  if (!items.length) {
+    body.innerHTML = `<p class="chefs-empty-hint">Nothing waiting on you.<br>Share your code <b>${escapeHtml(currentProfile?.friend_code || '')}</b> so chefs can add you.</p>`
+    return
+  }
+  body.innerHTML = items.map(({ kind, r }) => kind === 'friend' ? chefsFriendReqRowHtml(r) : chefsGroupInviteRowHtml(r)).join('')
+  body.querySelectorAll('[data-approve-friend]').forEach(btn => btn.addEventListener('click', () => respondChefsFriendRequest(btn.dataset.approveFriend, true)))
+  body.querySelectorAll('[data-decline-friend]').forEach(btn => btn.addEventListener('click', () => respondChefsFriendRequest(btn.dataset.declineFriend, false)))
+  body.querySelectorAll('[data-accept-group]').forEach(btn => btn.addEventListener('click', () => respondChefsGroupInvite(btn.dataset.acceptGroup, true)))
+  body.querySelectorAll('[data-decline-group]').forEach(btn => btn.addEventListener('click', () => respondChefsGroupInvite(btn.dataset.declineGroup, false)))
+}
+
+function chefsFriendReqRowHtml(r) {
+  return `
+    <div class="frow chefs-req-row">
+      <img src="${r.avatar_url || DEFAULT_AVATAR}" alt="" />
+      <div><div class="fn">${escapeHtml(chefName(r.display_name))}</div><div class="fp">Wants to be friends · ${chefsTimeAgo(r.requested_at)}</div></div>
+      <div class="chefs-req-actions">
+        <button type="button" class="chefs-req-btn approve" data-approve-friend="${r.requester_id}">Approve</button>
+        <button type="button" class="chefs-req-btn decline" data-decline-friend="${r.requester_id}">Decline</button>
+      </div>
+    </div>`
+}
+function chefsGroupInviteRowHtml(r) {
+  return `
+    <div class="frow chefs-req-row">
+      <div class="chefs-gavatar sm">${escapeHtml(r.emoji || '🍕')}</div>
+      <div><div class="fn">${escapeHtml(r.name)}</div><div class="fp">Group invite from ${escapeHtml(r.invited_by_name)} · ${chefsTimeAgo(r.created_at)}</div></div>
+      <div class="chefs-req-actions">
+        <button type="button" class="chefs-req-btn approve" data-accept-group="${r.group_id}">Accept</button>
+        <button type="button" class="chefs-req-btn decline" data-decline-group="${r.group_id}">Decline</button>
+      </div>
+    </div>`
+}
+
+async function respondChefsFriendRequest(requesterId, accept) {
+  const { error } = await supabase.rpc('respond_to_friend_request', { requester_id: requesterId, accept })
+  if (error) { toast('That request is no longer available.'); return }
+  toast(accept ? 'Friend added!' : 'Request declined')
+  loadChefsRequestsTab()
+  refreshChefsPendingBadge()
+}
+async function respondChefsGroupInvite(groupId, accept) {
+  const { error } = await supabase.rpc('respond_to_group_invite', { group_id: groupId, accept })
+  if (error) { toast('That invite is no longer available.'); return }
+  toast(accept ? 'Joined the group!' : 'Invite declined')
+  loadChefsRequestsTab()
+  refreshChefsPendingBadge()
 }
 
 function wireFriendRow(row, friend, pendingNootTargets) {
@@ -3325,10 +4037,10 @@ async function renderBugReports() {
     <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
     <div class="section-h" style="margin-top:2px"><h2>Bug Reports</h2></div>
     <div class="cal-seg cal-seg-4" style="margin-bottom:0.5rem">
-      <button type="button" class="${bugTab === 'open' ? 'on' : ''}" data-bugtab="open">Open<span class="seg-badge" id="bugtab-open-n" hidden></span></button>
-      <button type="button" class="${bugTab === 'in_progress' ? 'on' : ''}" data-bugtab="in_progress">In Progress<span class="seg-badge" id="bugtab-prog-n" hidden></span></button>
-      <button type="button" class="${bugTab === 'resolved' ? 'on' : ''}" data-bugtab="resolved">Resolved</button>
-      <button type="button" class="${bugTab === 'dismissed' ? 'on' : ''}" data-bugtab="dismissed">Dismissed</button>
+      <button type="button" class="${bugTab === 'open' ? 'on' : ''}" data-bugtab="open"><span>Open</span><span class="seg-badge" id="bugtab-open-n" hidden></span></button>
+      <button type="button" class="${bugTab === 'in_progress' ? 'on' : ''}" data-bugtab="in_progress"><span>Fixing</span><span class="seg-badge" id="bugtab-prog-n" hidden></span></button>
+      <button type="button" class="${bugTab === 'resolved' ? 'on' : ''}" data-bugtab="resolved"><span>Resolved</span></button>
+      <button type="button" class="${bugTab === 'dismissed' ? 'on' : ''}" data-bugtab="dismissed"><span>Dismissed</span></button>
     </div>
     <div class="bug-adm-list" id="bug-adm-list"><p class="editpic-empty">Loading&hellip;</p></div>
     <div style="height:8px"></div>
@@ -3406,7 +4118,7 @@ async function loadBugReports() {
   setSegBadge('bugtab-prog-n', progressCount)
   const shown = (data || []).filter(r => tabOf(r) === bugTab)
   if (!shown.length) {
-    const empty = { open: 'No open reports 🎉', in_progress: 'Nothing in progress — send a report to Claude to start fixing it.', resolved: 'No resolved reports yet.', dismissed: 'No dismissed reports.' }[bugTab]
+    const empty = { open: 'No open reports 🎉', in_progress: 'Nothing being fixed — send a report to Claude to start.', resolved: 'No resolved reports yet.', dismissed: 'No dismissed reports.' }[bugTab]
     list.innerHTML = `<p class="editpic-empty">${empty}</p>`
     return
   }
