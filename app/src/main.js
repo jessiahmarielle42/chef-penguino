@@ -3310,14 +3310,15 @@ async function openBugReport() {
 }
 
 // ---------- admin: bug reports review ----------
-let bugTab = 'open' // 'open' | 'resolved' | 'dismissed'
+let bugTab = 'open' // 'open' | 'in_progress' | 'resolved' | 'dismissed'
 async function renderBugReports() {
   if (!isAdmin()) { renderSettings(); return }
   const content = `
     <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
     <div class="section-h" style="margin-top:2px"><h2>Bug Reports</h2></div>
-    <div class="cal-seg" style="margin-bottom:0.5rem">
+    <div class="cal-seg cal-seg-4" style="margin-bottom:0.5rem">
       <button type="button" class="${bugTab === 'open' ? 'on' : ''}" data-bugtab="open">Open</button>
+      <button type="button" class="${bugTab === 'in_progress' ? 'on' : ''}" data-bugtab="in_progress">In Progress</button>
       <button type="button" class="${bugTab === 'resolved' ? 'on' : ''}" data-bugtab="resolved">Resolved</button>
       <button type="button" class="${bugTab === 'dismissed' ? 'on' : ''}" data-bugtab="dismissed">Dismissed</button>
     </div>
@@ -3375,16 +3376,23 @@ async function loadBugReports() {
   const list = app.querySelector('#bug-adm-list')
   if (!list) return
   if (error) { list.innerHTML = `<p class="editpic-empty">Couldn't load reports.</p>`; return }
-  // Open = active (open or replied but not yet marked resolved); Resolved =
-  // explicitly resolved; Dismissed = dismissed.
-  const tabOf = r => r.status === 'dismissed' ? 'dismissed' : r.status === 'resolved' ? 'resolved' : 'open'
-  // Surface the only stat the admin needs: how many reports are still open.
+  // Resolved/Dismissed are terminal. Among still-active reports, those the
+  // admin has sent to Claude are "In Progress" (being fixed); the rest are the
+  // untriaged "Open" queue. Sending to Claude moves a report Open → In Progress.
+  const tabOf = r => r.status === 'dismissed' ? 'dismissed'
+    : r.status === 'resolved' ? 'resolved'
+    : r.sent_to_claude_at ? 'in_progress'
+    : 'open'
+  // Surface the counts that need action: untriaged Open, and In Progress.
   const openCount = (data || []).filter(r => tabOf(r) === 'open').length
+  const progressCount = (data || []).filter(r => tabOf(r) === 'in_progress').length
   const openTabBtn = app.querySelector('[data-bugtab="open"]')
   if (openTabBtn) openTabBtn.textContent = openCount ? `Open (${openCount})` : 'Open'
+  const progressTabBtn = app.querySelector('[data-bugtab="in_progress"]')
+  if (progressTabBtn) progressTabBtn.textContent = progressCount ? `In Progress (${progressCount})` : 'In Progress'
   const shown = (data || []).filter(r => tabOf(r) === bugTab)
   if (!shown.length) {
-    const empty = { open: 'No open reports 🎉', resolved: 'No resolved reports yet.', dismissed: 'No dismissed reports.' }[bugTab]
+    const empty = { open: 'No open reports 🎉', in_progress: 'Nothing in progress — send a report to Claude to start fixing it.', resolved: 'No resolved reports yet.', dismissed: 'No dismissed reports.' }[bugTab]
     list.innerHTML = `<p class="editpic-empty">${empty}</p>`
     return
   }
@@ -3724,18 +3732,31 @@ async function loadModSummary() {
   `
 }
 
-// Just the count the admin actually asked for on this dashboard row: how many
-// bug reports are still unresolved (status not 'resolved'/'dismissed') — no
-// other stats.
+// Dashboard row breakdown mirroring the Bug Reports tabs: untriaged Open vs.
+// In Progress (sent to Claude). Both exclude resolved/dismissed. Falls back to
+// a single "unresolved" count if the sent_to_claude_at column isn't there yet
+// (pre-migration_bug_claude.sql).
 async function loadBugSummary() {
   const el = app.querySelector('#bug-summary-counts')
   if (!el) return
-  const { count, error } = await supabase
-    .from('bug_reports')
-    .select('id', { count: 'exact', head: true })
-    .not('status', 'in', '(resolved,dismissed)')
-  const n = error ? 0 : (count || 0)
-  el.innerHTML = `<span class="count-pip"><span class="pip-dot rep"></span><b>${n}</b>&nbsp;unresolved report${n === 1 ? '' : 's'}</span>`
+  const base = () => supabase.from('bug_reports').select('id', { count: 'exact', head: true }).not('status', 'in', '(resolved,dismissed)')
+  const [openRes, progRes] = await Promise.all([
+    base().is('sent_to_claude_at', null),
+    base().not('sent_to_claude_at', 'is', null),
+  ])
+  if (openRes.error || progRes.error) {
+    // Column missing / query unsupported — fall back to the combined count.
+    const { count, error } = await base()
+    const n = error ? 0 : (count || 0)
+    el.innerHTML = `<span class="count-pip"><span class="pip-dot rep"></span><b>${n}</b>&nbsp;unresolved report${n === 1 ? '' : 's'}</span>`
+    return
+  }
+  const openN = openRes.count || 0
+  const progN = progRes.count || 0
+  el.innerHTML = `
+    <span class="count-pip"><span class="pip-dot rep"></span><b>${openN}</b>&nbsp;open</span>
+    <span class="count-pip"><span class="pip-dot claude"></span><b>${progN}</b>&nbsp;in progress</span>
+  `
 }
 
 // Removes a report row that just got resolved (warned or dismissed) from

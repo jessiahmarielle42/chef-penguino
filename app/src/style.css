@@ -1802,6 +1802,13 @@ img.shop-image {
   background: linear-gradient(180deg, var(--gold), var(--gold-deep));
   color: #3a2708; box-shadow: 0 0.125rem 0 #b56e00;
 }
+/* 4-tab variant (Bug Reports: Open / In Progress / Resolved / Dismissed).
+   Tighter columns + smaller type so longer labels stay on one line. */
+.cal-seg-4 { grid-template-columns: repeat(4, 1fr); }
+.cal-seg-4 button {
+  font-size:0.6875rem; letter-spacing:0; padding:0.5625rem 0.125rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 .cal-navbar { display: flex; align-items: center; gap:0.5rem; padding:0.75rem 0 0.125rem; }
 .cal-chev {
@@ -2031,6 +2038,7 @@ img.shop-image {
 .pip-dot { width:0.375rem; height:0.375rem; border-radius:50%; flex: none; }
 .pip-dot.rep { background: var(--fire); }
 .pip-dot.blk { background:#ff6b6b; }
+.pip-dot.claude { background: var(--gold); }
 
 /* ---------- segmented control (Reports / Blocks / History, Everyone / Specific) ---------- */
 .seg {
