@@ -3234,11 +3234,10 @@ function ensureBugFab() {
 function updateBugFabVisibility() {
   if (!bugFabEl) return
   const modalOpen = !!app.querySelector('.bug-report-overlay')
-  bugFabEl.style.display = (isSignedIn() && !modalOpen) ? '' : 'none'
+  bugFabEl.style.display = modalOpen ? 'none' : '' // shown for guests too — anyone can report a bug
 }
 
 async function openBugReport() {
-  if (!isSignedIn()) return
   // Capture the current screen (.app, which excludes the body-level FAB)
   // BEFORE the popup is added to the DOM, so the shot shows the real screen.
   let shotCanvas = null
@@ -3292,7 +3291,7 @@ async function openBugReport() {
       if (shotCanvas) {
         const blob = await new Promise(res => shotCanvas.toBlob(res, 'image/jpeg', 0.85))
         if (blob) {
-          const path = `${currentUser.id}/${Date.now()}.jpg`
+          const path = `${currentUser ? currentUser.id : 'guest'}/${Date.now()}.jpg`
           const { error: upErr } = await supabase.storage.from('bug-shots').upload(path, blob, { contentType: 'image/jpeg' })
           if (!upErr) screenshotUrl = supabase.storage.from('bug-shots').getPublicUrl(path).data.publicUrl
         }
@@ -3301,7 +3300,7 @@ async function openBugReport() {
       if (error) throw error
       o.remove()
       toast('Bug report sent 🐧')
-      refreshNotifBadges()
+      if (isSignedIn()) refreshNotifBadges()
     } catch {
       submitBtn.disabled = false
       submitBtn.textContent = 'Submit'
@@ -3337,7 +3336,7 @@ async function renderBugReports() {
 }
 
 function bugAdmCardHtml(r) {
-  const who = escapeHtml(r.reporter?.display_name || 'Unknown chef')
+  const who = escapeHtml(r.reporter?.display_name || 'Guest')
   const when = dateLabel(new Date(r.created_at).getTime())
   const closed = r.status === 'resolved' || r.status === 'dismissed'
   const sent = !!r.sent_to_claude_at
