@@ -483,6 +483,8 @@ if (import.meta.env.VITE_REVIEW) {
       renderAdminDashboard, renderModerationCenter, renderSystemNotifications,
       renderComposeNotification, renderSettings, renderFriends,
       renderTaskTypesEditor, renderBugReports, renderHistory, renderHome,
+      renderAdminPizzasCal, renderAdminChefs, renderAdminUsers,
+      renderAdminPresets, renderAdminEmotes, renderAdminGroupIcons,
       renderTypePicker: () => renderTypePicker(30, 'Essay writing'),
       openBugReport: () => { renderSettings(); return openBugReport() },
       startTypedTimer: () => startSession(30, 'Essay writing', 'deep'),
@@ -3623,75 +3625,171 @@ function playLoreVideo(entry) {
 // =================================================================
 //  Admin Dashboard (admin-only; see migration_admin.sql)
 // =================================================================
+// Start of the admin's local "today" - used by the KPI strip (new chefs,
+// pizzas baked today) and as the default anchor for the Pizzas Baked
+// calendar's Day view.
+function admStartOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()) }
+
 function renderAdminDashboard() {
   if (!isAdmin()) { renderSettings(); return }
 
   const content = `
     <div class="back-link" role="button" tabindex="0" data-action="back-to-settings">‹ Settings</div>
-    <div class="section-h" style="margin-top:2px"><h2>Admin Dashboard</h2></div>
+    <div class="adm-hq-head">
+      <div><h1>Kitchen HQ</h1><div class="sub">Admin Dashboard</div></div>
+      <div class="adm-live-dot" role="button" tabindex="0" data-action="open-pizzas-cal" title="View baking stats"><i></i><span id="hq-baking-n">– baking</span></div>
+    </div>
 
+    <div class="group" style="margin-top:1.375rem">
+      <p class="glab">Today at a glance</p>
+      <div class="adm-kpi-grid">
+        <div class="adm-kpi" role="button" tabindex="0" data-action="open-chefs">
+          <span class="adm-kpi-ic">🐧</span>
+          <div class="adm-kpi-val" id="kpi-chefs-val">–</div>
+          <div class="adm-kpi-lab">Active chefs<span class="adm-kpi-sub" id="kpi-chefs-sub" hidden></span></div>
+        </div>
+        <div class="adm-kpi accent" role="button" tabindex="0" data-action="open-pizzas-cal">
+          <span class="adm-kpi-ic">🍕</span>
+          <div class="adm-kpi-val" id="kpi-pizzas-val">–</div>
+          <div class="adm-kpi-lab">Pizzas baked today<span class="adm-kpi-drill">stats ›</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="group">
+      <p class="glab">Needs your attention</p>
+      <div class="adm-action hot" role="button" tabindex="0" data-action="open-bug-reports">
+        <div class="adm-badge-ic">🐞</div>
+        <div class="body"><div class="t">Bug Reports <span class="adm-count-pill" id="bug-count-pill" hidden></span></div><div class="s" id="bug-sub">Loading&hellip;</div></div>
+        <span class="chevron" aria-hidden="true">›</span>
+      </div>
+      <div class="adm-action hot" role="button" tabindex="0" data-action="open-moderation">
+        <div class="adm-badge-ic">🛡️</div>
+        <div class="body"><div class="t">Moderation <span class="adm-count-pill" id="mod-count-pill" hidden></span></div><div class="s" id="mod-sub">Loading&hellip;</div></div>
+        <span class="chevron" aria-hidden="true">›</span>
+      </div>
+    </div>
+
+    <div class="group">
+      <p class="glab">Manage the pizzeria</p>
+      <div class="adm-action" role="button" tabindex="0" data-action="open-users">
+        <div class="adm-badge-ic">👥</div>
+        <div class="body"><div class="t">Users</div><div class="s" id="users-sub">Edit pizzas, coins &amp; names</div></div>
+        <span class="chevron" aria-hidden="true">›</span>
+      </div>
+      <div class="adm-action" role="button" tabindex="0" data-action="open-compose">
+        <div class="adm-badge-ic">📣</div>
+        <div class="body"><div class="t">Send Notification</div><div class="s">Message one chef, a few, or everyone</div></div>
+        <span class="chevron" aria-hidden="true">›</span>
+      </div>
+    </div>
+
+    <div class="group">
+      <p class="glab">Setup</p>
+      <div class="adm-setup-list">
+        <div class="adm-srow" role="button" tabindex="0" data-action="open-presets">
+          <span class="adm-sic">🖼️</span><span class="adm-st">Preset Pictures</span><span class="adm-sn" id="setup-presets-n">–</span><span class="chevron" aria-hidden="true">›</span>
+        </div>
+        <div class="adm-srow" role="button" tabindex="0" data-action="open-emotes">
+          <span class="adm-sic">🏷️</span><span class="adm-st">Emote Types</span><span class="adm-sn" id="setup-emotes-n">–</span><span class="chevron" aria-hidden="true">›</span>
+        </div>
+        <div class="adm-srow" role="button" tabindex="0" data-action="open-group-icons">
+          <span class="adm-sic">🧩</span><span class="adm-st">Group Icons</span><span class="adm-sn" id="setup-groupicons-n">–</span><span class="chevron" aria-hidden="true">›</span>
+        </div>
+      </div>
+    </div>
+    <div style="height:8px"></div>
+  `
+
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
+    app.querySelector('[data-action="open-pizzas-cal"]').addEventListener('click', renderAdminPizzasCal)
+    app.querySelector('[data-action="open-chefs"]').addEventListener('click', renderAdminChefs)
+    app.querySelector('[data-action="open-bug-reports"]').addEventListener('click', renderBugReports)
+    app.querySelector('[data-action="open-moderation"]').addEventListener('click', () => renderModerationCenter())
+    app.querySelector('[data-action="open-users"]').addEventListener('click', renderAdminUsers)
+    app.querySelector('[data-action="open-compose"]').addEventListener('click', renderComposeNotification)
+    app.querySelector('[data-action="open-presets"]').addEventListener('click', renderAdminPresets)
+    app.querySelector('[data-action="open-emotes"]').addEventListener('click', renderAdminEmotes)
+    app.querySelector('[data-action="open-group-icons"]').addEventListener('click', renderAdminGroupIcons)
+
+    loadModSummary()
+    loadBugSummary()
+    loadAdminDashboardStats()
+  }, { key: 'admin' })
+}
+
+// Populates the KPI strip, the "N baking" pill, the Users row's chef count,
+// and the Setup row counts. Every query here is a light head:true/small
+// select run in parallel, so one slow table never blocks the rest of the
+// dashboard from painting.
+async function loadAdminDashboardStats() {
+  const start = admStartOfDay(new Date())
+  const [chefsRes, newTodayRes, pizzasRes, presetsRes, tagsRes, iconsRes] = await Promise.all([
+    supabase.from('profiles').select('id', { count: 'exact', head: true }),
+    supabase.from('profiles').select('id', { count: 'exact', head: true }).gte('created_at', start.toISOString()),
+    // Needs "admin can view all sessions" (see migration_admin_sessions.sql) -
+    // until that's run, RLS quietly limits this to the admin's own (+
+    // friends') sessions, so the total under-counts rather than erroring.
+    supabase.from('sessions').select('pizzas').gte('completed_at', start.toISOString()),
+    supabase.from('preset_avatars').select('id', { count: 'exact', head: true }),
+    supabase.from('emote_tags').select('id', { count: 'exact', head: true }),
+    supabase.from('group_icons').select('id', { count: 'exact', head: true }), // errors pre-migration_group_icons.sql - handled below
+  ])
+
+  const chefsN = chefsRes.count || 0
+  const newTodayN = newTodayRes.count || 0
+  const pizzasToday = (pizzasRes.data || []).reduce((sum, r) => sum + Number(r.pizzas), 0)
+
+  const set = (id, txt) => { const el = app.querySelector('#' + id); if (el) el.textContent = txt }
+  set('kpi-chefs-val', chefsN.toLocaleString())
+  set('kpi-pizzas-val', formatScore(pizzasToday))
+  // TODO: there's no "session currently in progress" table (sessions rows are
+  // only written on completion - see finalizeSession()), so there's no real
+  // number for "chefs baking right now" to show here. Using total chef count
+  // as an honest stand-in rather than inventing a live figure; swap this for
+  // a real in-progress count if/when presence or live-session tracking exists.
+  set('hq-baking-n', chefsN.toLocaleString() + ' baking')
+  set('users-sub', `Edit pizzas, coins & names · ${chefsN} chef${chefsN === 1 ? '' : 's'}`)
+  set('setup-presets-n', presetsRes.error ? '–' : String(presetsRes.count || 0))
+  set('setup-emotes-n', tagsRes.error ? '–' : String(tagsRes.count || 0))
+  set('setup-groupicons-n', iconsRes.error ? '–' : String(iconsRes.count || 0))
+
+  const chefsSub = app.querySelector('#kpi-chefs-sub')
+  if (chefsSub) { chefsSub.textContent = `+${newTodayN} new today`; chefsSub.hidden = false }
+}
+
+// =================================================================
+//  Admin: Chefs (placeholder subpage - Task 3)
+// =================================================================
+function renderAdminChefs() {
+  if (!isAdmin()) { renderSettings(); return }
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Chefs</h2></div>
+    <div class="adm-soon">
+      <span class="ic">🐧</span>
+      <div class="t">Chef stats coming soon</div>
+      <div class="s">Signups, retention and activity trends will live here.<br>Not needed to run the pizzeria today.</div>
+    </div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+  }, { key: 'admin-chefs' })
+}
+
+// =================================================================
+//  Admin: Users (moved off the dashboard - reuses loadAdminUsers() /
+//  renderAdminUserList() / openAdminAdjustPopup(), which are all agnostic
+//  to which screen mounted their target ids)
+// =================================================================
+function renderAdminUsers() {
+  if (!isAdmin()) { renderSettings(); return }
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Users</h2></div>
     <div class="admin-dash">
-      <div class="group">
-        <p class="glab">Moderation</p>
-        <div class="glist">
-          <div class="grow mod-summary-row" role="button" tabindex="0" data-action="open-moderation">
-            <div class="mod-summary-body">
-              <div class="gt">Reports and Blocks</div>
-              <div class="mod-summary-counts" id="mod-summary-counts">
-                <span class="count-pip"><span class="pip-dot rep"></span>Loading&hellip;</span>
-              </div>
-            </div>
-            <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <p class="glab">Support</p>
-        <div class="glist">
-          <div class="grow mod-summary-row" role="button" tabindex="0" data-action="open-bug-reports">
-            <div class="mod-summary-body">
-              <div class="gt">Bug Reports</div>
-              <div class="mod-summary-counts" id="bug-summary-counts">
-                <span class="count-pip"><span class="pip-dot rep"></span>Loading&hellip;</span>
-              </div>
-            </div>
-            <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <p class="glab">Notifications</p>
-        <div class="glist">
-          <div class="grow" role="button" tabindex="0" data-action="open-compose">
-            <div><div class="gt">Send Notification</div><div class="gs">Message one chef, a few, or everyone</div></div>
-            <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <p class="glab">Preset Profile Pictures</p>
-        <div class="adm-preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
-        <button class="admin-upload-btn" type="button" data-action="toggle-preset-edit">Edit Pictures</button>
-        <input type="file" accept="image/*" id="preset-input" hidden />
-      </div>
-
-      <div class="group">
-        <p class="glab">Emote Types</p>
-        <div class="adm-tags" id="adm-tags"><p class="editpic-empty">Loading&hellip;</p></div>
-        <div class="adm-search-card" style="margin-top:0.75rem">
-          <input id="adm-new-tag" type="text" placeholder="New type name" maxlength="20" />
-          <button type="button" data-action="add-tag">Add</button>
-        </div>
-        <p class="glab" style="margin-top:1.5rem">Tag Emotes</p>
-        <div class="glist" id="adm-emote-list"></div>
-      </div>
-
-      <!-- Users last: this list can get long, so it lives at the bottom -->
-      <div class="group">
-        <p class="glab">Edit User Pizzas, Coins &amp; Names</p>
+      <div class="group" style="margin-top:0">
         <div class="adm-search-card">
           <span class="adm-search-ic" aria-hidden="true">🔍</span>
           <input id="admin-search-input" type="text" placeholder="Filter by name or friend code" />
@@ -3702,15 +3800,33 @@ function renderAdminDashboard() {
     </div>
     <div style="height:8px"></div>
   `
-
-  presetEditMode = false
   mountScreen('settings', content, () => {
-    loadModSummary()
-    loadBugSummary()
-    app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
-    app.querySelector('[data-action="open-moderation"]').addEventListener('click', () => renderModerationCenter())
-    app.querySelector('[data-action="open-bug-reports"]').addEventListener('click', renderBugReports)
-    app.querySelector('[data-action="open-compose"]').addEventListener('click', renderComposeNotification)
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+    loadAdminUsers()
+    app.querySelector('#admin-search-input').addEventListener('input', (e) => renderAdminUserList(e.target.value))
+  }, { key: 'admin-users' })
+}
+
+// =================================================================
+//  Admin: Preset Pictures (moved off the dashboard - Setup)
+// =================================================================
+function renderAdminPresets() {
+  if (!isAdmin()) { renderSettings(); return }
+  presetEditMode = false
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Preset Pictures</h2></div>
+    <div class="admin-dash">
+      <div class="group" style="margin-top:0">
+        <div class="adm-preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
+        <button class="admin-upload-btn" type="button" data-action="toggle-preset-edit">Edit Pictures</button>
+        <input type="file" accept="image/*" id="preset-input" hidden />
+      </div>
+    </div>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
     loadPresetAvatars()
     app.querySelector('#preset-input').addEventListener('change', (e) => {
       const file = e.target.files[0]; e.target.value = ''
@@ -3720,14 +3836,359 @@ function renderAdminDashboard() {
       presetEditMode = !presetEditMode
       renderPresetGrid()
     })
+  }, { key: 'admin-presets' })
+}
 
+// =================================================================
+//  Admin: Emote Types (moved off the dashboard - Setup)
+// =================================================================
+function renderAdminEmotes() {
+  if (!isAdmin()) { renderSettings(); return }
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Emote Types</h2></div>
+    <div class="admin-dash">
+      <div class="group" style="margin-top:0">
+        <p class="glab">Types</p>
+        <div class="adm-tags" id="adm-tags"><p class="editpic-empty">Loading&hellip;</p></div>
+        <div class="adm-search-card" style="margin-top:0.75rem">
+          <input id="adm-new-tag" type="text" placeholder="New type name" maxlength="20" />
+          <button type="button" data-action="add-tag">Add</button>
+        </div>
+      </div>
+      <div class="group">
+        <p class="glab">Tag Emotes</p>
+        <div class="glist" id="adm-emote-list"></div>
+      </div>
+    </div>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
     loadEmoteData(true).then(renderAdminEmoteTypes)
     app.querySelector('[data-action="add-tag"]').addEventListener('click', addEmoteTag)
     app.querySelector('#adm-new-tag').addEventListener('keydown', (e) => { if (e.key === 'Enter') addEmoteTag() })
+  }, { key: 'admin-emotes' })
+}
 
-    loadAdminUsers()
-    app.querySelector('#admin-search-input').addEventListener('input', (e) => renderAdminUserList(e.target.value))
-  }, { key: 'admin' })
+// =================================================================
+//  Admin: Group Icons (Setup) - Task 4
+//  A curated emoji set for a future "pick a group icon" picker (see
+//  migration_groups.sql's groups.emoji, currently free text). Table + RPCs
+//  live in migration_group_icons.sql, which hasn't necessarily been run
+//  yet - loadGroupIcons() falls back to a small hardcoded default set (and
+//  hides the remove/add controls) rather than throwing.
+// =================================================================
+const GROUP_ICONS_FALLBACK = ['🐧', '🍕', '🔥', '⭐', '🏆', '🎉']
+let groupIconsCache = []
+let groupIconsFromDb = true // false once group_icons 404s - Add/Remove no-op instead of hitting a table that doesn't exist
+
+async function loadGroupIcons() {
+  const { data, error } = await supabase.from('group_icons').select('id, emoji').order('created_at', { ascending: true })
+  if (error) {
+    groupIconsFromDb = false
+    groupIconsCache = GROUP_ICONS_FALLBACK.map(e => ({ id: null, emoji: e }))
+  } else {
+    groupIconsFromDb = true
+    groupIconsCache = data || []
+  }
+  renderGroupIconTiles()
+}
+
+function renderGroupIconTiles() {
+  const grid = app.querySelector('#group-icons-grid')
+  if (!grid) return
+  grid.innerHTML = groupIconsCache.length
+    ? groupIconsCache.map(g => `
+        <span class="adm-tag-chip" data-icon-id="${g.id || ''}">
+          <span class="adm-tag-emoji">${escapeHtml(g.emoji)}</span>
+          ${groupIconsFromDb ? `<button type="button" class="adm-tag-del" data-action="remove-icon" aria-label="Remove icon">✕</button>` : ''}
+        </span>`).join('')
+    : '<p class="editpic-empty">No icons yet. Add one below.</p>'
+  grid.querySelectorAll('[data-action="remove-icon"]').forEach(b => b.addEventListener('click', () => {
+    removeGroupIcon(b.closest('[data-icon-id]').dataset.iconId)
+  }))
+  const note = app.querySelector('#group-icons-note')
+  if (note) note.hidden = groupIconsFromDb
+}
+
+async function addGroupIcon() {
+  const input = app.querySelector('#group-icon-input')
+  const emoji = input.value.trim()
+  if (!emoji) return
+  if (!groupIconsFromDb) { toast('Run migration_group_icons.sql first'); return }
+  const { error } = await supabase.rpc('add_group_icon', { emoji })
+  if (error) { toast(error.message); return }
+  input.value = ''
+  await loadGroupIcons()
+}
+
+async function removeGroupIcon(id) {
+  if (!id || !groupIconsFromDb) return
+  const { error } = await supabase.rpc('remove_group_icon', { id })
+  if (error) { toast(error.message); return }
+  loadGroupIcons()
+}
+
+function renderAdminGroupIcons() {
+  if (!isAdmin()) { renderSettings(); return }
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Group Icons</h2></div>
+    <p class="adm-cal-note" id="group-icons-note" hidden style="margin:0 0.25rem 0.875rem">Showing a default set — run migration_group_icons.sql in Supabase to make this editable.</p>
+    <div class="adm-tags" id="group-icons-grid"><p class="editpic-empty">Loading&hellip;</p></div>
+    <div class="adm-search-card" style="margin-top:0.875rem">
+      <input id="group-icon-input" type="text" placeholder="Type an emoji…" maxlength="8" />
+      <button type="button" data-action="add-icon">Add</button>
+    </div>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+    app.querySelector('[data-action="add-icon"]').addEventListener('click', addGroupIcon)
+    app.querySelector('#group-icon-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') addGroupIcon() })
+    loadGroupIcons()
+  }, { key: 'admin-group-icons' })
+}
+
+// =================================================================
+//  Admin: Pizzas Baked calendar (Task 2) - a read-only, AGGREGATE copy of
+//  the chef-facing History calendar (renderHistory() above). Same
+//  Month/Week/Day shape and the same cal-* CSS/date helpers (calKey,
+//  calDateFromKey, calWeekDays, calIntensity, CAL_MONTHS...), but every
+//  query sums public.sessions across ALL chefs instead of the signed-in
+//  user's own log, and per-day/session detail is never shown - totals only.
+//
+//  NOTE: this needs the "admin can view all sessions" RLS policy - see
+//  migration_admin_sessions.sql. Until that's run, RLS quietly limits every
+//  query below to the admin's own (+ friends') sessions, so totals
+//  under-count rather than erroring - there's nothing for the client to
+//  detect and warn about there, since a RLS-filtered result isn't an error.
+// =================================================================
+let admCalView = 'month'      // 'month' | 'week' | 'day'
+let admCalY = null            // month-view anchor year
+let admCalMo = null           // month-view anchor month (0-11)
+let admCalWeekKey = null      // any 'YYYY-MM-DD' key inside the displayed week
+let admCalDayKey = null       // day-view anchor
+let admCalFilter = 'all'      // 'all' or a TASK_TYPES key - persists across Month/Week/Day
+let admCalSelectedDay = null  // day key currently "pinned" in the top total line, or null = whole period
+let admCalTypeColOk = true    // false once a `type`-column query fails (pre-migration_task_types.sql) - disables the filter rather than crashing
+
+// Sessions in [start, endExclusive) across every chef, summed per day and
+// filtered by admCalFilter. Falls back to a type-less query (and disables
+// the filter) if the `type` column doesn't exist yet, so the calendar still
+// renders pre-migration instead of showing an error screen.
+async function admCalFetchDayTotals(start, endExclusive) {
+  const range = (q) => q.gte('completed_at', start.toISOString()).lt('completed_at', endExclusive.toISOString())
+  let data, error
+  if (admCalTypeColOk) {
+    let q = range(supabase.from('sessions').select('completed_at, pizzas, type'))
+    if (admCalFilter !== 'all') q = q.eq('type', admCalFilter)
+    ;({ data, error } = await q)
+    if (error) admCalTypeColOk = false
+  }
+  if (!admCalTypeColOk) {
+    ;({ data, error } = await range(supabase.from('sessions').select('completed_at, pizzas')))
+  }
+  const map = new Map()
+  ;(data || []).forEach(r => {
+    const k = calKeyFromTs(new Date(r.completed_at).getTime())
+    map.set(k, (map.get(k) || 0) + Number(r.pizzas))
+  })
+  return map
+}
+
+function admCalMonthRange() { return { start: new Date(admCalY, admCalMo, 1), end: new Date(admCalY, admCalMo + 1, 1) } }
+function admCalWeekRange() {
+  const days = calWeekDays(admCalWeekKey)
+  return { start: admStartOfDay(days[0]), end: new Date(days[6].getFullYear(), days[6].getMonth(), days[6].getDate() + 1), days }
+}
+function admCalDayRange() {
+  const start = calDateFromKey(admCalDayKey)
+  return { start, end: new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1) }
+}
+
+// Only the date number - never a per-day count in the cell itself (that
+// read as clutter/confusing in the mockup); volume is conveyed purely by the
+// heat-map background.
+//
+// Intensity is scaled to the busiest day IN THIS MONTH rather than reusing
+// calIntensity(), which saturates at 4 pizzas. That threshold is right for a
+// single chef's calendar but meaningless once every day is the sum across all
+// chefs - every cell would hit maximum and the heat map would say nothing.
+// The week view already scales this way; this matches it.
+function admCalMonthBodyHtml(dayMap, todayKey) {
+  const dim = new Date(admCalY, admCalMo + 1, 0).getDate()
+  const off = (new Date(admCalY, admCalMo, 1).getDay() + 6) % 7
+  const monthMax = Math.max(
+    ...Array.from({ length: dim }, (_, i) => dayMap.get(calKey(admCalY, admCalMo, i + 1)) || 0),
+    1,
+  )
+  const relIntensity = (pz) => (pz <= 0 ? 0 : Math.min(4, Math.max(1, Math.ceil((pz / monthMax) * 4))))
+
+  let h = '<div class="cal-monthpanel"><div class="cal-dow">' + CAL_DOW.map(d => `<span>${d}</span>`).join('') + '</div><div class="cal-grid">'
+  for (let i = 0; i < off; i++) h += '<div class="cal-cell cal-empty-month"></div>'
+  for (let d = 1; d <= dim; d++) {
+    const key = calKey(admCalY, admCalMo, d)
+    const pz = dayMap.get(key) || 0
+    const inten = relIntensity(pz)
+    // Only days with bakes are tappable, so an empty day doesn't get the
+    // pointer cursor and brighter number of a day that has data.
+    const cls = 'cal-cell' + (pz ? ' cal-has' : '') + (inten ? ' cal-i' + inten : '')
+      + (key === todayKey ? ' cal-today' : '') + (key === admCalSelectedDay ? ' cal-sel' : '')
+    h += `<div class="${cls}" data-day="${key}"><div class="cal-dnum">${d}</div></div>`
+  }
+  h += '</div></div>'
+  return h
+}
+
+function admCalWeekBodyHtml(days, todayKey, dayMap) {
+  const vals = days.map(d => dayMap.get(calKeyFromDate(d)) || 0)
+  const max = Math.max(...vals, 1)
+  let h = '<div class="adm-wk-panel">'
+  days.forEach((dt, i) => {
+    const key = calKeyFromDate(dt)
+    const val = vals[i]
+    const pct = val ? Math.max(Math.round((val / max) * 100), 4) : 0
+    const cls = 'adm-wk-row' + (key === todayKey ? ' today' : '') + (key === admCalSelectedDay ? ' sel' : '')
+    h += `<div class="${cls}" data-day="${key}">
+      <span class="adm-wk-d">${CAL_DOW_FULL[dt.getDay()].slice(0, 3)}</span>
+      <span class="adm-wk-bar"><i style="width:${pct}%"></i></span>
+      <span class="adm-wk-n">${formatScore(val)}</span>
+    </div>`
+  })
+  h += '</div>'
+  return h
+}
+
+function admCalDayBodyHtml(val) {
+  const filterSuffix = admCalFilter !== 'all' ? ` · ${escapeHtml(taskTypeLabel(admCalFilter)?.title || '')}` : ''
+  return `<div class="adm-daybig"><div class="dv">${formatScore(val)}</div><div class="dk">pizzas baked${filterSuffix}</div></div>`
+}
+
+// Single-select "All" + the 5 task types - unlike the chef calendar's
+// multi-select pills (calTypeFilter), this always narrows to exactly one
+// bucket, matching the approved mockup's chip row.
+function admCalFilterChipsHtml() {
+  const chips = [`<button type="button" class="tt-chip${admCalFilter === 'all' ? ' active' : ''}" data-tf="all">All</button>`]
+    .concat(TASK_TYPES.map(t => `<button type="button" class="tt-chip${admCalFilter === t.key ? ' active' : ''}" data-tf="${t.key}">${calTypeChipLabel(t.key)}</button>`))
+  return `<div class="tt-cal-filter"><div class="tt-chip-row">${chips.join('')}</div></div>`
+}
+
+// The pill at the top of the page - shows the whole period's total by
+// default, or (the key interaction) the tapped day's total once one is
+// selected, with a label that says which.
+function admCalTotalLineHtml(periodTotal, dayMap) {
+  let val = periodTotal
+  let label = admCalView === 'month' ? 'this month' : admCalView === 'week' ? 'this week' : 'this day'
+  if (admCalSelectedDay && admCalView !== 'day') {
+    val = dayMap.get(admCalSelectedDay) || 0
+    const dt = calDateFromKey(admCalSelectedDay)
+    label = `on ${CAL_DOW[(dt.getDay() + 6) % 7]} ${dt.getDate()} ${CAL_MONTHS_SHORT[dt.getMonth()]}`
+  }
+  const filterSuffix = admCalFilter !== 'all' ? ` · ${escapeHtml(taskTypeLabel(admCalFilter)?.title || '')}` : ''
+  return `<div class="adm-cal-total"><span class="v">${formatScore(val)}</span><span class="k">🍕 pizzas ${label}${filterSuffix}</span></div>`
+}
+
+async function renderAdminPizzasCal() {
+  if (!isAdmin()) { renderSettings(); return }
+  const today = new Date()
+  if (admCalY === null) { admCalY = today.getFullYear(); admCalMo = today.getMonth() }
+  if (admCalWeekKey === null) admCalWeekKey = calKeyFromDate(today)
+  if (admCalDayKey === null) admCalDayKey = calKeyFromDate(today)
+  const todayKey = calKeyFromDate(today)
+
+  const range = admCalView === 'month' ? admCalMonthRange() : admCalView === 'week' ? admCalWeekRange() : admCalDayRange()
+  const dayMap = await admCalFetchDayTotals(range.start, range.end)
+
+  let navLabel, bodyHtml, periodTotal, legendHtml = ''
+  if (admCalView === 'month') {
+    navLabel = `${CAL_MONTHS[admCalMo]} ${admCalY}`
+    bodyHtml = admCalMonthBodyHtml(dayMap, todayKey)
+    periodTotal = [...dayMap.values()].reduce((s, v) => s + v, 0)
+    legendHtml = `<div class="cal-legend"><span>Less 🍕</span>
+      <span class="cal-legend-sw"></span><span class="cal-legend-sw cal-i1"></span>
+      <span class="cal-legend-sw cal-i2"></span><span class="cal-legend-sw cal-i3"></span>
+      <span class="cal-legend-sw cal-i4"></span><span>More 🍕</span></div>`
+  } else if (admCalView === 'week') {
+    const { days } = range
+    const first = days[0], last = days[6]
+    navLabel = (first.getMonth() === last.getMonth())
+      ? `${first.getDate()}–${last.getDate()} ${CAL_MONTHS_SHORT[first.getMonth()]}`
+      : `${first.getDate()} ${CAL_MONTHS_SHORT[first.getMonth()]} – ${last.getDate()} ${CAL_MONTHS_SHORT[last.getMonth()]}`
+    bodyHtml = admCalWeekBodyHtml(days, todayKey, dayMap)
+    periodTotal = days.reduce((s, d) => s + (dayMap.get(calKeyFromDate(d)) || 0), 0)
+  } else {
+    const dt = calDateFromKey(admCalDayKey)
+    navLabel = `${CAL_DOW[(dt.getDay() + 6) % 7]} ${dt.getDate()} ${CAL_MONTHS[dt.getMonth()]}`
+    periodTotal = dayMap.get(admCalDayKey) || 0
+    bodyHtml = admCalDayBodyHtml(periodTotal)
+  }
+
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Pizzas Baked</h2><span class="meta">All chefs · totals only</span></div>
+    <div class="cal-seg" id="adm-cal-seg">
+      <button type="button" class="${admCalView === 'month' ? 'on' : ''}" data-v="month">Month</button>
+      <button type="button" class="${admCalView === 'week' ? 'on' : ''}" data-v="week">Week</button>
+      <button type="button" class="${admCalView === 'day' ? 'on' : ''}" data-v="day">Day</button>
+    </div>
+    <div class="cal-navbar">
+      <button class="cal-chev" type="button" data-action="adm-cal-prev">‹</button>
+      <div class="cal-navlabel">${navLabel}</div>
+      <button class="cal-chev" type="button" data-action="adm-cal-next">›</button>
+    </div>
+    ${admCalTotalLineHtml(periodTotal, dayMap)}
+    <p class="glab" style="margin-top:1.125rem">Filter by task type</p>
+    ${admCalFilterChipsHtml()}
+    <div class="cal-viewbody">${bodyHtml}</div>
+    ${legendHtml}
+    <p class="adm-cal-note">Totals only — individual chefs' tasks aren't shown here.</p>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => admWireCal(), { key: 'admin-pizzas-cal' })
+}
+
+function admCalStep(delta) {
+  admCalSelectedDay = null
+  if (admCalView === 'month') {
+    admCalMo += delta
+    if (admCalMo < 0) { admCalMo = 11; admCalY-- } else if (admCalMo > 11) { admCalMo = 0; admCalY++ }
+  } else if (admCalView === 'week') {
+    const dt = calDateFromKey(admCalWeekKey); dt.setDate(dt.getDate() + delta * 7); admCalWeekKey = calKeyFromDate(dt)
+  } else {
+    const dt = calDateFromKey(admCalDayKey); dt.setDate(dt.getDate() + delta); admCalDayKey = calKeyFromDate(dt)
+  }
+  renderAdminPizzasCal()
+}
+
+function admWireCal() {
+  app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+  app.querySelectorAll('#adm-cal-seg button').forEach(b => {
+    b.addEventListener('click', () => {
+      if (b.dataset.v === admCalView) return
+      admCalView = b.dataset.v
+      admCalSelectedDay = null
+      renderAdminPizzasCal()
+    })
+  })
+  app.querySelector('[data-action="adm-cal-prev"]')?.addEventListener('click', () => admCalStep(-1))
+  app.querySelector('[data-action="adm-cal-next"]')?.addEventListener('click', () => admCalStep(1))
+  app.querySelectorAll('.tt-cal-filter .tt-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      admCalFilter = chip.dataset.tf
+      renderAdminPizzasCal()
+    })
+  })
+  // Tapping a day (month cell or week row) pins the top total to that day;
+  // tapping the same day again clears it back to the period total.
+  app.querySelectorAll('[data-day]').forEach(el => {
+    el.addEventListener('click', () => {
+      const key = el.dataset.day
+      admCalSelectedDay = admCalSelectedDay === key ? null : key
+      renderAdminPizzasCal()
+    })
+  })
 }
 
 // The dashboard's one-line "Reports and Blocks" summary AND the Moderation
@@ -3747,13 +4208,12 @@ async function fetchModerationCounts() {
 }
 
 async function loadModSummary() {
-  const el = app.querySelector('#mod-summary-counts')
-  if (!el) return
+  const pill = app.querySelector('#mod-count-pill')
+  const sub = app.querySelector('#mod-sub')
+  if (!pill && !sub) return
   const { openReports, newBlocks } = await fetchModerationCounts()
-  el.innerHTML = `
-    <span class="count-pip"><span class="pip-dot rep"></span><b>${openReports}</b>&nbsp;pending report${openReports === 1 ? '' : 's'}</span>
-    <span class="count-pip"><span class="pip-dot blk"></span><b>${newBlocks}</b>&nbsp;new block${newBlocks === 1 ? '' : 's'}</span>
-  `
+  if (pill) { pill.textContent = `${openReports} report${openReports === 1 ? '' : 's'}`; pill.hidden = !openReports }
+  if (sub) sub.textContent = `${openReports} pending report${openReports === 1 ? '' : 's'} · ${newBlocks} new block${newBlocks === 1 ? '' : 's'}`
 }
 
 // Dashboard row breakdown mirroring the Bug Reports tabs: untriaged Open vs.
@@ -3761,8 +4221,9 @@ async function loadModSummary() {
 // a single "unresolved" count if the sent_to_claude_at column isn't there yet
 // (pre-migration_bug_claude.sql).
 async function loadBugSummary() {
-  const el = app.querySelector('#bug-summary-counts')
-  if (!el) return
+  const pill = app.querySelector('#bug-count-pill')
+  const sub = app.querySelector('#bug-sub')
+  if (!pill && !sub) return
   const base = () => supabase.from('bug_reports').select('id', { count: 'exact', head: true }).not('status', 'in', '(resolved,dismissed)')
   const [openRes, progRes] = await Promise.all([
     base().is('sent_to_claude_at', null),
@@ -3772,15 +4233,14 @@ async function loadBugSummary() {
     // Column missing / query unsupported — fall back to the combined count.
     const { count, error } = await base()
     const n = error ? 0 : (count || 0)
-    el.innerHTML = `<span class="count-pip"><span class="pip-dot rep"></span><b>${n}</b>&nbsp;unresolved report${n === 1 ? '' : 's'}</span>`
+    if (pill) { pill.textContent = `${n} unresolved`; pill.hidden = !n }
+    if (sub) sub.textContent = `${n} unresolved report${n === 1 ? '' : 's'}`
     return
   }
   const openN = openRes.count || 0
   const progN = progRes.count || 0
-  el.innerHTML = `
-    <span class="count-pip"><span class="pip-dot rep"></span><b>${openN}</b>&nbsp;open</span>
-    <span class="count-pip"><span class="pip-dot claude"></span><b>${progN}</b>&nbsp;in progress</span>
-  `
+  if (pill) { pill.textContent = `${openN} open`; pill.hidden = !openN }
+  if (sub) sub.textContent = `${openN} open · ${progN} sent to Claude`
 }
 
 // Removes a report row that just got resolved (warned or dismissed) from
