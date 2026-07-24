@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.12.1'
+const APP_VERSION = 'v2.12.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -486,7 +486,8 @@ if (import.meta.env.VITE_REVIEW) {
       renderTypePicker: () => renderTypePicker(30, 'Essay writing'),
       openBugReport: () => { renderSettings(); return openBugReport() },
       startTypedTimer: () => startSession(30, 'Essay writing', 'deep'),
-      openEditRecord: () => { renderHome(); logEntriesById.set('demo', { entry: { id: 'demo', task: 'rehearse', minutes: 60, pizzas: 1, icon: '🥖' }, icon: '🥖' }); openEditLogPopup('demo') },
+      openEditRecord: () => { renderHome(); logEntriesById.set('demo', { entry: { id: 'demo', task: 'Admin Edit (+1)', minutes: 60, pizzas: 1 }, icon: '🛠️' }); openEditLogPopup('demo') },
+      openBugManage: () => { renderBugReports(); openBugManageMenu({ id: 'demo', status: 'open', sent_to_claude_at: null, reporter: { display_name: 'Jordan' }, description: 'test' }) },
       ensureBugFab,
     },
   }))
@@ -1045,6 +1046,7 @@ function calMonthTotals(map, y, mo) {
 const EMOJI_TO_TYPE = Object.fromEntries(Object.entries(TASK_TYPE_EMOJI).map(([k, v]) => [v, k]))
 function calBucketOf(e) {
   if (e.type && TASK_TYPE_EMOJI[e.type]) return e.type
+  if (isAdminEditEntry(e)) return 'planning'
   return EMOJI_TO_TYPE[stableIconFor(e)] || 'planning'
 }
 
@@ -1436,7 +1438,8 @@ function calRenderDayBody(dayMap) {
     const isCoin = isCoinEntry(e)
     // Coin conversions get the gold coin glyph; admin edits keep their stored
     // tools icon; everything else uses its stable food icon.
-    const icon = (isCoin && !isAdminEditEntry(e)) ? coinImg('log-coin') : stableIconFor(e)
+    const adminNoType = isAdminEditEntry(e) && !(e.type && TASK_TYPE_EMOJI[e.type])
+    const icon = adminNoType ? '🛠️' : ((isCoin && !isAdminEditEntry(e)) ? coinImg('log-coin') : stableIconFor(e))
     const coinAmt = (COIN_TASK_RE.exec(e.task || '') || [])[1] || ''
     const metric = isCoin ? `${coinImg('log-coin')} ${coinAmt}`.trim() : `🍕 ${formatScore(e.pizzas)}`
     const task = escapeHtml((e.task || '').replace(COIN_TASK_RE, '')) || 'Focus session'
@@ -2423,16 +2426,18 @@ function renderLogRow(entry, editable) {
   // for rows written before this rule existed.
   // Coin conversions show the app's gold coin image (not the coin emoji, which
   // can render as a dull/silver glyph on some platforms).
-  const icon = isAdminEdit ? '🛠️' : (isCoinEntry(entry) ? coinImg('log-coin') : stableIconFor(entry))
-  // Admin-edit rows are an audit trail, not a session the user created - they
-  // can't be renamed, re-iconed, or deleted.
-  const canEdit = editable && entry.id && !isAdminEdit && !isCoinEntry(entry)
+  const adminHasType = isAdminEdit && entry.type && TASK_TYPE_EMOJI[entry.type]
+  const icon = (isAdminEdit && !adminHasType) ? '🛠️' : (isCoinEntry(entry) ? coinImg('log-coin') : stableIconFor(entry))
+  // Admin-edit rows are an audit trail, not a session the user created — the
+  // name stays locked, but the category is now editable. Coin rows remain
+  // fully locked (not a user session).
+  const canEdit = editable && entry.id && !isCoinEntry(entry)
   if (canEdit) logEntriesById.set(entry.id, { entry, icon })
 
   const actions = canEdit ? `
     <div class="log-row-actions2">
       <button class="log-action2 edit" type="button" data-action="edit-log" aria-label="Edit session">${PENCIL_SVG}<span>Edit</span></button>
-      <button class="log-action2 delete" type="button" data-action="delete-log" aria-label="Delete session">${TRASH_SVG}<span>Delete</span></button>
+      ${isAdminEdit ? '' : `<button class="log-action2 delete" type="button" data-action="delete-log" aria-label="Delete session">${TRASH_SVG}<span>Delete</span></button>`}
     </div>
   ` : ''
 
@@ -2539,15 +2544,16 @@ const iconName = (ic) => LOG_ICON_NAMES[ic] || 'Custom'
 function openEditLogPopup(id) {
   const rec = logEntriesById.get(id)
   if (!rec) return
+  const isAdminEdit = isAdminEditEntry(rec.entry)
   const types = resolvedTaskTypes()
   // The session's category: its stored type, else inferred from its displayed icon.
   let selectedType = (rec.entry.type && TASK_TYPE_EMOJI[rec.entry.type])
     ? rec.entry.type
     : (EMOJI_TO_TYPE[rec.icon] || 'planning')
   const o = overlay(`
-    <h3>Edit Record</h3>
-    <label class="field-label" for="edit-log-name">Name:</label>
-    <input id="edit-log-name" class="rename-input" type="text" maxlength="30" value="${escapeHtml(rec.entry.task || '')}" placeholder="Focus session" />
+    <h3>${isAdminEdit ? 'Recategorise' : 'Edit Record'}</h3>
+    ${isAdminEdit ? '' : `<label class="field-label" for="edit-log-name">Name:</label>
+    <input id="edit-log-name" class="rename-input" type="text" maxlength="30" value="${escapeHtml(rec.entry.task || '')}" placeholder="Focus session" />`}
     <label class="field-label">Task type:</label>
     <div class="tt-type-list tt-type-list-compact">
       ${types.map(t => `
@@ -2571,11 +2577,12 @@ function openEditLogPopup(id) {
   })
 
   const input = o.querySelector('#edit-log-name')
-  setTimeout(() => input.focus(), 50)
+  if (input) setTimeout(() => input.focus(), 50)
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="save"]').addEventListener('click', async () => {
-    const newName = input.value.trim().slice(0, 30) || 'Focus session'
-    const ok = await saveLogEdit(id, { task: newName, icon: TASK_TYPE_EMOJI[selectedType], type: selectedType })
+    const updates = { icon: TASK_TYPE_EMOJI[selectedType], type: selectedType }
+    if (!isAdminEdit) updates.task = (input.value.trim().slice(0, 30) || 'Focus session')
+    const ok = await saveLogEdit(id, updates)
     if (!ok) return
     o.remove()
     afterLogChange()
@@ -3269,7 +3276,7 @@ async function openBugReport() {
 }
 
 // ---------- admin: bug reports review ----------
-let bugTab = 'open' // 'open' | 'history' (history = replied + dismissed)
+let bugTab = 'open' // 'open' | 'resolved' | 'dismissed'
 async function renderBugReports() {
   if (!isAdmin()) { renderSettings(); return }
   const content = `
@@ -3277,7 +3284,8 @@ async function renderBugReports() {
     <div class="section-h" style="margin-top:2px"><h2>Bug Reports</h2></div>
     <div class="cal-seg" style="margin-bottom:0.5rem">
       <button type="button" class="${bugTab === 'open' ? 'on' : ''}" data-bugtab="open">Open</button>
-      <button type="button" class="${bugTab === 'history' ? 'on' : ''}" data-bugtab="history">History</button>
+      <button type="button" class="${bugTab === 'resolved' ? 'on' : ''}" data-bugtab="resolved">Resolved</button>
+      <button type="button" class="${bugTab === 'dismissed' ? 'on' : ''}" data-bugtab="dismissed">Dismissed</button>
     </div>
     <div class="bug-adm-list" id="bug-adm-list"><p class="editpic-empty">Loading&hellip;</p></div>
     <div style="height:8px"></div>
@@ -3296,21 +3304,22 @@ async function renderBugReports() {
 function bugAdmCardHtml(r) {
   const who = escapeHtml(r.reporter?.display_name || 'Unknown chef')
   const when = dateLabel(new Date(r.created_at).getTime())
-  const replied = r.status === 'replied'
-  const dismissed = r.status === 'dismissed'
+  const closed = r.status === 'resolved' || r.status === 'dismissed'
   const sent = !!r.sent_to_claude_at
-  const shot = r.screenshot_url
+  const chips = [
+    r.status === 'replied' ? '✅ Replied' : '',
+    r.status === 'resolved' ? '☑️ Resolved' : '',
+    r.status === 'dismissed' ? '🚫 Dismissed' : '',
+    sent ? '🤖 Sent to Claude' : '',
+  ].filter(Boolean).map(c => ` &middot; ${c}`).join('')
+  const shot = (!closed && r.screenshot_url)
     ? `<div class="bug-adm-shot" data-shot role="button" tabindex="0" aria-label="View full screenshot"><img src="${escapeHtml(r.screenshot_url)}" alt="" style="width:100%;height:100%;object-fit:cover;object-position:top center;display:block" /></div>`
     : ''
-  return `<div class="bug-adm-card${dismissed ? ' bug-adm-dismissed' : ''}" data-report="${r.id}">
+  return `<div class="bug-adm-card${closed ? ' bug-adm-dismissed' : ''}" data-report="${r.id}">
     ${shot}
     <div class="bug-adm-desc">${escapeHtml(r.description)}</div>
-    <div class="bug-adm-meta">${who} &middot; ${when}${replied ? ' &middot; ✅ Replied' : ''}${dismissed ? ' &middot; 🚫 Dismissed' : ''}${sent ? ' &middot; 🤖 Sent to Claude' : ''}</div>
-    <div class="bug-adm-actions">
-      <button type="button" data-action="respond">${replied ? 'Reply again' : 'Respond'}</button>
-      <button type="button" data-action="send-claude"${sent ? ' disabled' : ''} style="margin-top:0.5rem;background:var(--card-2);color:var(--cream);border:1px solid var(--line);box-shadow:none">${sent ? '✅ Sent to Claude' : '🤖 Send to Claude'}</button>
-      ${dismissed ? '' : `<button type="button" data-action="dismiss" style="margin-top:0.5rem;background:transparent;color:var(--ember);border:1px solid var(--line);box-shadow:none">Dismiss</button>`}
-    </div>
+    <div class="bug-adm-meta">${who} &middot; ${when}${chips}</div>
+    <div class="bug-adm-actions"><button type="button" data-action="manage">Manage &#9662;</button></div>
   </div>`
 }
 
@@ -3332,30 +3341,58 @@ async function loadBugReports() {
   const list = app.querySelector('#bug-adm-list')
   if (!list) return
   if (error) { list.innerHTML = `<p class="editpic-empty">Couldn't load reports.</p>`; return }
-  // Open tab = active reports; History tab = resolved (replied or dismissed).
-  const resolved = r => r.status === 'replied' || r.status === 'dismissed'
-  const shown = (data || []).filter(r => bugTab === 'history' ? resolved(r) : !resolved(r))
+  // Open = active (open or replied but not yet marked resolved); Resolved =
+  // explicitly resolved; Dismissed = dismissed.
+  const tabOf = r => r.status === 'dismissed' ? 'dismissed' : r.status === 'resolved' ? 'resolved' : 'open'
+  const shown = (data || []).filter(r => tabOf(r) === bugTab)
   if (!shown.length) {
-    list.innerHTML = `<p class="editpic-empty">${bugTab === 'history' ? 'No resolved reports yet.' : 'No open reports 🎉'}</p>`
+    const empty = { open: 'No open reports 🎉', resolved: 'No resolved reports yet.', dismissed: 'No dismissed reports.' }[bugTab]
+    list.innerHTML = `<p class="editpic-empty">${empty}</p>`
     return
   }
   list.innerHTML = shown.map(bugAdmCardHtml).join('')
   shown.forEach(r => {
     const card = list.querySelector(`[data-report="${r.id}"]`)
     if (!card) return
-    card.querySelector('[data-action="respond"]')?.addEventListener('click', () => openBugReplyPopup(r))
-    card.querySelector('[data-action="send-claude"]')?.addEventListener('click', async (e) => {
-      const btn = e.currentTarget
-      btn.disabled = true
-      btn.textContent = 'Sending…'
-      const { error: sendErr } = await supabase.rpc('flag_bug_report_for_claude', { report_id: r.id })
-      if (sendErr) { btn.disabled = false; btn.textContent = '🤖 Send to Claude'; toast('Could not send — try again'); return }
-      btn.textContent = '✅ Sent to Claude'
-      toast('Sent to Claude 🤖')
-    })
-    card.querySelector('[data-action="dismiss"]')?.addEventListener('click', (e) => confirmDismissBugReport(r, e.currentTarget))
-    if (r.screenshot_url) card.querySelector('[data-shot]')?.addEventListener('click', () => openScreenshotLightbox(r.screenshot_url))
+    card.querySelector('[data-action="manage"]')?.addEventListener('click', () => openBugManageMenu(r))
+    if (!(r.status === 'resolved' || r.status === 'dismissed') && r.screenshot_url) {
+      card.querySelector('[data-shot]')?.addEventListener('click', () => openScreenshotLightbox(r.screenshot_url))
+    }
   })
+}
+
+// Consolidated per-report action menu (replaces the old stacked buttons).
+function openBugManageMenu(r) {
+  const sent = !!r.sent_to_claude_at
+  const o = overlay(`
+    <button class="popup-close" data-action="close" aria-label="Close">✕</button>
+    <h3>Manage report</h3>
+    <div class="home-btn-col" style="margin-top:0.5rem">
+      <button type="button" data-action="respond">${r.status === 'replied' ? 'Reply again' : 'Respond'}</button>
+      <button type="button" class="btn-secondary" data-action="claude">${sent ? '↩︎ Unsend from Claude' : '🤖 Send to Claude'}</button>
+      <button type="button" class="btn-secondary" data-action="resolve">☑️ Mark Resolved</button>
+      <button type="button" class="btn-danger" data-action="dismiss">Dismiss</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+  const close = () => o.remove()
+  o.querySelector('[data-action="close"]').addEventListener('click', close)
+  o.querySelector('[data-action="respond"]').addEventListener('click', () => { close(); openBugReplyPopup(r) })
+  o.querySelector('[data-action="claude"]').addEventListener('click', async () => {
+    close()
+    const rpc = sent ? 'unflag_bug_report_for_claude' : 'flag_bug_report_for_claude'
+    const { error } = await supabase.rpc(rpc, { report_id: r.id })
+    if (error) { toast('Could not update — try again'); return }
+    toast(sent ? 'Unsent from Claude' : 'Sent to Claude 🤖')
+    loadBugReports()
+  })
+  o.querySelector('[data-action="resolve"]').addEventListener('click', async () => {
+    close()
+    const { error } = await supabase.rpc('resolve_bug_report', { report_id: r.id })
+    if (error) { toast('Could not resolve — try again'); return }
+    toast('Marked resolved ☑️')
+    loadBugReports()
+  })
+  o.querySelector('[data-action="dismiss"]').addEventListener('click', () => { close(); confirmDismissBugReport(r) })
 }
 
 // In-app screenshot viewer — an overlay so tapping a report's shot never
@@ -3368,7 +3405,7 @@ function openScreenshotLightbox(url) {
   o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
 }
 
-function confirmDismissBugReport(r, btn) {
+function confirmDismissBugReport(r) {
   const o = overlay(`
     <h3>Dismiss report?</h3>
     <p class="swipe-line" style="margin-bottom:0.75rem">No reply is sent to ${escapeHtml(r.reporter?.display_name || 'this chef')} — this just closes it out of your queue.</p>
