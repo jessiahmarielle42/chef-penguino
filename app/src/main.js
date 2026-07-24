@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.12.2'
+const APP_VERSION = 'v2.12.3'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -765,7 +765,16 @@ function mountScreen(active, contentHtml, after, opts = {}) {
   `
   mountedScreenKey = key
   const newScroll = app.querySelector('.scroll')
-  if (newScroll && carryTop) newScroll.scrollTop = carryTop
+  if (newScroll && carryTop) {
+    newScroll.scrollTop = carryTop
+    // Many screens inject their real content asynchronously (Home's session
+    // log, History, Bug Reports…). At this point the scroll area is still a
+    // short "Loading…" placeholder, so the line above clamps to ~0. Re-apply
+    // the saved position as the content grows in, until it sticks, the user
+    // scrolls, or a short window elapses — so an action/popup never bounces
+    // the user back to the top.
+    restoreScrollWhenReady(newScroll, carryTop)
+  }
   if (!opts.hideStatusBar) wireStatusBar()
   wireTabBar()
   if (after) after()
@@ -775,6 +784,32 @@ function mountScreen(active, contentHtml, after, opts = {}) {
   // The persistent bug-report FAB lives on <body>; ensure it exists and its
   // visibility matches the current auth/modal state on every render.
   ensureBugFab()
+}
+
+// Re-applies a target scrollTop to `el` as its (async-loaded) content grows,
+// so a re-render never strands the user at the top. Stops once the target is
+// reached, the user takes over scrolling, or ~2.5s passes.
+function restoreScrollWhenReady(el, target) {
+  let done = false
+  const finish = () => {
+    if (done) return
+    done = true
+    obs.disconnect()
+    clearTimeout(timer)
+    el.removeEventListener('wheel', onUser)
+    el.removeEventListener('touchstart', onUser)
+  }
+  const onUser = () => finish() // user started scrolling — don't fight them
+  const apply = () => {
+    if (done) return
+    el.scrollTop = target // browser clamps to max while content is still short
+    if (Math.abs(el.scrollTop - target) <= 1) finish()
+  }
+  const obs = new MutationObserver(apply)
+  obs.observe(el, { childList: true, subtree: true })
+  el.addEventListener('wheel', onUser, { passive: true })
+  el.addEventListener('touchstart', onUser, { passive: true })
+  const timer = setTimeout(finish, 2500)
 }
 
 // =================================================================
@@ -3344,6 +3379,10 @@ async function loadBugReports() {
   // Open = active (open or replied but not yet marked resolved); Resolved =
   // explicitly resolved; Dismissed = dismissed.
   const tabOf = r => r.status === 'dismissed' ? 'dismissed' : r.status === 'resolved' ? 'resolved' : 'open'
+  // Surface the only stat the admin needs: how many reports are still open.
+  const openCount = (data || []).filter(r => tabOf(r) === 'open').length
+  const openTabBtn = app.querySelector('[data-bugtab="open"]')
+  if (openTabBtn) openTabBtn.textContent = openCount ? `Open (${openCount})` : 'Open'
   const shown = (data || []).filter(r => tabOf(r) === bugTab)
   if (!shown.length) {
     const empty = { open: 'No open reports 🎉', resolved: 'No resolved reports yet.', dismissed: 'No dismissed reports.' }[bugTab]
