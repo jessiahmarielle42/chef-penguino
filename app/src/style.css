@@ -1816,8 +1816,12 @@ img.shop-image {
   min-width: 0; display: flex; align-items: center; justify-content: center; gap:0.1875rem;
 }
 .cal-seg-4 button > span:not(.seg-badge) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-seg-4 .seg-badge { margin-left: 0; }
 .seg-badge {
   flex: none; min-width:1.0625rem; padding:0 0.25rem; border-radius:62.4375rem;
+  /* The 3-tab control lays out inline, so the badge needs its own spacing;
+     the 4-tab control is flex and overrides this with gap. */
+  display: inline-block; margin-left:0.3125rem; vertical-align: middle;
   font-size:0.625rem; font-weight:900; line-height:1.0625rem;
   background: rgba(247,237,223,0.14); color: var(--cream);
   font-variant-numeric: tabular-nums;
