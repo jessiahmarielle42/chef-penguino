@@ -1,18 +1,20 @@
 -- ============================================================
 --  Friend requests + directory search
 -- ------------------------------------------------------------
---  Today add_friend_by_code() inserts BOTH directions of the
---  friendship immediately, and RLS grants friends read access to
---  each other's sessions/profiles. That was safe only because the
---  friend code acted as implicit consent: you had to be given the
---  code to add someone.
+--  Previously add_friend_by_code() inserted BOTH directions of the
+--  friendship immediately. Since RLS grants friends read access to
+--  each other's sessions and profile, knowing someone's code was
+--  enough to start reading their focus history - the code was doing
+--  the job of a permission check without ever asking anyone.
 --
---  The new "All" tab lets any chef find any other chef by name, so
---  that implicit consent disappears. This migration replaces it
---  with an explicit one:
+--  Chefs can now also be found by name, so this makes consent
+--  explicit. BOTH routes create a pending request:
 --
---    search  -> ＋  = sends a PENDING request (needs approval)
---    friend code    = still instant (sharing your code IS consent)
+--    search  -> +    sends a request
+--    friend code     sends a request
+--
+--  The code identifies WHICH chef you mean; approving is what grants
+--  access. Nobody reads your sessions until you tap Approve.
 --
 --  Run this in the Supabase SQL Editor.
 -- ============================================================
@@ -59,7 +61,7 @@ create policy "profiles are visible to self and friends"
     )
   );
 
--- ---------- 3. Directory for the "All" tab ----------
+-- ---------- 3. Chef search (Friends tab) ----------
 -- Deliberately NARROW: name, avatar, weekly score. No friend_code —
 -- strangers must not be able to harvest codes and bypass approval.
 -- No email, no session detail.
@@ -215,9 +217,11 @@ as $$
   order by f.created_at desc;
 $$;
 
--- ---------- 7. Code path stays INSTANT ----------
--- Sharing your code is explicit consent, so this still creates an
--- accepted friendship on both sides — now with status set explicitly.
+-- ---------- 7. Code path also sends a request ----------
+-- Both ways in (search and code) now go through approval. The code says
+-- WHICH chef you mean; the approval is what actually grants access. That
+-- matters because friendship is what RLS uses to expose session history -
+-- nobody should be able to read yours without you tapping Approve.
 create or replace function public.add_friend_by_code(code text)
 returns void
 language plpgsql
@@ -225,7 +229,6 @@ security definer set search_path = public
 as $$
 declare
   target_id uuid;
-  is_blocked boolean;
 begin
   select id into target_id from public.profiles where friend_code = upper(code);
 
@@ -233,26 +236,9 @@ begin
     raise exception 'No user found with that friend code';
   end if;
 
-  if target_id = auth.uid() then
-    raise exception 'You cannot add yourself';
-  end if;
-
-  select exists(
-    select 1 from public.blocked_users
-    where (blocker_id = auth.uid() and blocked_id = target_id)
-       or (blocker_id = target_id and blocked_id = auth.uid())
-  ) into is_blocked;
-  if is_blocked then
-    raise exception 'Unable to add this friend';
-  end if;
-
-  insert into public.friends (user_id, friend_id, status, requested_by)
-  values (auth.uid(), target_id, 'accepted', auth.uid())
-  on conflict (user_id, friend_id) do update set status = 'accepted';
-
-  insert into public.friends (user_id, friend_id, status, requested_by)
-  values (target_id, auth.uid(), 'accepted', auth.uid())
-  on conflict (user_id, friend_id) do update set status = 'accepted';
+  -- send_friend_request re-checks blocks, existing friendship, and the
+  -- "they already asked you" case, so there is nothing to duplicate here.
+  perform public.send_friend_request(target_id);
 end;
 $$;
 
