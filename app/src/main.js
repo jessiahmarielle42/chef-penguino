@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.12.3'
+const APP_VERSION = 'v2.1.2.3'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
