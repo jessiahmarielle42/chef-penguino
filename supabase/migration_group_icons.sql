@@ -14,6 +14,7 @@ alter table public.group_icons enable row level security;
 
 -- Any signed-in chef can read the curated list (e.g. a future group-icon
 -- picker); writes only ever go through the admin-gated RPCs below.
+drop policy if exists "group icons are readable by authenticated users" on public.group_icons;
 create policy "group icons are readable by authenticated users"
   on public.group_icons for select
   to authenticated
