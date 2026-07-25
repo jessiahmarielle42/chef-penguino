@@ -2258,6 +2258,8 @@ async function openCreateGroupPopup() {
   o.querySelector('[data-action="create"]').addEventListener('click', async () => {
     const name = o.querySelector('#cg-name').value.trim()
     if (!name) { toast('Give your group a name first'); return }
+    // Same blocklist as chef display names - a group name is just as public.
+    if (!isNameAllowed(name)) { toast("That name isn't allowed — please choose another."); return }
     const btn = o.querySelector('[data-action="create"]')
     btn.disabled = true
     const { data, error } = await supabase.rpc('create_group', { name, emoji: chefsCreateEmoji, privacy })
@@ -2503,6 +2505,7 @@ function wireChefsGroupSettings(bodyEl, groupId, g) {
   bodyEl.querySelector('[data-action="save-details"]').addEventListener('click', async () => {
     const name = bodyEl.querySelector('#gs-name').value.trim()
     if (!name) { toast('Group name is required'); return }
+    if (!isNameAllowed(name)) { toast("That name isn't allowed — please choose another."); return }
     const { error } = await supabase.rpc('update_group_settings', { group_id: groupId, name, emoji: selectedEmoji, privacy: selectedPrivacy })
     if (error) { toast(error.message || 'Could not save changes.'); return }
     toast('Group updated!')
@@ -6030,6 +6033,11 @@ const NAME_BLOCKLIST = [
   'fuck', 'shit', 'bitch', 'asshole', 'assh0le', 'cunt', 'dick', 'pussy',
   'nigger', 'nigga', 'fag', 'faggot', 'whore', 'slut', 'retard', 'rape',
   'nazi', 'cock', 'twat', 'bastard', 'dyke', 'chink', 'spic', 'kike',
+  // Anatomy/sexual terms - substring match, so e.g. "boobs" and "boobies"
+  // are both caught by "boob".
+  'penis', 'vagina', 'breast', 'boob', 'dildo', 'porn', 'sex',
+  'blowjob', 'handjob', 'anal', 'clit', 'testicle', 'scrotum', 'semen',
+  'orgasm', 'nude', 'naked', 'xxx', 'jizz',
 ]
 function isNameAllowed(name) {
   const n = (name || '').toLowerCase().replace(/[^a-z0-9]/g, '')
