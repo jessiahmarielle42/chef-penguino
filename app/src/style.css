@@ -529,6 +529,20 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   display: grid; place-items: center; padding: 0;
 }
 .adm-emote-row { display: flex; align-items: center; gap:0.75rem; padding:0.75rem 0.9375rem; cursor: pointer; }
+/* First-frame preview so the admin can see WHICH emote a row is, rather than
+   identifying animations by title alone. */
+.adm-emote-thumb {
+  width:2.75rem; height:2.75rem; flex: none; border-radius:0.625rem; object-fit: cover;
+  border: 1px solid var(--line); pointer-events: none;
+  /* Fallback shows through whenever no frame is painted (still decoding, or a
+     client that can't play the clip), so the row never has an empty hole. */
+  background: var(--card-2) url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23b39a86' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 8.5v7l6-3.5-6-3.5z'/%3E%3Crect x='3' y='4' width='18' height='16' rx='3'/%3E%3C/svg%3E") center/1.25rem no-repeat;
+}
+/* Larger, looping version in the edit popup. */
+.adm-emote-preview {
+  display: block; width:100%; max-height:11rem; object-fit: cover; border-radius:0.875rem;
+  background: var(--card-2); border: 1px solid var(--line); margin:0.25rem 0 1.125rem;
+}
 .adm-emote-row + .adm-emote-row { border-top: 1px solid var(--line); }
 .adm-emote-info { min-width: 0; flex: 1; }
 .adm-emote-name { font-weight: 800; color: var(--cream); font-size:0.9375rem; }
@@ -2493,7 +2507,10 @@ img.shop-image {
 /* the "N baking" pill below the seg row - reuses .adm-live-dot's green
    pulsing-dot look; [hidden] needs to win explicitly since .chefs-pill-bar
    itself sets display:flex at equal specificity. */
-.chefs-pill-bar { display: flex; justify-content: flex-end; margin:-0.25rem 0.125rem 0.75rem; }
+/* Sits between the tab row and the search field, so it needs real breathing
+   room on BOTH sides - the old negative top margin pulled it up against the
+   tabs and left it looking wedged in. */
+.chefs-pill-bar { display: flex; justify-content: flex-end; margin:0.625rem 0.125rem 0.875rem; }
 .chefs-pill-bar[hidden] { display: none; }
 .chefs-pill { cursor: default; }
 .adm-live-dot.off { color: var(--muted); background: var(--soft-fill); border-color: var(--line); }
@@ -2516,6 +2533,17 @@ img.shop-image {
 /* A flex item's min-width defaults to auto (its content size), which
    defeats the ellipsis on .fn set above unless overridden here too. */
 .chefs-fn-row .fn { min-width: 0; }
+/* Second line of the leaderboard row: score + the "you" marker. Freeing the
+   name from sharing line 1 with these is what lets names run much longer. */
+.chefs-meta-row { display: flex; align-items: center; gap:0.5rem; margin-top:0.125rem; }
+.chefs-score {
+  font-family: var(--font-display); font-weight: 800; font-size:0.8125rem;
+  color: var(--fire); font-variant-numeric: tabular-nums;
+}
+.chefs-meta-row .you-tag {
+  color: var(--muted); font-weight: 700; font-size:0.6875rem; text-transform: uppercase;
+  letter-spacing:0.04em; background: var(--soft-fill); border-radius:62.4375rem; padding:0.0625rem 0.375rem;
+}
 .chefs-live-dot { width:0.5rem; height:0.5rem; border-radius: 50%; background: var(--owned); flex: none; animation: admPulse 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .chefs-live-dot { animation: none; } }
 /* keeps the score column aligned on the "you" row, which has no ⋮ button */

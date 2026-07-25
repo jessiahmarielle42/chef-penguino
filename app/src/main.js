@@ -2066,16 +2066,28 @@ async function fetchAcceptedFriends() {
 
 function chefsFriendRowHtml(f, i) {
   const rank = i < 3 ? `<div class="medal">${['🥇', '🥈', '🥉'][i]}</div>` : `<div class="rank">${i + 1}</div>`
-  const name = f.isMe ? `${escapeHtml(f.display_name)} <span class="you-tag">(you)</span>` : escapeHtml(chefName(f.display_name))
+  const name = escapeHtml(chefName(f.display_name))
   // A dot, not a chip, next to the name - a chip would change row height for
   // every row whenever one friend happens to be baking.
   const liveDot = f.baking ? '<span class="chefs-live-dot" title="Baking now"></span>' : ''
+  // Two lines instead of one: the name owns the full row width on line 1, and
+  // the score (plus the "you" marker) drops to a quieter line beneath it.
+  // Previously the name competed horizontally with a right-aligned score AND
+  // an inline "(you)", which is what forced such a short name limit. Rank,
+  // avatar and ⋮ stay put, and two text lines are still shorter than the
+  // avatar, so row height is unchanged.
+  const meta = [
+    `<span class="chefs-score">🍕 ${formatScore(Number(f.weekly) || 0)}</span>`,
+    f.isMe ? '<span class="you-tag">you</span>' : '',
+  ].filter(Boolean).join('')
   return `
     <div class="frow ${f.isMe ? 'me' : ''}" ${f.isMe ? 'role="button" tabindex="0"' : `data-friend="${f.id}" role="button" tabindex="0"`}>
       ${rank}
       <img src="${f.avatar_url || DEFAULT_AVATAR}" alt="" />
-      <div class="finfo"><div class="chefs-fn-row">${liveDot}<span class="fn">${name}</span></div></div>
-      <div class="score">🍕 ${formatScore(Number(f.weekly) || 0)}</div>
+      <div class="finfo">
+        <div class="chefs-fn-row">${liveDot}<span class="fn">${name}</span></div>
+        <div class="chefs-meta-row">${meta}</div>
+      </div>
       ${f.isMe ? '<span class="chefs-more-spacer" aria-hidden="true"></span>' : `<button type="button" class="frow-more" data-more="${f.id}" aria-label="More actions">⋮</button>`}
     </div>`
 }
@@ -5672,8 +5684,13 @@ function renderAdminEmoteTypes() {
       const typeChip = tagId
         ? `<span class="adm-emote-type">${escapeHtml(tagNameById(tagId) || '—')}</span>`
         : `<span class="adm-emote-type none">No type</span>`
+      // Emotes have no still thumbnail - only the clip - so the preview is a
+      // muted video parked on its first frame (preload=metadata, never played).
+      // Without it the admin is renaming/tagging rows by title alone with no
+      // idea which animation they're actually looking at.
       return `
         <div class="adm-emote-row" data-emote-id="${e.id}" role="button" tabindex="0">
+          <video class="adm-emote-thumb" src="${BASE}assets/${e.clip}#t=0.1" muted playsinline preload="metadata" tabindex="-1" aria-hidden="true"></video>
           <div class="adm-emote-info"><div class="adm-emote-name">${escapeHtml(emoteName(e))}</div><div class="adm-emote-sub">${escapeHtml(emoteDesc(e))}</div></div>
           <div class="adm-emote-right">${typeChip}<span class="chevron" aria-hidden="true">›</span></div>
         </div>`
@@ -5742,6 +5759,9 @@ function openEmoteEditPopup(emote) {
   const typeOpts = [{ id: '', label: 'No type' }, ...emoteTags.map(t => ({ id: t.id, label: t.name }))]
   const o = overlay(`
     <h3>Edit Emote</h3>
+    <!-- Autoplaying loop, not a still: the whole point of the preview is to
+         show WHICH animation this row is, and these clips are short. -->
+    <video class="adm-emote-preview" src="${BASE}assets/${emote.clip}" muted playsinline loop autoplay preload="auto" aria-hidden="true"></video>
     <label class="field-label" for="em-title">Title</label>
     <input id="em-title" class="rename-input" type="text" maxlength="40" value="${escapeHtml(emoteName(emote))}" />
     <label class="field-label" for="em-desc">Description</label>
@@ -5923,7 +5943,7 @@ function openAdminAdjustPopup(profile) {
     </div>
 
     <label class="field-label" for="admin-name" style="margin-top:0.375rem">Display Name</label>
-    <input id="admin-name" class="rename-input" type="text" maxlength="7" value="${escapeHtml(profile.display_name || '')}" />
+    <input id="admin-name" class="rename-input" type="text" maxlength="13" value="${escapeHtml(profile.display_name || '')}" />
 
     <label class="field-label" for="admin-pizzas">Pizzas</label>
     <input id="admin-pizzas" class="rename-input" type="number" step="0.01" value="${curPizzas}" />
@@ -5947,7 +5967,7 @@ function openAdminAdjustPopup(profile) {
 
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="apply"]').addEventListener('click', async () => {
-    const newName = o.querySelector('#admin-name').value.trim().slice(0, 7) || profile.display_name
+    const newName = o.querySelector('#admin-name').value.trim().slice(0, 13) || profile.display_name
     const newPizzas = Number(o.querySelector('#admin-pizzas').value)
     const newCoins = Number(o.querySelector('#admin-coins').value)
     if (Number.isNaN(newPizzas) || Number.isNaN(newCoins)) { toast('Enter valid numbers'); return }
@@ -6081,7 +6101,7 @@ function openRenamePopup() {
     <h3>Edit name</h3>
     <div class="rename-chef-row">
       <span class="rename-chef-prefix">Chef</span>
-      <input id="rename-input" class="rename-input" type="text" maxlength="7" value="${escapeHtml(myRawName())}" placeholder="Your name" />
+      <input id="rename-input" class="rename-input" type="text" maxlength="13" value="${escapeHtml(myRawName())}" placeholder="Your name" />
     </div>
     <p class="inline-error" id="rename-error">That name isn't allowed &mdash; please choose another.</p>
     <div class="home-btn-col">
@@ -6105,7 +6125,7 @@ function openRenamePopup() {
   setTimeout(() => input.focus(), 50)
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="save"]').addEventListener('click', async () => {
-    const newName = stripChef(input.value).slice(0, 7)
+    const newName = stripChef(input.value).slice(0, 13)
     if (!newName) return
     if (!validate()) return
     const { error } = await supabase.from('profiles').update({ display_name: newName }).eq('id', currentUser.id)
