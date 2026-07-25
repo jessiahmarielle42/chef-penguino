@@ -386,6 +386,7 @@ async function finalizeSession(playAlarm) {
   logSession({ completedAt, minutes, pizzas: pizzasEarned, task: t.task, type: t.type })
   state.timer = null
   save()
+  setBakingNow(false)
 
   if (currentUser) {
     const row = {
@@ -1990,12 +1991,13 @@ async function loadFriendsList() {
   const friends = friendRows.map(r => r.profiles).filter(Boolean)
   const pendingNootTargets = new Set((pendingRows || []).map(r => r.recipient_id))
 
-  // TODO: there's no "session currently in progress" table (sessions rows are
-  // only written on completion - see finalizeSession()), so "baking now" can't
-  // actually be computed yet. Same honest stand-in as the admin dashboard's
-  // baking pill (loadAdminDashboardStats): report 0 rather than a made-up
-  // number until presence/live-session tracking exists to swap this for real.
-  showChefsPill(0)
+  // profiles.baking_since is set while a timer runs (see setBakingNow), and
+  // anything older than the staleness cutoff is treated as abandoned rather
+  // than still baking. Friends' profiles are readable under existing RLS, so
+  // no extra query is needed - the flag rides along on the friend rows.
+  const cutoff = bakingCutoffISO()
+  friends.forEach(f => { f.baking = !!f.baking_since && f.baking_since > cutoff })
+  showChefsPill(friends.filter(f => f.baking).length)
 
   if (!friends.length) {
     listEl.innerHTML = `<div class="frow lonely-card">It's lonely here. Add friends to start climbing the ladder!</div>`
@@ -2009,8 +2011,10 @@ async function loadFriendsList() {
   const weeklyById = {}
   ;(weekSessions || []).forEach(s => { weeklyById[s.user_id] = (weeklyById[s.user_id] || 0) + (Number(s.pizzas) || 0) })
 
+  // Your own row never shows the dot - you know you're baking, and the pill
+  // above counts friends. Friends keep the flag computed from baking_since.
   const me = { id: currentUser.id, display_name: myName(), pizzas: displayPizzas(), avatar_url: myAvatar(), isMe: true, baking: false }
-  const board = [...friends.map(f => ({ ...f, baking: false })), me]
+  const board = [...friends.map(f => ({ ...f })), me]
   board.forEach(f => { f.weekly = weeklyById[f.id] || 0 })
   board.sort((a, b) => b.weekly - a.weekly)
 
@@ -2032,9 +2036,16 @@ async function loadFriendsList() {
 // unfiltered pre-migration query - which only ever contained accepted rows
 // anyway - so the board still loads if that migration hasn't been run yet.
 async function fetchAcceptedFriends() {
-  const sel = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote)'
+  const sel = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote, baking_since)'
   let { data, error } = await supabase.from('friends').select(sel).eq('status', 'accepted')
-  if (error) ({ data } = await supabase.from('friends').select(sel))
+  // Fall back twice: once without the status filter (pre-friend-requests DB),
+  // then without baking_since (pre-migration_baking_now DB), so the board
+  // still loads on an older schema instead of coming back empty.
+  if (error) ({ data, error } = await supabase.from('friends').select(sel))
+  if (error) {
+    const legacy = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote)'
+    ;({ data } = await supabase.from('friends').select(legacy))
+  }
   return data || []
 }
 
@@ -2181,9 +2192,12 @@ function chefsGroupCardHtml(g, joinable) {
         <div class="chefs-stack">${chefsAvatarStack(members)}</div>
         ${joinable
           ? `<button type="button" class="chefs-join-btn" data-join="${id}">Join</button>`
-          // TODO: same "no live-session tracking" caveat as the Friends tab -
-          // 0 is the honest floor, not a real per-group count (yet).
-          : `<div class="chefs-gbaking">🔥 0 baking</div>`}
+          // baking_count comes from my_groups(); it's absent on an older
+          // schema, in which case the line is simply omitted rather than
+          // asserting "0 baking" as if it were measured.
+          : (g.baking_count === undefined || g.baking_count === null
+              ? ''
+              : `<div class="chefs-gbaking">🔥 ${Number(g.baking_count)} baking</div>`)}
       </div>
     </div>`
 }
@@ -2327,9 +2341,10 @@ async function loadChefsGroupDetail(groupId) {
   const members = memberData || []
   const ranked = [...members].sort((a, b) => Number(b.weekly_pizzas) - Number(a.weekly_pizzas))
 
-  // TODO: no live-session tracking exists (see the Friends-tab caveat above) -
-  // 0 is the honest floor for "this group's baking count" until it does.
-  showChefsPill(0)
+  // group_members_list() returns each member's baking_since (see
+  // migration_baking_now.sql), so this group's live count is just a filter.
+  const bakingCutoff = bakingCutoffISO()
+  showChefsPill(members.filter(m => m.baking_since && m.baking_since > bakingCutoff).length)
 
   bodyEl.innerHTML = `
     <div class="chefs-ghead">
@@ -4437,7 +4452,7 @@ function renderAdminDashboard() {
 // dashboard from painting.
 async function loadAdminDashboardStats() {
   const start = admStartOfDay(new Date())
-  const [chefsRes, newTodayRes, pizzasRes, presetsRes, tagsRes, iconsRes] = await Promise.all([
+  const [chefsRes, newTodayRes, pizzasRes, presetsRes, tagsRes, iconsRes, bakingRes] = await Promise.all([
     supabase.from('profiles').select('id', { count: 'exact', head: true }),
     supabase.from('profiles').select('id', { count: 'exact', head: true }).gte('created_at', start.toISOString()),
     // Needs "admin can view all sessions" (see migration_admin_sessions.sql) -
@@ -4447,6 +4462,9 @@ async function loadAdminDashboardStats() {
     supabase.from('preset_avatars').select('id', { count: 'exact', head: true }),
     supabase.from('emote_tags').select('id', { count: 'exact', head: true }),
     supabase.from('group_icons').select('id', { count: 'exact', head: true }), // errors pre-migration_group_icons.sql - handled below
+    // Chefs mid-session right now. Errors pre-migration_baking_now.sql, which
+    // is handled below by falling back to a dash rather than a wrong number.
+    supabase.from('profiles').select('id', { count: 'exact', head: true }).gt('baking_since', bakingCutoffISO()),
   ])
 
   const chefsN = chefsRes.count || 0
@@ -4456,12 +4474,9 @@ async function loadAdminDashboardStats() {
   const set = (id, txt) => { const el = app.querySelector('#' + id); if (el) el.textContent = txt }
   set('kpi-chefs-val', chefsN.toLocaleString())
   set('kpi-pizzas-val', formatScore(pizzasToday))
-  // TODO: there's no "session currently in progress" table (sessions rows are
-  // only written on completion - see finalizeSession()), so there's no real
-  // number for "chefs baking right now" to show here. Using total chef count
-  // as an honest stand-in rather than inventing a live figure; swap this for
-  // a real in-progress count if/when presence or live-session tracking exists.
-  set('hq-baking-n', chefsN.toLocaleString() + ' baking')
+  // A dash, not 0, when the column isn't there yet: "0 baking" would read as
+  // a real measurement of nobody baking rather than "not tracked here".
+  set('hq-baking-n', (bakingRes.error ? '–' : (bakingRes.count || 0).toLocaleString()) + ' baking')
   set('users-sub', `Edit pizzas, coins & names · ${chefsN} chef${chefsN === 1 ? '' : 's'}`)
   set('setup-presets-n', presetsRes.error ? '–' : String(presetsRes.count || 0))
   set('setup-emotes-n', tagsRes.error ? '–' : String(tagsRes.count || 0))
@@ -6238,7 +6253,27 @@ function startSession(minutes, task, type) {
     remainingMsSnapshot: null,
   }
   save()
+  setBakingNow(true)
   renderTimerLoop(true)
+}
+
+// Marks this chef as mid-session so friends'/admin "N baking" counts have
+// something to read - a sessions row only exists once a session finishes.
+// Fire-and-forget: a failed write must never block or break the timer, and
+// the staleness cutoff in bakingCutoffISO() cleans up anything left behind.
+function setBakingNow(on) {
+  if (!currentUser) return
+  supabase.from('profiles')
+    .update({ baking_since: on ? new Date().toISOString() : null })
+    .eq('id', currentUser.id)
+    .then(() => {}, () => {})
+}
+
+// Anything older than this is treated as abandoned (app closed mid-session)
+// rather than still baking, so a stale row can't inflate the count forever.
+const BAKING_STALE_HOURS = 4
+function bakingCutoffISO() {
+  return new Date(Date.now() - BAKING_STALE_HOURS * 3600 * 1000).toISOString()
 }
 
 // ---------- Timer + looping gameplay video (unchanged mechanics) ----------
