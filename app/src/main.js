@@ -282,17 +282,28 @@ if (audioCtx) {
   source.connect(musicGain).connect(audioCtx.destination)
 }
 
+// True while something else legitimately owns audio focus (a lore video
+// playing with its own sound) - syncMusic() must not resume bgMusic while
+// this is set, see the comment on the global click listener below.
+let musicSuspendedByOther = false
+
 function syncMusic() {
   if (musicGain) musicGain.gain.value = state.volume
   else bgMusic.volume = state.volume
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {})
-  if (state.muted) bgMusic.pause()
+  if (state.muted || musicSuspendedByOther) bgMusic.pause()
   else bgMusic.play().catch(() => {})
 }
 
 // Re-sync on every tap rather than once - any interruption (an intro video
 // with its own sound taking over the audio focus, backgrounding the tab,
 // etc.) would otherwise leave the music paused with nothing to resume it.
+// This ALSO fires on the very tap that opens a lore video (the click bubbles
+// from the card up to document) and on every tap inside the lore player
+// itself - which is exactly why playLoreVideo() sets musicSuspendedByOther
+// rather than relying on bgMusic.pause() alone: without that flag this
+// listener would immediately call bgMusic.play() again on that same click
+// and undo the pause before the video even finished opening.
 document.addEventListener('click', () => syncMusic())
 
 // Backgrounding the tab (switching apps, locking the phone) auto-pauses
@@ -4463,6 +4474,11 @@ function renderLegal() {
 // in case neither fullscreen API is available.
 function playLoreVideo(entry) {
   const wasMusicPlaying = !bgMusic.paused
+  // Must be set BEFORE bgMusic.pause(): this same click event is still
+  // bubbling up to document's global click listener, which calls
+  // syncMusic() and would otherwise immediately call bgMusic.play() again
+  // (see the comment on that listener) before this function even returns.
+  musicSuspendedByOther = true
   bgMusic.pause()
 
   const wrap = document.createElement('div')
@@ -4483,6 +4499,7 @@ function playLoreVideo(entry) {
     video.removeEventListener('ended', onEnded)
     video.pause()
     wrap.remove()
+    musicSuspendedByOther = false
     if (wasMusicPlaying && !state.muted) bgMusic.play().catch(() => {})
   }
   const onFullscreenChange = () => { if (!document.fullscreenElement) cleanup() }
