@@ -2059,7 +2059,7 @@ function chefsFriendRowHtml(f, i) {
     <div class="frow ${f.isMe ? 'me' : ''}" ${f.isMe ? 'role="button" tabindex="0"' : `data-friend="${f.id}" role="button" tabindex="0"`}>
       ${rank}
       <img src="${f.avatar_url || DEFAULT_AVATAR}" alt="" />
-      <div><div class="chefs-fn-row">${liveDot}<span class="fn">${name}</span></div></div>
+      <div class="finfo"><div class="chefs-fn-row">${liveDot}<span class="fn">${name}</span></div></div>
       <div class="score">🍕 ${formatScore(Number(f.weekly) || 0)}</div>
       ${f.isMe ? '<span class="chefs-more-spacer" aria-hidden="true"></span>' : `<button type="button" class="frow-more" data-more="${f.id}" aria-label="More actions">⋮</button>`}
     </div>`
@@ -2101,7 +2101,7 @@ function chefsSearchRowHtml(c) {
   return `
     <div class="frow" style="cursor:default">
       <img src="${c.avatar_url || DEFAULT_AVATAR}" alt="" />
-      <div><span class="fn">${escapeHtml(chefName(c.display_name))}</span></div>
+      <div class="finfo"><span class="fn">${escapeHtml(chefName(c.display_name))}</span></div>
       <div class="score">🍕 ${formatScore(Number(c.weekly_pizzas) || 0)}</div>
       ${action}
     </div>`
@@ -2383,7 +2383,7 @@ function chefsMemberRowHtml(m, i) {
     <div class="frow ${isMe ? 'me' : ''}" style="cursor:default">
       ${rank}
       <img src="${m.avatar_url || DEFAULT_AVATAR}" alt="" />
-      <div><span class="fn">${escapeHtml(chefName(m.display_name))}${isMe ? ' <span class="you-tag">(you)</span>' : ''}${m.role === 'owner' ? ' <span class="chefs-role-tag">Owner</span>' : ''}</span></div>
+      <div class="finfo"><span class="fn">${escapeHtml(chefName(m.display_name))}${isMe ? ' <span class="you-tag">(you)</span>' : ''}${m.role === 'owner' ? ' <span class="chefs-role-tag">Owner</span>' : ''}</span></div>
       <div class="score">🍕 ${formatScore(Number(m.weekly_pizzas) || 0)}</div>
     </div>`
 }
@@ -2605,7 +2605,7 @@ function chefsFriendReqRowHtml(r) {
   return `
     <div class="frow chefs-req-row">
       <img src="${r.avatar_url || DEFAULT_AVATAR}" alt="" />
-      <div><div class="fn">${escapeHtml(chefName(r.display_name))}</div><div class="fp">Wants to be friends · ${chefsTimeAgo(r.requested_at)}</div></div>
+      <div class="finfo"><div class="fn">${escapeHtml(chefName(r.display_name))}</div><div class="fp">Wants to be friends · ${chefsTimeAgo(r.requested_at)}</div></div>
       <div class="chefs-req-actions">
         <button type="button" class="chefs-req-btn approve" data-approve-friend="${r.requester_id}">Approve</button>
         <button type="button" class="chefs-req-btn decline" data-decline-friend="${r.requester_id}">Decline</button>
@@ -2616,7 +2616,7 @@ function chefsGroupInviteRowHtml(r) {
   return `
     <div class="frow chefs-req-row">
       <div class="chefs-gavatar sm">${escapeHtml(r.emoji || '🍕')}</div>
-      <div><div class="fn">${escapeHtml(r.name)}</div><div class="fp">Group invite from ${escapeHtml(r.invited_by_name)} · ${chefsTimeAgo(r.created_at)}</div></div>
+      <div class="finfo"><div class="fn">${escapeHtml(r.name)}</div><div class="fp">Group invite from ${escapeHtml(r.invited_by_name)} · ${chefsTimeAgo(r.created_at)}</div></div>
       <div class="chefs-req-actions">
         <button type="button" class="chefs-req-btn approve" data-accept-group="${r.group_id}">Accept</button>
         <button type="button" class="chefs-req-btn decline" data-decline-group="${r.group_id}">Decline</button>
@@ -5906,7 +5906,7 @@ function openAdminAdjustPopup(profile) {
     </div>
 
     <label class="field-label" for="admin-name" style="margin-top:0.375rem">Display Name</label>
-    <input id="admin-name" class="rename-input" type="text" maxlength="15" value="${escapeHtml(profile.display_name || '')}" />
+    <input id="admin-name" class="rename-input" type="text" maxlength="7" value="${escapeHtml(profile.display_name || '')}" />
 
     <label class="field-label" for="admin-pizzas">Pizzas</label>
     <input id="admin-pizzas" class="rename-input" type="number" step="0.01" value="${curPizzas}" />
@@ -5930,7 +5930,7 @@ function openAdminAdjustPopup(profile) {
 
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="apply"]').addEventListener('click', async () => {
-    const newName = o.querySelector('#admin-name').value.trim().slice(0, 15) || profile.display_name
+    const newName = o.querySelector('#admin-name').value.trim().slice(0, 7) || profile.display_name
     const newPizzas = Number(o.querySelector('#admin-pizzas').value)
     const newCoins = Number(o.querySelector('#admin-coins').value)
     if (Number.isNaN(newPizzas) || Number.isNaN(newCoins)) { toast('Enter valid numbers'); return }
@@ -5948,7 +5948,7 @@ function openAdminAdjustPopup(profile) {
     // migration needed here.
     if (hasProfileUpdates) {
       const { error } = await supabase.from('profiles').update(profileUpdates).eq('id', profile.id)
-      if (error) { toast(error.message); return }
+      if (error) { toast(friendlyNameError(error)); return }
       Object.assign(profile, profileUpdates)
     }
     const ok = (pizzaDelta || coinDelta) ? await applyAdminEdit(profile, pizzaDelta, coinDelta) : true
@@ -6044,6 +6044,19 @@ function isNameAllowed(name) {
   return !NAME_BLOCKLIST.some(w => n.includes(w))
 }
 
+// migration_unique_names.sql adds a case-insensitive unique index on
+// display_name, so two chefs can never share a name (renaming away from one
+// frees it immediately for someone else - that's the point of a plain
+// uniqueness constraint, no separate reservation table needed). Postgres
+// reports that collision as a raw "duplicate key value violates unique
+// constraint..." error, which would be confusing shown as-is.
+function friendlyNameError(error) {
+  if (error?.code === '23505' || /duplicate key|already exists/i.test(error?.message || '')) {
+    return 'That name is already taken — try another.'
+  }
+  return error?.message || 'Could not save — try again.'
+}
+
 function openRenamePopup() {
   // The "Chef" prefix is fixed and shown as a non-editable label; the user
   // only edits the [name] part (max 15 chars), stored raw in display_name.
@@ -6051,7 +6064,7 @@ function openRenamePopup() {
     <h3>Edit name</h3>
     <div class="rename-chef-row">
       <span class="rename-chef-prefix">Chef</span>
-      <input id="rename-input" class="rename-input" type="text" maxlength="15" value="${escapeHtml(myRawName())}" placeholder="Your name" />
+      <input id="rename-input" class="rename-input" type="text" maxlength="7" value="${escapeHtml(myRawName())}" placeholder="Your name" />
     </div>
     <p class="inline-error" id="rename-error">That name isn't allowed &mdash; please choose another.</p>
     <div class="home-btn-col">
@@ -6075,11 +6088,11 @@ function openRenamePopup() {
   setTimeout(() => input.focus(), 50)
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="save"]').addEventListener('click', async () => {
-    const newName = stripChef(input.value).slice(0, 15)
+    const newName = stripChef(input.value).slice(0, 7)
     if (!newName) return
     if (!validate()) return
     const { error } = await supabase.from('profiles').update({ display_name: newName }).eq('id', currentUser.id)
-    if (error) { toast(error.message); return }
+    if (error) { toast(friendlyNameError(error)); return }
     currentProfile.display_name = newName
     o.remove()
     renderSettings()

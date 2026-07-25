@@ -381,11 +381,18 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   /* long-press opens the action menu; suppress the iOS text/callout popup */
   -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
 }
-.frow .rank { width:1.5rem; font-family: var(--font-display); font-weight: 800; color: var(--muted); text-align: center; }
-.frow img { width:2.5rem; height:2.5rem; border-radius: 50%; object-fit: cover; border: 2px solid var(--line); }
-.frow .fn { font-weight: 800; color: var(--cream); font-size:0.9375rem; }
-.frow .fp { font-size:0.75rem; color: var(--muted); margin-top:0.125rem; }
-.frow .score { margin-left: auto; font-family: var(--font-display); font-weight: 800; color: var(--fire); font-variant-numeric: tabular-nums; }
+.frow .rank { width:1.5rem; font-family: var(--font-display); font-weight: 800; color: var(--muted); text-align: center; flex: none; }
+.frow img { width:2.5rem; height:2.5rem; border-radius: 50%; object-fit: cover; border: 2px solid var(--line); flex: none; }
+/* The name column must be able to shrink AND must never wrap: without
+   min-width:0 a long, unbreakable display name forces this flex row past its
+   container at min-content width, squeezing the score/⋮ column - which has
+   no explicit width of its own - down to zero. Ellipsis truncation is the
+   safety net for any name that's too long for the row, on top of whatever
+   character limit the rename UI enforces. */
+.frow .finfo { min-width: 0; flex: 1 1 auto; }
+.frow .fn { font-weight: 800; color: var(--cream); font-size:0.9375rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frow .fp { font-size:0.75rem; color: var(--muted); margin-top:0.125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frow .score { margin-left: auto; flex: none; font-family: var(--font-display); font-weight: 800; color: var(--fire); font-variant-numeric: tabular-nums; }
 .frow .frow-more {
   flex: none; width:2rem; height:2rem; margin-left:-0.375rem; border: none; background: transparent;
   color: var(--muted); font-size:1.125rem; font-weight: 800; display: grid; place-items: center;
@@ -2500,6 +2507,9 @@ img.shop-image {
 /* live-dot next to a name on the Friends scoreboard - a dot rather than a
    chip so a baking friend's row is never taller than any other row. */
 .chefs-fn-row { display: flex; align-items: center; gap:0.4rem; min-width: 0; }
+/* A flex item's min-width defaults to auto (its content size), which
+   defeats the ellipsis on .fn set above unless overridden here too. */
+.chefs-fn-row .fn { min-width: 0; }
 .chefs-live-dot { width:0.5rem; height:0.5rem; border-radius: 50%; background: var(--owned); flex: none; animation: admPulse 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .chefs-live-dot { animation: none; } }
 /* keeps the score column aligned on the "you" row, which has no ⋮ button */
