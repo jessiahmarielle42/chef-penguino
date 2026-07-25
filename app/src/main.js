@@ -694,6 +694,16 @@ function autoplayEmoteWhenReady(imgEl, emoteId, revertSrc) {
   if (!v || !imgEl) return
   warmEmote(emoteId)
   let started = false
+  // `let timer` must be declared BEFORE start(), not after: when the clip is
+  // already buffered we call start() synchronously below, and a `const timer`
+  // declared further down is still in its temporal dead zone at that point -
+  // so clearTimeout(timer) threw ReferenceError on every visit after the
+  // first (first visit isn't buffered yet, so it took the async path and
+  // worked). The throw escaped this function into the caller's mountScreen
+  // callback and killed every line after the call - which on a friend's
+  // Pizzeria is what left the back button with no click listener at all.
+  // clearTimeout(null) is a harmless no-op, so the sync path is fine.
+  let timer = null
   const start = () => {
     if (started) return
     started = true
@@ -706,7 +716,7 @@ function autoplayEmoteWhenReady(imgEl, emoteId, revertSrc) {
   // HAVE_ENOUGH_DATA already - no need to wait on an event that won't fire.
   if (v.readyState >= 4) { start(); return }
   v.addEventListener('canplaythrough', start)
-  const timer = setTimeout(start, 2500)
+  timer = setTimeout(start, 2500)
 }
 
 // Swap an <img> for the equipped/given emote clip, play it, then revert.
@@ -3187,16 +3197,19 @@ function renderFriendHome(friend) {
 
   mountScreen('friends', content, () => {
     loadHomeLog(friend.id)
-    // Same welcome on a friend's Pizzeria: preload, then play once.
-    autoplayEmoteWhenReady(app.querySelector('#hero-card .hero-still'), friend.equipped_emote || 'waving', heroSrc)
-    app.querySelector('#hero-card')?.addEventListener('click', () => {
-      const img = app.querySelector('#hero-card .hero-still')
-      if (img && img.tagName === 'IMG') playEmoteInto(img, friend.equipped_emote || 'waving', heroSrc)
-    })
+    // Wire the way OUT of this screen before anything cosmetic runs. The
+    // emote autoplay below is decoration; the back button is the only exit.
+    // If decoration throws, it must not be able to strand someone here.
     app.querySelector('#viewing-banner')?.addEventListener('click', () => renderFriends())
     app.querySelector('#viewing-banner')?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); renderFriends() }
     })
+    app.querySelector('#hero-card')?.addEventListener('click', () => {
+      const img = app.querySelector('#hero-card .hero-still')
+      if (img && img.tagName === 'IMG') playEmoteInto(img, friend.equipped_emote || 'waving', heroSrc)
+    })
+    // Same welcome on a friend's Pizzeria: preload, then play once.
+    autoplayEmoteWhenReady(app.querySelector('#hero-card .hero-still'), friend.equipped_emote || 'waving', heroSrc)
   }, { hideStatusBar: true, key: 'friend-home' })
 }
 
