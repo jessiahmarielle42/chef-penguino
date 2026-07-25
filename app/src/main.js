@@ -295,6 +295,33 @@ function syncMusic() {
 // etc.) would otherwise leave the music paused with nothing to resume it.
 document.addEventListener('click', () => syncMusic())
 
+// Backgrounding the tab (switching apps, locking the phone) auto-pauses
+// <audio> and suspends the AudioContext - that part is the browser's own
+// background-audio policy and isn't something a website can override, so
+// music stopping WHILE backgrounded is expected. What was missing is the
+// return trip: the only resume path was the next document click, which can
+// be seconds away or may never land (e.g. coming straight back into an
+// already-running focus session with nothing to tap). Catch every signal a
+// browser uses for "foregrounded again" so the very first frame back syncs
+// it, instead of waiting on an incidental tap.
+;['visibilitychange', 'pageshow', 'focus'].forEach((evt) => {
+  window.addEventListener(evt, () => { if (!document.hidden) syncMusic() })
+})
+
+// Also wires the OS-level lock-screen/notification-shade media controls
+// (and CarPlay/Bluetooth "play" buttons) to the same resume path, and gives
+// the browser a clearer signal this tab has an active "now playing" session
+// - which on some platforms (mainly Android Chrome) makes it less eager to
+// fully tear down playback in the background in the first place.
+if ('mediaSession' in navigator && typeof MediaMetadata !== 'undefined') {
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: 'Chef Penguino',
+    artist: 'Kitchen ambience',
+  })
+  navigator.mediaSession.setActionHandler('play', () => syncMusic())
+  navigator.mediaSession.setActionHandler('pause', () => { state.muted = true; save(); syncMusic() })
+}
+
 // Tactile tap feedback (see the matching CSS rule in style.css): iOS Safari
 // can take ~300ms to apply :active on non-form elements while it waits to
 // see if the touch turns into a scroll, which reads as laggy. Toggling a
