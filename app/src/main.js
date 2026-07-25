@@ -500,6 +500,9 @@ if (import.meta.env.VITE_REVIEW) {
       renderChefsRequests: () => { chefsTab = 'requests'; renderChefsScreen() },
       renderChefsGroupDetail: () => { chefsTab = 'groups'; openChefsGroup('g1') },
       renderChefsGroupSettings: () => { chefsTab = 'groups'; openChefsGroupSettings('g1') },
+      // Long name on purpose: exercises the banner's truncation + chevron.
+      renderFriendPizzeria: () => renderFriendHome({ id:'u-2', display_name:'Wolfeschlegel', pizzas:412, avatar_url:null, equipped_emote:'waving' }),
+      renderEmoteEdit: () => { renderAdminEmotes(); return openEmoteEditPopup(EMOTE_BY_ID['waving']) },
       renderChefsCreateGroup: async () => { chefsTab = 'groups'; renderChefsScreen(); await openCreateGroupPopup() },
     },
   }))
