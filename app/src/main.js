@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.1.2.4'
+const APP_VERSION = 'v2.1.3.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -386,6 +386,7 @@ async function finalizeSession(playAlarm) {
   logSession({ completedAt, minutes, pizzas: pizzasEarned, task: t.task, type: t.type })
   state.timer = null
   save()
+  setBakingNow(false)
 
   if (currentUser) {
     const row = {
@@ -483,6 +484,8 @@ if (import.meta.env.VITE_REVIEW) {
       renderAdminDashboard, renderModerationCenter, renderSystemNotifications,
       renderComposeNotification, renderSettings, renderFriends,
       renderTaskTypesEditor, renderBugReports, renderHistory, renderHome,
+      renderAdminPizzasCal, renderAdminChefs, renderAdminUsers,
+      renderAdminPresets, renderAdminEmotes, renderAdminGroupIcons,
       renderTypePicker: () => renderTypePicker(30, 'Essay writing'),
       openBugReport: () => { renderSettings(); return openBugReport() },
       startTypedTimer: () => startSession(30, 'Essay writing', 'deep'),
@@ -490,6 +493,14 @@ if (import.meta.env.VITE_REVIEW) {
       openBugManage: () => { renderBugReports(); openBugManageMenu({ id: 'demo', status: 'open', sent_to_claude_at: null, reporter: { display_name: 'Jordan' }, description: 'test' }) },
       bugDismissedTab: () => { bugTab = 'dismissed'; renderBugReports() },
       ensureBugFab,
+      // Chefs redesign: renderFriends() above only ever shows the default
+      // Friends tab, so these give the review harness a way to reach the
+      // other tabs/screens for screenshotting.
+      renderChefsGroups: () => { chefsTab = 'groups'; renderChefsScreen() },
+      renderChefsRequests: () => { chefsTab = 'requests'; renderChefsScreen() },
+      renderChefsGroupDetail: () => { chefsTab = 'groups'; openChefsGroup('g1') },
+      renderChefsGroupSettings: () => { chefsTab = 'groups'; openChefsGroupSettings('g1') },
+      renderChefsCreateGroup: async () => { chefsTab = 'groups'; renderChefsScreen(); await openCreateGroupPopup() },
     },
   }))
 } else {
@@ -722,7 +733,9 @@ function statusBarHtml() {
 const TABS = [
   { id: 'home', label: 'Home', icon: '🏠' },
   { id: 'shop', label: 'Shop', icon: '🛍️' },
-  { id: 'friends', label: 'Friends', icon: '🐧' },
+  // id stays 'friends' (wireTabBar/mountScreen/etc. all key off it) - only the
+  // label/icon changed for the Friends/Groups/Requests "Chefs" redesign.
+  { id: 'friends', label: 'Chefs', icon: '🧑‍🍳' },
   { id: 'settings', label: 'Settings', icon: '⚙️' },
 ]
 
@@ -752,11 +765,17 @@ function tabBarHtml(active) {
 }
 
 let mountedScreenKey = null
+// Where the user was on each screen, keyed by screen. Re-rendering the same
+// screen kept its position already; remembering it per-screen means going
+// *back* to a list (Bug Reports -> a report -> back) also lands where you
+// left off instead of snapping to the top.
+const scrollMemory = new Map()
 
 function mountScreen(active, contentHtml, after, opts = {}) {
   const key = opts.key || active
   const prevScroll = app.querySelector('.scroll')
-  const carryTop = (prevScroll && key === mountedScreenKey) ? prevScroll.scrollTop : 0
+  if (prevScroll && mountedScreenKey) scrollMemory.set(mountedScreenKey, prevScroll.scrollTop)
+  const carryTop = scrollMemory.get(key) || 0
   app.innerHTML = `
     <div class="app">
       ${opts.hideStatusBar ? '' : statusBarHtml()}
@@ -1810,40 +1829,110 @@ async function renderFriends() {
     })
     return
   }
+  renderChefsScreen()
+}
 
+// =================================================================
+//  Chefs: Friends / Groups / Requests (renderFriends() above is the entry
+//  point from the bottom tab bar and the sign-in gate; everything below
+//  builds the three-tab screen it hands off to once signed in). Ported from
+//  the approved mockup at app/review/chefs-page-mockup.html, retokenised
+//  onto this app's own --card/--fire/--gold/etc. variables and rem units.
+//
+//  chefsTab is module state rather than screen-local so re-entering the
+//  Chefs tab (e.g. after backing out of a friend's Pizzeria) lands back on
+//  whichever of Friends/Groups/Requests the chef was last looking at.
+// =================================================================
+let chefsTab = 'friends' // 'friends' | 'groups' | 'requests'
+
+function renderChefsScreen() {
   const content = `
-    <div class="friend-swipe-hint" style="margin-top:6px">
-      <span class="info-badge" aria-hidden="true">i</span>
-      <p>Tap a friend to view their Pizzeria. Tap the 3 dots to view more friend actions.</p>
-    </div>
-    <div class="section-h" style="margin-top:1.75rem"><h2>Weekly Scoreboard</h2><span class="meta">Resets&nbsp;${nextMondayLabel()}</span></div>
-    <div id="friends-list"><p class="log-empty">Loading&hellip;</p></div>
-    <div class="section-h" style="margin-top:2.75rem"><h2>Add a friend</h2></div>
-    <div class="addfriend"><input id="friend-code-input" placeholder="Friend's code" maxlength="6" /><button type="button" data-action="add">Add</button></div>
-    <p class="friends-error" id="friends-error" hidden></p>
-    <p class="code-note">Your code: <b id="friend-code-val">${currentProfile?.friend_code || '…'}</b> <button class="copy-btn" type="button" data-action="copy" aria-label="Copy friend code">${COPY_SVG}</button> — share it to compare pizzas.</p>
+    ${chefsSegHtml(chefsTab)}
+    <div class="chefs-pill-bar" id="chefs-pill-bar" hidden></div>
+    <div id="chefs-body"><p class="log-empty">Loading&hellip;</p></div>
   `
-
   mountScreen('friends', content, () => {
-    const errorEl = app.querySelector('#friends-error')
-    app.querySelector('[data-action="add"]').addEventListener('click', async () => {
-      const input = app.querySelector('#friend-code-input')
-      const code = input.value.trim()
-      if (!code) return
-      errorEl.hidden = true
-      const { error } = await supabase.rpc('add_friend_by_code', { code })
-      if (error) { errorEl.textContent = error.message; errorEl.hidden = false; return }
-      input.value = ''
-      toast('Friend added!')
-      loadFriendsList()
+    wireChefsSeg()
+    refreshChefsPendingBadge()
+    loadChefsTabBody()
+  }, { key: 'chefs-' + chefsTab })
+}
+
+function chefsSegHtml(tab) {
+  const seg = (id, label) => `<button type="button" class="${tab === id ? 'on' : ''}" data-chefs-tab="${id}">${label}${id === 'requests' ? '<span class="seg-badge" id="chefs-req-badge" hidden>0</span>' : ''}</button>`
+  return `<div class="cal-seg" id="chefs-seg">${seg('friends', 'Friends')}${seg('groups', 'Groups')}${seg('requests', 'Requests')}</div>`
+}
+
+function wireChefsSeg() {
+  app.querySelectorAll('#chefs-seg [data-chefs-tab]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tab = btn.dataset.chefsTab
+      if (tab === chefsTab) return
+      chefsTab = tab
+      renderChefsScreen()
     })
-    app.querySelector('[data-action="copy"]').addEventListener('click', () => {
-      const code = app.querySelector('#friend-code-val').textContent.trim()
-      if (navigator.clipboard) navigator.clipboard.writeText(code).then(() => toast('Code copied!')).catch(() => toast('Code copied!'))
-      else toast('Code copied!')
-    })
-    loadFriendsList()
   })
+}
+
+function loadChefsTabBody() {
+  if (chefsTab === 'friends') return loadChefsFriendsTab()
+  if (chefsTab === 'groups') return loadChefsGroupsTab()
+  return loadChefsRequestsTab()
+}
+
+// Friend requests + group invites fetched together so the Requests badge and
+// the Requests tab body never issue two separate round-trips for the same
+// numbers. Both RPCs only exist once migration_friend_requests.sql /
+// migration_groups.sql have been run in Supabase - until then they 404 and
+// that's treated as "nothing pending" rather than surfacing a raw Postgres
+// error anywhere in the UI.
+async function fetchChefsPending() {
+  const [freq, ginv] = await Promise.all([
+    supabase.rpc('incoming_friend_requests'),
+    supabase.rpc('my_group_invites'),
+  ])
+  return {
+    friendRequests: freq.error ? [] : (freq.data || []),
+    groupInvites: ginv.error ? [] : (ginv.data || []),
+  }
+}
+
+async function refreshChefsPendingBadge() {
+  const { friendRequests, groupInvites } = await fetchChefsPending()
+  const n = friendRequests.length + groupInvites.length
+  const badge = app.querySelector('#chefs-req-badge')
+  if (badge) { badge.textContent = String(n); badge.hidden = n === 0 }
+}
+
+// Compact relative-time label for request rows ("2h ago", "3d ago").
+function chefsTimeAgo(iso) {
+  const ms = Date.now() - new Date(iso).getTime()
+  const min = Math.floor(ms / 60000)
+  if (min < 1) return 'just now'
+  if (min < 60) return `${min}m ago`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  return `${Math.floor(hr / 24)}d ago`
+}
+
+// The "N baking" pill below the seg row. count===0 renders the muted/off
+// variant (spec requirement) instead of just looking identical-but-wrong.
+function chefsPillHtml(count) {
+  return `<div class="adm-live-dot chefs-pill ${count === 0 ? 'off' : ''}"><i></i><span>${count} baking</span></div>`
+}
+function showChefsPill(count) {
+  const bar = app.querySelector('#chefs-pill-bar')
+  if (!bar) return
+  bar.hidden = false
+  bar.innerHTML = chefsPillHtml(count)
+}
+// Groups LIST hides the pill entirely (ambiguous across several groups -
+// which one would it even count?); Requests has no baking scope either.
+function hideChefsPill() {
+  const bar = app.querySelector('#chefs-pill-bar')
+  if (!bar) return
+  bar.hidden = true
+  bar.innerHTML = ''
 }
 
 // Start of the current week (Monday 00:00, in the viewer's local time). The
@@ -1858,21 +1947,73 @@ function startOfThisWeek() {
   return d
 }
 
+// ---------------- Friends tab ----------------
+async function loadChefsFriendsTab() {
+  const body = app.querySelector('#chefs-body')
+  if (!body) return
+  body.innerHTML = `
+    <input class="chefs-search" id="chefs-search" placeholder="Search chefs to add" autocomplete="off">
+    <div id="chefs-friends-list"><p class="log-empty">Loading&hellip;</p></div>
+    <div class="section-h" style="margin-top:2.75rem"><h2>Add by code</h2></div>
+    <div class="addfriend"><input id="friend-code-input" placeholder="Friend's code" maxlength="6" /><button type="button" data-action="add">Add</button></div>
+    <p class="friends-error" id="friends-error" hidden></p>
+    <p class="code-note">They'll get a request to approve — it shows up in their <b>Requests</b> tab.</p>
+    <p class="code-note">Your code: <b id="friend-code-val">${escapeHtml(currentProfile?.friend_code || '…')}</b> <button class="copy-btn" type="button" data-action="copy" aria-label="Copy friend code">${COPY_SVG}</button></p>
+  `
+  const errorEl = body.querySelector('#friends-error')
+  body.querySelector('[data-action="add"]').addEventListener('click', async () => {
+    const input = body.querySelector('#friend-code-input')
+    const code = input.value.trim()
+    if (!code) return
+    errorEl.hidden = true
+    const { error } = await supabase.rpc('add_friend_by_code', { code })
+    if (error) { errorEl.textContent = error.message; errorEl.hidden = false; return }
+    input.value = ''
+    toast('Request sent — they approve it from their Requests tab.')
+    loadFriendsList()
+    refreshChefsPendingBadge()
+  })
+  body.querySelector('[data-action="copy"]').addEventListener('click', () => {
+    const code = body.querySelector('#friend-code-val').textContent.trim()
+    if (navigator.clipboard) navigator.clipboard.writeText(code).then(() => toast('Code copied!')).catch(() => toast('Code copied!'))
+    else toast('Code copied!')
+  })
+  let searchTimer
+  body.querySelector('#chefs-search').addEventListener('input', (e) => {
+    clearTimeout(searchTimer)
+    const q = e.target.value.trim()
+    searchTimer = setTimeout(() => (q ? runChefsSearch(q) : loadFriendsList()), 250)
+  })
+  loadFriendsList()
+}
+
+// Empty-search state: the weekly scoreboard. Function name kept from before
+// the Chefs redesign since block/remove/add-by-code below all refresh it by
+// calling it directly.
 async function loadFriendsList() {
-  const listEl = app.querySelector('#friends-list')
+  const listEl = app.querySelector('#chefs-friends-list')
   if (!listEl) return
 
   const weekStartISO = startOfThisWeek().toISOString()
-  const [{ data: friendRows }, { data: pendingRows }, { data: weekSessions }] = await Promise.all([
-    supabase.from('friends').select('friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote)'),
+  const [friendRows, { data: pendingRows }, { data: weekSessions }] = await Promise.all([
+    fetchAcceptedFriends(),
     supabase.from('noots').select('recipient_id').eq('sender_id', currentUser.id).is('acknowledged_at', null),
     // RLS ("sessions are visible to self and friends") scopes this to me + my
     // friends automatically, so one query gives every board member's week.
     supabase.from('sessions').select('user_id, pizzas').gte('completed_at', weekStartISO),
   ])
 
-  const friends = (friendRows || []).map(r => r.profiles).filter(Boolean)
+  const friends = friendRows.map(r => r.profiles).filter(Boolean)
   const pendingNootTargets = new Set((pendingRows || []).map(r => r.recipient_id))
+
+  // profiles.baking_since is set while a timer runs (see setBakingNow), and
+  // anything older than the staleness cutoff is treated as abandoned rather
+  // than still baking. Friends' profiles are readable under existing RLS, so
+  // no extra query is needed - the flag rides along on the friend rows.
+  const cutoff = bakingCutoffISO()
+  friends.forEach(f => { f.baking = !!f.baking_since && f.baking_since > cutoff })
+  showChefsPill(friends.filter(f => f.baking).length)
+
   if (!friends.length) {
     listEl.innerHTML = `<div class="frow lonely-card">It's lonely here. Add friends to start climbing the ladder!</div>`
     return
@@ -1885,25 +2026,14 @@ async function loadFriendsList() {
   const weeklyById = {}
   ;(weekSessions || []).forEach(s => { weeklyById[s.user_id] = (weeklyById[s.user_id] || 0) + (Number(s.pizzas) || 0) })
 
-  const me = { id: currentUser.id, display_name: myName(), pizzas: displayPizzas(), avatar_url: myAvatar(), friend_code: currentProfile?.friend_code, isMe: true }
-  const board = [...friends, me]
+  // Your own row never shows the dot - you know you're baking, and the pill
+  // above counts friends. Friends keep the flag computed from baking_since.
+  const me = { id: currentUser.id, display_name: myName(), pizzas: displayPizzas(), avatar_url: myAvatar(), isMe: true, baking: false }
+  const board = [...friends.map(f => ({ ...f })), me]
   board.forEach(f => { f.weekly = weeklyById[f.id] || 0 })
   board.sort((a, b) => b.weekly - a.weekly)
 
-  const medals = ['🥇', '🥈', '🥉']
-  listEl.innerHTML = board.map((f, i) => {
-    const rank = i < 3 ? `<div class="medal">${medals[i]}</div>` : `<div class="rank">${i + 1}</div>`
-    const name = f.isMe ? `${escapeHtml(f.display_name)} <span class="you-tag">(you)</span>` : escapeHtml(chefName(f.display_name))
-    return `
-      <div class="frow ${f.isMe ? 'me' : ''}" ${f.isMe ? 'role="button" tabindex="0"' : `data-friend="${f.id}" role="button" tabindex="0"`}>
-        ${rank}
-        <img src="${f.avatar_url || DEFAULT_AVATAR}" alt="" />
-        <div><div class="fn">${name}</div><div class="fp">Code ${escapeHtml(f.friend_code || '')}</div></div>
-        <div class="score">🍕 ${formatScore(Number(f.weekly) || 0)}</div>
-        <button type="button" class="frow-more" data-more="${f.id}" aria-label="More actions">⋮</button>
-      </div>
-    `
-  }).join('')
+  listEl.innerHTML = board.map((f, i) => chefsFriendRowHtml(f, i)).join('')
 
   const friendsById = Object.fromEntries(friends.map(f => [f.id, f]))
   // Tap the row = visit Pizzeria; tap the 3 dots = the full action menu.
@@ -1914,6 +2044,614 @@ async function loadFriendsList() {
   // Your own row opens your profile popup instead (same as tapping your avatar/name up top).
   const meRow = listEl.querySelector('.frow.me')
   meRow?.addEventListener('click', openProfilePopup)
+}
+
+// Tries the post-migration_friend_requests.sql shape first (only accepted
+// friendships belong on the scoreboard, not pending ones); falls back to the
+// unfiltered pre-migration query - which only ever contained accepted rows
+// anyway - so the board still loads if that migration hasn't been run yet.
+async function fetchAcceptedFriends() {
+  const sel = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote, baking_since)'
+  let { data, error } = await supabase.from('friends').select(sel).eq('status', 'accepted')
+  // Fall back twice: once without the status filter (pre-friend-requests DB),
+  // then without baking_since (pre-migration_baking_now DB), so the board
+  // still loads on an older schema instead of coming back empty.
+  if (error) ({ data, error } = await supabase.from('friends').select(sel))
+  if (error) {
+    const legacy = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote)'
+    ;({ data } = await supabase.from('friends').select(legacy))
+  }
+  return data || []
+}
+
+function chefsFriendRowHtml(f, i) {
+  const rank = i < 3 ? `<div class="medal">${['🥇', '🥈', '🥉'][i]}</div>` : `<div class="rank">${i + 1}</div>`
+  const name = f.isMe ? `${escapeHtml(f.display_name)} <span class="you-tag">(you)</span>` : escapeHtml(chefName(f.display_name))
+  // A dot, not a chip, next to the name - a chip would change row height for
+  // every row whenever one friend happens to be baking.
+  const liveDot = f.baking ? '<span class="chefs-live-dot" title="Baking now"></span>' : ''
+  return `
+    <div class="frow ${f.isMe ? 'me' : ''}" ${f.isMe ? 'role="button" tabindex="0"' : `data-friend="${f.id}" role="button" tabindex="0"`}>
+      ${rank}
+      <img src="${f.avatar_url || DEFAULT_AVATAR}" alt="" />
+      <div class="finfo"><div class="chefs-fn-row">${liveDot}<span class="fn">${name}</span></div></div>
+      <div class="score">🍕 ${formatScore(Number(f.weekly) || 0)}</div>
+      ${f.isMe ? '<span class="chefs-more-spacer" aria-hidden="true"></span>' : `<button type="button" class="frow-more" data-more="${f.id}" aria-label="More actions">⋮</button>`}
+    </div>`
+}
+
+// Guards against an in-flight search response landing after a newer
+// keystroke's - without this, typing quickly can flash a stale result set.
+let chefsSearchAbort = 0
+async function runChefsSearch(q) {
+  const listEl = app.querySelector('#chefs-friends-list')
+  if (!listEl) return
+  hideChefsPill() // search results aren't a baking-count scope
+  const myCall = ++chefsSearchAbort
+  listEl.innerHTML = `<p class="log-empty">Searching&hellip;</p>`
+  const { data, error } = await supabase.rpc('search_chefs', { q, lim: 30 })
+  if (myCall !== chefsSearchAbort) return
+  if (error) { listEl.innerHTML = `<p class="chefs-empty-hint">Chef search isn't available yet.</p>`; return }
+  const hits = (data || []).filter(c => c.relationship !== 'self')
+  if (!hits.length) { listEl.innerHTML = `<p class="chefs-empty-hint">No chefs match "${escapeHtml(q)}"</p>`; return }
+  listEl.innerHTML = `<div class="chefs-label">Chefs matching "${escapeHtml(q)}"</div>` + hits.map(chefsSearchRowHtml).join('')
+  listEl.querySelectorAll('[data-send]').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation()
+    btn.disabled = true
+    const { error: sendErr } = await supabase.rpc('send_friend_request', { target_id: btn.dataset.send })
+    if (sendErr) { btn.disabled = false; toast("Friend requests aren't available yet.") ; return }
+    toast('Friend request sent!')
+    refreshChefsPendingBadge()
+    runChefsSearch(q)
+  }))
+}
+
+// Search results deliberately show no friend code (search_chefs() doesn't
+// return one either) - a stranger shouldn't be able to harvest codes.
+function chefsSearchRowHtml(c) {
+  const action = c.relationship === 'friend' ? '<span class="chefs-rel-tag friend">✓ Friend</span>'
+    : c.relationship === 'outgoing' ? '<span class="chefs-rel-tag pending">Pending</span>'
+    : c.relationship === 'incoming' ? '<span class="chefs-rel-tag pending">Wants to add you</span>'
+    : `<button type="button" class="chefs-add-btn" data-send="${c.id}" aria-label="Add ${escapeHtml(chefName(c.display_name))}">＋</button>`
+  return `
+    <div class="frow" style="cursor:default">
+      <img src="${c.avatar_url || DEFAULT_AVATAR}" alt="" />
+      <div class="finfo"><span class="fn">${escapeHtml(chefName(c.display_name))}</span></div>
+      <div class="score">🍕 ${formatScore(Number(c.weekly_pizzas) || 0)}</div>
+      ${action}
+    </div>`
+}
+
+// ---------------- Groups tab ----------------
+async function loadChefsGroupsTab() {
+  const body = app.querySelector('#chefs-body')
+  if (!body) return
+  hideChefsPill() // ambiguous across several groups - only shown once inside one
+  body.innerHTML = `
+    <input class="chefs-search" id="chefs-group-search" placeholder="Search or discover groups" autocomplete="off">
+    <div id="chefs-groups-list"><p class="log-empty">Loading&hellip;</p></div>
+  `
+  let searchTimer
+  body.querySelector('#chefs-group-search').addEventListener('input', (e) => {
+    clearTimeout(searchTimer)
+    const q = e.target.value.trim()
+    searchTimer = setTimeout(() => runChefsGroupSearch(q), 250)
+  })
+  runChefsGroupSearch('')
+}
+
+async function runChefsGroupSearch(q) {
+  const listEl = app.querySelector('#chefs-groups-list')
+  if (!listEl) return
+  const { data: mineData, error: mineErr } = await supabase.rpc('my_groups')
+  if (mineErr) {
+    listEl.innerHTML = `<p class="chefs-empty-hint">Groups aren't available yet.</p>` + chefsGroupActionsHtml(!q)
+    wireChefsGroupActions(listEl)
+    return
+  }
+  const mine = (mineData || []).filter(g => !q || g.name.toLowerCase().includes(q.toLowerCase()))
+  let found = []
+  if (q) {
+    const { data: discData } = await supabase.rpc('discover_groups', { q })
+    found = discData || []
+  }
+  let html = ''
+  if (mine.length) html += (q ? `<div class="chefs-label">Your groups</div>` : '') + mine.map(g => chefsGroupCardHtml(g, false)).join('')
+  else if (q) html += `<p class="chefs-empty-hint">None of your groups match "${escapeHtml(q)}"</p>`
+  if (q && found.length) html += `<div class="chefs-label">Discover</div>` + found.map(g => chefsGroupCardHtml(g, true)).join('')
+  if (!mine.length && !q) html += `<p class="chefs-empty-hint">You're not in any groups yet.</p>`
+  html += chefsGroupActionsHtml(!q)
+  listEl.innerHTML = html
+  listEl.querySelectorAll('.chefs-gcard[data-group]:not([data-joinable])').forEach(card => {
+    card.addEventListener('click', () => openChefsGroup(card.dataset.group))
+  })
+  listEl.querySelectorAll('[data-join]').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation()
+    btn.disabled = true
+    const { error } = await supabase.rpc('join_group', { group_id: btn.dataset.join })
+    if (error) { btn.disabled = false; toast(error.message || 'Could not join that group.'); return }
+    toast('Joined!')
+    openChefsGroup(btn.dataset.join)
+  }))
+  wireChefsGroupActions(listEl)
+}
+
+function wireChefsGroupActions(listEl) {
+  listEl.querySelector('[data-action="create-group"]')?.addEventListener('click', openCreateGroupPopup)
+  listEl.querySelector('[data-action="join-with-code"]')?.addEventListener('click', openJoinGroupByCodePopup)
+}
+
+function chefsGroupActionsHtml(show) {
+  if (!show) return ''
+  return `
+    <div class="chefs-group-actions">
+      <button type="button" class="chefs-grp-btn primary" data-action="create-group">＋ Create group</button>
+      <button type="button" class="chefs-grp-btn secondary" data-action="join-with-code">Join with code</button>
+    </div>`
+}
+
+function chefsGroupCardHtml(g, joinable) {
+  const id = g.group_id || g.id
+  const members = Number(g.member_count) || 0
+  return `
+    <div class="chefs-gcard" data-group="${id}" ${joinable ? 'data-joinable="1"' : ''}>
+      <div class="chefs-gcard-top">
+        <div class="chefs-gavatar">${escapeHtml(g.emoji || '🍕')}</div>
+        <div class="chefs-gcard-info">
+          <div class="chefs-gname">${escapeHtml(g.name)}</div>
+          <div class="chefs-gmeta">${chefsPrivacyChip(g.privacy)} · ${members} member${members === 1 ? '' : 's'}</div>
+        </div>
+        <div class="chefs-gscore"><div class="num">${formatScore(Number(g.weekly_pizzas) || 0)}</div><div class="unit">pizzas</div></div>
+      </div>
+      <div class="chefs-gbottom">
+        <div class="chefs-stack">${chefsAvatarStack(members)}</div>
+        ${joinable
+          ? `<button type="button" class="chefs-join-btn" data-join="${id}">Join</button>`
+          // baking_count comes from my_groups(); it's absent on an older
+          // schema, in which case the line is simply omitted rather than
+          // asserting "0 baking" as if it were measured.
+          : (g.baking_count === undefined || g.baking_count === null
+              ? ''
+              : `<div class="chefs-gbaking">🔥 ${Number(g.baking_count)} baking</div>`)}
+      </div>
+    </div>`
+}
+
+// Decorative only - my_groups()/discover_groups() don't return member
+// identities, so this just visualises "there are N members", not who they are.
+function chefsAvatarStack(memberCount) {
+  const n = Math.min(4, memberCount || 0)
+  return Array.from({ length: n }).map(() => `<div class="chefs-stack-avatar">🐧</div>`).join('')
+}
+
+const CHEFS_ICON_GLOBE = `<svg class="chefs-pic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.7 3.8 5.8 3.8 9S14.5 18.3 12 21c-2.5-2.7-3.8-5.8-3.8-9S9.5 5.7 12 3z"/></svg>`
+const CHEFS_ICON_LOCK = `<svg class="chefs-pic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="4.5" y="10" width="15" height="10.5" rx="2.2"/><path d="M8.2 10V7.2a3.8 3.8 0 0 1 7.6 0V10"/></svg>`
+// White outline icon + label, never emoji - a privacy emoji reads as
+// unreadable/muddy on some platforms' dark chip backgrounds.
+function chefsPrivacyChip(privacy) {
+  const pub = privacy === 'public'
+  return `<span class="chefs-priv-chip">${pub ? CHEFS_ICON_GLOBE : CHEFS_ICON_LOCK}${pub ? 'Public' : 'Private'}</span>`
+}
+
+// ---------------- Create group / Join by code popups ----------------
+let chefsCreateEmoji = null
+async function openCreateGroupPopup() {
+  await loadGroupIcons() // same curated set (+ fallback) as the admin picker
+  chefsCreateEmoji = groupIconsCache[0]?.emoji || '🍕'
+  let privacy = 'public'
+  const o = overlay(`
+    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
+    <h3>Create a group</h3>
+    <label class="chefs-flabel">Group icon</label>
+    <div class="chefs-emoji-picker" id="cg-emoji-picker">${chefsEmojiPickerHtml(chefsCreateEmoji)}</div>
+    <label class="chefs-flabel">Name</label>
+    <input class="rename-input" id="cg-name" maxlength="30" placeholder="e.g. Late Night Bakers">
+    <label class="chefs-flabel">Who can join</label>
+    <div class="chefs-setcard" id="cg-privacy">
+      ${chefsPrivacyOptHtml('public', true)}
+      ${chefsPrivacyOptHtml('private', false)}
+    </div>
+    <div class="home-btn-col" style="margin-top:1rem">
+      <button type="button" data-action="create">Create group</button>
+      <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
+  o.querySelectorAll('#cg-emoji-picker [data-emoji]').forEach(btn => btn.addEventListener('click', () => {
+    chefsCreateEmoji = btn.dataset.emoji
+    o.querySelectorAll('#cg-emoji-picker [data-emoji]').forEach(b => b.classList.toggle('on', b === btn))
+  }))
+  o.querySelectorAll('#cg-privacy [data-privacy-opt]').forEach(row => row.addEventListener('click', () => {
+    privacy = row.dataset.privacyOpt
+    o.querySelectorAll('#cg-privacy [data-privacy-opt]').forEach(r => {
+      const on = r.dataset.privacyOpt === privacy
+      r.classList.toggle('on', on)
+      r.querySelector('.chefs-radio').classList.toggle('on', on)
+    })
+  }))
+  o.querySelector('[data-action="create"]').addEventListener('click', async () => {
+    const name = o.querySelector('#cg-name').value.trim()
+    if (!name) { toast('Give your group a name first'); return }
+    // Same blocklist as chef display names - a group name is just as public.
+    if (!isNameAllowed(name)) { toast("That name isn't allowed — please choose another."); return }
+    const btn = o.querySelector('[data-action="create"]')
+    btn.disabled = true
+    const { data, error } = await supabase.rpc('create_group', { name, emoji: chefsCreateEmoji, privacy })
+    if (error) { btn.disabled = false; toast(error.message || 'Could not create group.'); return }
+    o.remove()
+    toast(`${name} created!`)
+    chefsTab = 'groups'
+    openChefsGroup(data)
+  })
+}
+
+// Scoped as `.chefs-emoji-picker .chefs-epick` in CSS (not just `.chefs-epick`)
+// so it outranks the generic `.popup button` gold-fill rule these buttons sit
+// inside here - same trick already used for `.popup .gbtn`/`.popup .abtn`.
+function chefsEmojiPickerHtml(selected) {
+  return groupIconsCache.map(g => `<button type="button" class="chefs-epick ${g.emoji === selected ? 'on' : ''}" data-emoji="${escapeHtml(g.emoji)}">${escapeHtml(g.emoji)}</button>`).join('')
+}
+
+function chefsPrivacyOptHtml(val, isOn) {
+  const icon = val === 'public' ? CHEFS_ICON_GLOBE : CHEFS_ICON_LOCK
+  const label = val === 'public' ? 'Public' : 'Private'
+  const sub = val === 'public' ? 'Anyone can find and join instantly' : 'Hidden from search — join by code or invite'
+  return `
+    <div class="chefs-opt ${isOn ? 'on' : ''}" data-privacy-opt="${val}">
+      <div class="chefs-opt-ic">${icon}</div>
+      <div class="chefs-opt-info"><div class="chefs-opt-t">${label}</div><div class="chefs-opt-s">${sub}</div></div>
+      <div class="chefs-radio ${isOn ? 'on' : ''}"></div>
+    </div>`
+}
+
+function openJoinGroupByCodePopup() {
+  const o = overlay(`
+    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
+    <h3>Join a group</h3>
+    <p>Enter the 6-character code a chef shared with you.</p>
+    <input class="rename-input" id="jg-code" maxlength="6" placeholder="Group code" style="text-transform:uppercase;letter-spacing:0.12em">
+    <div class="home-btn-col" style="margin-top:0.5rem">
+      <button type="button" data-action="join">Join group</button>
+      <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="join"]').addEventListener('click', async () => {
+    const code = o.querySelector('#jg-code').value.trim()
+    if (!code) { toast('Enter a code first'); return }
+    const btn = o.querySelector('[data-action="join"]')
+    btn.disabled = true
+    const { data, error } = await supabase.rpc('join_group_by_code', { code })
+    if (error) { btn.disabled = false; toast(error.message || 'No group found with that code.'); return }
+    o.remove()
+    toast('Joined!')
+    chefsTab = 'groups'
+    openChefsGroup(data)
+  })
+}
+
+// ---------------- Group detail ----------------
+function openChefsGroup(groupId) {
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-groups">‹ Groups</div>
+    <div class="chefs-pill-bar" id="chefs-pill-bar" hidden></div>
+    <div id="chefs-group-body"><p class="log-empty">Loading&hellip;</p></div>
+  `
+  mountScreen('friends', content, () => {
+    app.querySelector('[data-action="back-to-groups"]').addEventListener('click', () => { chefsTab = 'groups'; renderChefsScreen() })
+    loadChefsGroupDetail(groupId)
+  }, { key: 'chefs-group-' + groupId })
+}
+
+async function loadChefsGroupDetail(groupId) {
+  const bodyEl = app.querySelector('#chefs-group-body')
+  if (!bodyEl) return
+  const [{ data: mineData }, { data: memberData, error: memErr }] = await Promise.all([
+    supabase.rpc('my_groups'),
+    supabase.rpc('group_members_list', { group_id: groupId }),
+  ])
+  const g = (mineData || []).find(x => x.group_id === groupId)
+  if (!g) { bodyEl.innerHTML = `<p class="chefs-empty-hint">This group is no longer available.</p>`; return }
+  if (memErr) { bodyEl.innerHTML = `<p class="chefs-empty-hint">${escapeHtml(memErr.message || "Couldn't load members.")}</p>`; return }
+  const members = memberData || []
+  const ranked = [...members].sort((a, b) => Number(b.weekly_pizzas) - Number(a.weekly_pizzas))
+
+  // group_members_list() returns each member's baking_since (see
+  // migration_baking_now.sql), so this group's live count is just a filter.
+  const bakingCutoff = bakingCutoffISO()
+  showChefsPill(members.filter(m => m.baking_since && m.baking_since > bakingCutoff).length)
+
+  bodyEl.innerHTML = `
+    <div class="chefs-ghead">
+      <div class="chefs-gavatar lg">${escapeHtml(g.emoji || '🍕')}</div>
+      <div class="chefs-gcard-info">
+        <div class="chefs-gname lg">${escapeHtml(g.name)}</div>
+        <div class="chefs-gmeta">${chefsPrivacyChip(g.privacy)} · ${members.length} member${members.length === 1 ? '' : 's'}</div>
+      </div>
+      ${g.role === 'owner' ? `<button type="button" class="chefs-gear-btn" data-action="group-settings" aria-label="Group settings">⚙️</button>` : ''}
+    </div>
+    <div class="section-h" style="margin-top:1.25rem"><h2>Leaderboard</h2></div>
+    ${ranked.map((m, i) => chefsMemberRowHtml(m, i)).join('')}
+    <div class="chefs-group-actions">
+      <button type="button" class="chefs-grp-btn secondary" data-action="share-code">Share join code</button>
+      ${g.role === 'owner'
+        ? `<button type="button" class="chefs-grp-btn secondary" data-action="leave-blocked">Leave</button>`
+        : `<button type="button" class="chefs-grp-btn secondary" data-action="leave">Leave group</button>`}
+    </div>
+  `
+  bodyEl.querySelector('[data-action="group-settings"]')?.addEventListener('click', () => openChefsGroupSettings(groupId))
+  bodyEl.querySelector('[data-action="share-code"]').addEventListener('click', () => {
+    const code = g.join_code || ''
+    if (navigator.clipboard) navigator.clipboard.writeText(code).then(() => toast(`Code copied: ${code}`)).catch(() => toast(`Group code: ${code}`))
+    else toast(`Group code: ${code}`)
+  })
+  bodyEl.querySelector('[data-action="leave-blocked"]')?.addEventListener('click', () => toast("The owner can't leave — delete the group instead."))
+  bodyEl.querySelector('[data-action="leave"]')?.addEventListener('click', () => confirmLeaveGroup(groupId, g.name))
+}
+
+function chefsMemberRowHtml(m, i) {
+  const rank = i < 3 ? `<div class="medal">${['🥇', '🥈', '🥉'][i]}</div>` : `<div class="rank">${i + 1}</div>`
+  const isMe = m.user_id === currentUser.id
+  return `
+    <div class="frow ${isMe ? 'me' : ''}" style="cursor:default">
+      ${rank}
+      <img src="${m.avatar_url || DEFAULT_AVATAR}" alt="" />
+      <div class="finfo"><span class="fn">${escapeHtml(chefName(m.display_name))}${isMe ? ' <span class="you-tag">(you)</span>' : ''}${m.role === 'owner' ? ' <span class="chefs-role-tag">Owner</span>' : ''}</span></div>
+      <div class="score">🍕 ${formatScore(Number(m.weekly_pizzas) || 0)}</div>
+    </div>`
+}
+
+function confirmLeaveGroup(groupId, name) {
+  const o = overlay(`
+    <h3>Leave ${escapeHtml(name)}?</h3>
+    <p>You'll lose access to this group's leaderboard. You can rejoin anytime with an invite or the join code.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Yes, leave</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    const { error } = await supabase.rpc('leave_group', { group_id: groupId })
+    if (error) { toast(error.message || 'Could not leave group.'); return }
+    o.remove()
+    toast(`Left ${name}`)
+    chefsTab = 'groups'
+    renderChefsScreen()
+  })
+}
+
+// ---------------- Group settings (owner only) ----------------
+function openChefsGroupSettings(groupId) {
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-group">‹ Group settings</div>
+    <div id="chefs-settings-body"><p class="log-empty">Loading&hellip;</p></div>
+  `
+  mountScreen('friends', content, () => {
+    app.querySelector('[data-action="back-to-group"]').addEventListener('click', () => openChefsGroup(groupId))
+    loadChefsGroupSettings(groupId)
+  }, { key: 'chefs-group-settings-' + groupId })
+}
+
+async function loadChefsGroupSettings(groupId) {
+  const bodyEl = app.querySelector('#chefs-settings-body')
+  if (!bodyEl) return
+  const [{ data: mineData }, { data: memberData, error: memErr }] = await Promise.all([
+    supabase.rpc('my_groups'),
+    supabase.rpc('group_members_list', { group_id: groupId }),
+  ])
+  const g = (mineData || []).find(x => x.group_id === groupId)
+  // Not the owner (or the group's gone) - this screen isn't theirs to see.
+  if (!g || g.role !== 'owner') { openChefsGroup(groupId); return }
+  await loadGroupIcons()
+
+  bodyEl.innerHTML = `
+    <div class="section-h" style="margin-top:2px"><h2>${escapeHtml(g.name)}</h2></div>
+    <div class="chefs-setcard" style="margin-bottom:1.5rem">
+      <label class="chefs-flabel">Group icon</label>
+      <div class="chefs-emoji-picker" id="gs-emoji-picker">${chefsEmojiPickerHtml(g.emoji)}</div>
+      <label class="chefs-flabel">Name</label>
+      <input class="rename-input" id="gs-name" maxlength="30" value="${escapeHtml(g.name)}">
+      <button type="button" class="chefs-wide-btn" data-action="save-details">Save details</button>
+    </div>
+
+    <div class="section-h" style="margin-top:0"><h2>Who can join</h2></div>
+    <div class="chefs-setcard" id="gs-privacy" style="margin-bottom:1.5rem">
+      ${chefsPrivacyOptHtml('public', g.privacy === 'public')}
+      ${chefsPrivacyOptHtml('private', g.privacy !== 'public')}
+    </div>
+
+    <div class="section-h" style="margin-top:0"><h2>Join code</h2></div>
+    <div class="chefs-setcard" style="margin-bottom:1.5rem">
+      <p class="code-note" style="margin-top:0">Code: <b>${escapeHtml(g.join_code || '')}</b> <button class="copy-btn" type="button" data-action="copy-code" aria-label="Copy group code">${COPY_SVG}</button></p>
+      <p class="chefs-empty-hint" style="margin:0.5rem 0 0;text-align:left">Anyone with this code joins instantly, even in a private group.</p>
+    </div>
+
+    <div class="section-h" style="margin-top:0"><h2>Members</h2></div>
+    <div class="chefs-setcard" style="margin-bottom:1.5rem">
+      ${memErr ? `<p class="chefs-empty-hint">${escapeHtml(memErr.message || "Couldn't load members.")}</p>` : (memberData || []).map(chefsSettingsMemberRowHtml).join('')}
+    </div>
+
+    <div class="section-h" style="margin-top:0"><h2>Danger zone</h2></div>
+    <div class="chefs-setcard">
+      <button type="button" class="chefs-wide-btn danger" data-action="delete-group">Delete group</button>
+    </div>
+  `
+  wireChefsGroupSettings(bodyEl, groupId, g)
+}
+
+function chefsSettingsMemberRowHtml(m) {
+  return `
+    <div class="chefs-mrow">
+      <img src="${m.avatar_url || DEFAULT_AVATAR}" alt="" />
+      <div class="fn">${escapeHtml(chefName(m.display_name))}</div>
+      ${m.role === 'owner'
+        ? '<span class="chefs-rel-tag pending">Owner</span>'
+        : `<button type="button" class="chefs-req-btn decline" data-remove-member="${m.user_id}" data-remove-name="${escapeHtml(chefName(m.display_name))}">Remove</button>`}
+    </div>`
+}
+
+function wireChefsGroupSettings(bodyEl, groupId, g) {
+  let selectedEmoji = g.emoji
+  let selectedPrivacy = g.privacy === 'public' ? 'public' : 'private'
+
+  bodyEl.querySelectorAll('#gs-emoji-picker [data-emoji]').forEach(btn => btn.addEventListener('click', () => {
+    selectedEmoji = btn.dataset.emoji
+    bodyEl.querySelectorAll('#gs-emoji-picker [data-emoji]').forEach(b => b.classList.toggle('on', b === btn))
+  }))
+  // Privacy applies instantly on tap (matches the approved mockup) rather
+  // than waiting for a separate Save.
+  bodyEl.querySelectorAll('#gs-privacy [data-privacy-opt]').forEach(row => row.addEventListener('click', async () => {
+    const val = row.dataset.privacyOpt
+    if (val === selectedPrivacy) return
+    selectedPrivacy = val
+    bodyEl.querySelectorAll('#gs-privacy [data-privacy-opt]').forEach(r => {
+      const on = r.dataset.privacyOpt === selectedPrivacy
+      r.classList.toggle('on', on)
+      r.querySelector('.chefs-radio').classList.toggle('on', on)
+    })
+    const name = bodyEl.querySelector('#gs-name').value.trim() || g.name
+    const { error } = await supabase.rpc('update_group_settings', { group_id: groupId, name, emoji: selectedEmoji, privacy: selectedPrivacy })
+    if (error) { toast(error.message || 'Could not change privacy.'); return }
+    toast(selectedPrivacy === 'public' ? 'Now public — anyone can join' : 'Now private')
+  }))
+  bodyEl.querySelector('[data-action="save-details"]').addEventListener('click', async () => {
+    const name = bodyEl.querySelector('#gs-name').value.trim()
+    if (!name) { toast('Group name is required'); return }
+    if (!isNameAllowed(name)) { toast("That name isn't allowed — please choose another."); return }
+    const { error } = await supabase.rpc('update_group_settings', { group_id: groupId, name, emoji: selectedEmoji, privacy: selectedPrivacy })
+    if (error) { toast(error.message || 'Could not save changes.'); return }
+    toast('Group updated!')
+    loadChefsGroupSettings(groupId)
+  })
+  bodyEl.querySelector('[data-action="copy-code"]').addEventListener('click', () => {
+    const code = g.join_code || ''
+    if (navigator.clipboard) navigator.clipboard.writeText(code).then(() => toast('Code copied!')).catch(() => toast('Code copied!'))
+    else toast('Code copied!')
+  })
+  bodyEl.querySelectorAll('[data-remove-member]').forEach(btn => btn.addEventListener('click', () => {
+    confirmRemoveGroupMember(groupId, btn.dataset.removeMember, btn.dataset.removeName)
+  }))
+  bodyEl.querySelector('[data-action="delete-group"]').addEventListener('click', () => confirmDeleteGroupStep1(groupId, g.name))
+}
+
+function confirmRemoveGroupMember(groupId, targetId, name) {
+  const o = overlay(`
+    <h3>Remove ${escapeHtml(name)}?</h3>
+    <p>They'll lose access to this group's leaderboard. They can rejoin with the group code.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Remove ${escapeHtml(name)}</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    const { error } = await supabase.rpc('remove_group_member', { group_id: groupId, target_id: targetId })
+    if (error) { toast(error.message || 'Could not remove member.'); return }
+    o.remove()
+    toast(`${name} removed from group`)
+    loadChefsGroupSettings(groupId)
+  })
+}
+
+// Delete is destructive and irreversible, so it needs two separate
+// confirmations - same pattern as confirmDeleteAccount/confirmDeleteAccountFinal.
+function confirmDeleteGroupStep1(groupId, name) {
+  const o = overlay(`
+    <h3>Delete ${escapeHtml(name)}? ⚠️</h3>
+    <p>This permanently deletes the group, its leaderboard and all membership. This can't be undone.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Delete group</button>
+      <button type="button" class="btn-secondary" data-action="no">Cancel</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', () => { o.remove(); confirmDeleteGroupStep2(groupId, name) })
+}
+function confirmDeleteGroupStep2(groupId, name) {
+  const o = overlay(`
+    <h3>Are you absolutely sure? ⚠️</h3>
+    <p>Last chance — <b>${escapeHtml(name)}</b> and everything in it will be permanently deleted. This cannot be undone.</p>
+    <div class="home-btn-col">
+      <button type="button" class="btn-danger" data-action="yes">Yes, delete forever</button>
+      <button type="button" class="btn-secondary" data-action="no">Keep the group</button>
+    </div>
+  `)
+  o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    const btn = o.querySelector('[data-action="yes"]')
+    btn.disabled = true
+    btn.textContent = 'Deleting…'
+    const { error } = await supabase.rpc('delete_group', { group_id: groupId })
+    if (error) { btn.disabled = false; btn.textContent = 'Yes, delete forever'; toast(error.message || 'Could not delete group.'); return }
+    o.remove()
+    toast(`${name} deleted.`)
+    chefsTab = 'groups'
+    renderChefsScreen()
+  })
+}
+
+// ---------------- Requests tab ----------------
+async function loadChefsRequestsTab() {
+  const body = app.querySelector('#chefs-body')
+  if (!body) return
+  hideChefsPill()
+  body.innerHTML = `<p class="log-empty">Loading&hellip;</p>`
+  const { friendRequests, groupInvites } = await fetchChefsPending()
+  const items = [
+    ...friendRequests.map(r => ({ kind: 'friend', r, at: r.requested_at })),
+    ...groupInvites.map(r => ({ kind: 'group', r, at: r.created_at })),
+  ].sort((a, b) => new Date(b.at) - new Date(a.at))
+
+  if (!items.length) {
+    body.innerHTML = `<p class="chefs-empty-hint">Nothing waiting on you.<br>Share your code <b>${escapeHtml(currentProfile?.friend_code || '')}</b> so chefs can add you.</p>`
+    return
+  }
+  body.innerHTML = items.map(({ kind, r }) => kind === 'friend' ? chefsFriendReqRowHtml(r) : chefsGroupInviteRowHtml(r)).join('')
+  body.querySelectorAll('[data-approve-friend]').forEach(btn => btn.addEventListener('click', () => respondChefsFriendRequest(btn.dataset.approveFriend, true)))
+  body.querySelectorAll('[data-decline-friend]').forEach(btn => btn.addEventListener('click', () => respondChefsFriendRequest(btn.dataset.declineFriend, false)))
+  body.querySelectorAll('[data-accept-group]').forEach(btn => btn.addEventListener('click', () => respondChefsGroupInvite(btn.dataset.acceptGroup, true)))
+  body.querySelectorAll('[data-decline-group]').forEach(btn => btn.addEventListener('click', () => respondChefsGroupInvite(btn.dataset.declineGroup, false)))
+}
+
+function chefsFriendReqRowHtml(r) {
+  return `
+    <div class="frow chefs-req-row">
+      <img src="${r.avatar_url || DEFAULT_AVATAR}" alt="" />
+      <div class="finfo"><div class="fn">${escapeHtml(chefName(r.display_name))}</div><div class="fp">Wants to be friends · ${chefsTimeAgo(r.requested_at)}</div></div>
+      <div class="chefs-req-actions">
+        <button type="button" class="chefs-req-btn approve" data-approve-friend="${r.requester_id}">Approve</button>
+        <button type="button" class="chefs-req-btn decline" data-decline-friend="${r.requester_id}">Decline</button>
+      </div>
+    </div>`
+}
+function chefsGroupInviteRowHtml(r) {
+  return `
+    <div class="frow chefs-req-row">
+      <div class="chefs-gavatar sm">${escapeHtml(r.emoji || '🍕')}</div>
+      <div class="finfo"><div class="fn">${escapeHtml(r.name)}</div><div class="fp">Group invite from ${escapeHtml(r.invited_by_name)} · ${chefsTimeAgo(r.created_at)}</div></div>
+      <div class="chefs-req-actions">
+        <button type="button" class="chefs-req-btn approve" data-accept-group="${r.group_id}">Accept</button>
+        <button type="button" class="chefs-req-btn decline" data-decline-group="${r.group_id}">Decline</button>
+      </div>
+    </div>`
+}
+
+async function respondChefsFriendRequest(requesterId, accept) {
+  const { error } = await supabase.rpc('respond_to_friend_request', { requester_id: requesterId, accept })
+  if (error) { toast('That request is no longer available.'); return }
+  toast(accept ? 'Friend added!' : 'Request declined')
+  loadChefsRequestsTab()
+  refreshChefsPendingBadge()
+}
+async function respondChefsGroupInvite(groupId, accept) {
+  const { error } = await supabase.rpc('respond_to_group_invite', { group_id: groupId, accept })
+  if (error) { toast('That invite is no longer available.'); return }
+  toast(accept ? 'Joined the group!' : 'Invite declined')
+  loadChefsRequestsTab()
+  refreshChefsPendingBadge()
 }
 
 function wireFriendRow(row, friend, pendingNootTargets) {
@@ -3325,16 +4063,17 @@ async function openBugReport() {
 }
 
 // ---------- admin: bug reports review ----------
-let bugTab = 'open' // 'open' | 'resolved' | 'dismissed'
+let bugTab = 'open' // 'open' | 'in_progress' | 'resolved' | 'dismissed'
 async function renderBugReports() {
   if (!isAdmin()) { renderSettings(); return }
   const content = `
     <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
     <div class="section-h" style="margin-top:2px"><h2>Bug Reports</h2></div>
-    <div class="cal-seg" style="margin-bottom:0.5rem">
-      <button type="button" class="${bugTab === 'open' ? 'on' : ''}" data-bugtab="open">Open</button>
-      <button type="button" class="${bugTab === 'resolved' ? 'on' : ''}" data-bugtab="resolved">Resolved</button>
-      <button type="button" class="${bugTab === 'dismissed' ? 'on' : ''}" data-bugtab="dismissed">Dismissed</button>
+    <div class="cal-seg cal-seg-4" style="margin-bottom:0.5rem">
+      <button type="button" class="${bugTab === 'open' ? 'on' : ''}" data-bugtab="open"><span>Open</span><span class="seg-badge" id="bugtab-open-n" hidden></span></button>
+      <button type="button" class="${bugTab === 'in_progress' ? 'on' : ''}" data-bugtab="in_progress"><span>Fixing</span><span class="seg-badge" id="bugtab-prog-n" hidden></span></button>
+      <button type="button" class="${bugTab === 'resolved' ? 'on' : ''}" data-bugtab="resolved"><span>Resolved</span></button>
+      <button type="button" class="${bugTab === 'dismissed' ? 'on' : ''}" data-bugtab="dismissed"><span>Dismissed</span></button>
     </div>
     <div class="bug-adm-list" id="bug-adm-list"><p class="editpic-empty">Loading&hellip;</p></div>
     <div style="height:8px"></div>
@@ -3390,16 +4129,29 @@ async function loadBugReports() {
   const list = app.querySelector('#bug-adm-list')
   if (!list) return
   if (error) { list.innerHTML = `<p class="editpic-empty">Couldn't load reports.</p>`; return }
-  // Open = active (open or replied but not yet marked resolved); Resolved =
-  // explicitly resolved; Dismissed = dismissed.
-  const tabOf = r => r.status === 'dismissed' ? 'dismissed' : r.status === 'resolved' ? 'resolved' : 'open'
-  // Surface the only stat the admin needs: how many reports are still open.
+  // Resolved/Dismissed are terminal. Among still-active reports, those the
+  // admin has sent to Claude are "In Progress" (being fixed); the rest are the
+  // untriaged "Open" queue. Sending to Claude moves a report Open → In Progress.
+  const tabOf = r => r.status === 'dismissed' ? 'dismissed'
+    : r.status === 'resolved' ? 'resolved'
+    : r.sent_to_claude_at ? 'in_progress'
+    : 'open'
+  // Surface the counts that need action: untriaged Open, and In Progress.
   const openCount = (data || []).filter(r => tabOf(r) === 'open').length
-  const openTabBtn = app.querySelector('[data-bugtab="open"]')
-  if (openTabBtn) openTabBtn.textContent = openCount ? `Open (${openCount})` : 'Open'
+  const progressCount = (data || []).filter(r => tabOf(r) === 'in_progress').length
+  // Counts render as badges beside the label (not "(3)" in the text), so the
+  // four tabs keep identical widths whatever the numbers are.
+  const setSegBadge = (id, n) => {
+    const el = app.querySelector('#' + id)
+    if (!el) return
+    el.textContent = n
+    el.hidden = !n
+  }
+  setSegBadge('bugtab-open-n', openCount)
+  setSegBadge('bugtab-prog-n', progressCount)
   const shown = (data || []).filter(r => tabOf(r) === bugTab)
   if (!shown.length) {
-    const empty = { open: 'No open reports 🎉', resolved: 'No resolved reports yet.', dismissed: 'No dismissed reports.' }[bugTab]
+    const empty = { open: 'No open reports 🎉', in_progress: 'Nothing being fixed — send a report to Claude to start.', resolved: 'No resolved reports yet.', dismissed: 'No dismissed reports.' }[bugTab]
     list.innerHTML = `<p class="editpic-empty">${empty}</p>`
     return
   }
@@ -3419,20 +4171,31 @@ function openBugManageMenu(r) {
   const sent = !!r.sent_to_claude_at
   const resolved = r.status === 'resolved'
   const dismissed = r.status === 'dismissed'
+  // A dismissed report used to be a dead end - the only action offered was
+  // "Dismiss" again. Every terminal state now has a way back out.
   const o = overlay(`
     <button class="popup-close" data-action="close" aria-label="Close">✕</button>
     <h3>Manage report</h3>
     <div class="home-btn-col" style="margin-top:0.5rem">
-      <button type="button" data-action="respond">${r.status === 'replied' ? 'Reply again' : 'Respond'}</button>
-      <button type="button" class="btn-secondary" data-action="claude">${sent ? '↩︎ Unsend from Claude' : '🤖 Send to Claude'}</button>
-      <button type="button" class="${resolved ? 'btn-secondary' : 'btn-success'}" data-action="resolve">${resolved ? '↩︎ Move to unresolved' : '☑️ Mark Resolved'}</button>
-      <button type="button" class="${dismissed ? 'btn-secondary' : 'btn-danger'}" data-action="dismiss">${dismissed ? '↩︎ Mark as Open' : '🚫 Dismiss'}</button>
+      ${dismissed ? '' : `<button type="button" data-action="respond">${r.status === 'replied' ? 'Reply again' : 'Respond'}</button>`}
+      ${dismissed ? '' : `<button type="button" class="btn-secondary" data-action="claude">${sent ? '↩︎ Unsend from Claude' : '🤖 Send to Claude'}</button>`}
+      ${dismissed ? '' : `<button type="button" class="${resolved ? 'btn-secondary' : 'btn-success'}" data-action="resolve">${resolved ? '↩︎ Move to unresolved' : '☑️ Mark Resolved'}</button>`}
+      ${dismissed
+        ? '<button type="button" class="btn-success" data-action="undismiss">↩︎ Restore to Open</button>'
+        : '<button type="button" class="btn-danger" data-action="dismiss">🚫 Dismiss</button>'}
     </div>
   `, { popupClass: 'popup-wide' })
   const close = () => o.remove()
   o.querySelector('[data-action="close"]').addEventListener('click', close)
-  o.querySelector('[data-action="respond"]').addEventListener('click', () => { close(); openBugReplyPopup(r) })
-  o.querySelector('[data-action="claude"]').addEventListener('click', async () => {
+  o.querySelector('[data-action="undismiss"]')?.addEventListener('click', async () => {
+    close()
+    const { error } = await supabase.rpc('undismiss_bug_report', { report_id: r.id })
+    if (error) { toast('Could not restore — try again'); return }
+    toast('Restored to Open')
+    loadBugReports()
+  })
+  o.querySelector('[data-action="respond"]')?.addEventListener('click', () => { close(); openBugReplyPopup(r) })
+  o.querySelector('[data-action="claude"]')?.addEventListener('click', async () => {
     close()
     const rpc = sent ? 'unflag_bug_report_for_claude' : 'flag_bug_report_for_claude'
     const { error } = await supabase.rpc(rpc, { report_id: r.id })
@@ -3440,7 +4203,7 @@ function openBugManageMenu(r) {
     toast(sent ? 'Unsent from Claude' : 'Sent to Claude 🤖')
     loadBugReports()
   })
-  o.querySelector('[data-action="resolve"]').addEventListener('click', async () => {
+  o.querySelector('[data-action="resolve"]')?.addEventListener('click', async () => {
     close()
     const rpc = resolved ? 'unresolve_bug_report' : 'resolve_bug_report'
     const { error } = await supabase.rpc(rpc, { report_id: r.id })
@@ -3448,18 +4211,9 @@ function openBugManageMenu(r) {
     toast(resolved ? 'Moved back to open' : 'Marked resolved ☑️')
     loadBugReports()
   })
-  o.querySelector('[data-action="dismiss"]').addEventListener('click', async () => {
-    if (dismissed) {
-      close()
-      const { error } = await supabase.rpc('unresolve_bug_report', { report_id: r.id })
-      if (error) { toast('Could not update — try again'); return }
-      toast('Moved back to open')
-      loadBugReports()
-    } else {
-      close()
-      confirmDismissBugReport(r)
-    }
-  })
+  // Dismissed reports never render this button (the undismiss branch above
+  // renders "Restore to Open" instead), so this is always the fresh-dismiss path.
+  o.querySelector('[data-action="dismiss"]')?.addEventListener('click', () => { close(); confirmDismissBugReport(r) })
 }
 
 // In-app screenshot viewer — an overlay so tapping a report's shot never
@@ -3618,75 +4372,171 @@ function playLoreVideo(entry) {
 // =================================================================
 //  Admin Dashboard (admin-only; see migration_admin.sql)
 // =================================================================
+// Start of the admin's local "today" - used by the KPI strip (new chefs,
+// pizzas baked today) and as the default anchor for the Pizzas Baked
+// calendar's Day view.
+function admStartOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()) }
+
 function renderAdminDashboard() {
   if (!isAdmin()) { renderSettings(); return }
 
   const content = `
     <div class="back-link" role="button" tabindex="0" data-action="back-to-settings">‹ Settings</div>
-    <div class="section-h" style="margin-top:2px"><h2>Admin Dashboard</h2></div>
+    <div class="adm-hq-head">
+      <div><h1>Kitchen HQ</h1><div class="sub">Admin Dashboard</div></div>
+      <div class="adm-live-dot" role="button" tabindex="0" data-action="open-pizzas-cal" title="View baking stats"><i></i><span id="hq-baking-n">– baking</span></div>
+    </div>
 
+    <div class="group" style="margin-top:1.375rem">
+      <p class="glab">Today at a glance</p>
+      <div class="adm-kpi-grid">
+        <div class="adm-kpi" role="button" tabindex="0" data-action="open-chefs">
+          <span class="adm-kpi-ic">🐧</span>
+          <div class="adm-kpi-val" id="kpi-chefs-val">–</div>
+          <div class="adm-kpi-lab">Active chefs<span class="adm-kpi-sub" id="kpi-chefs-sub" hidden></span></div>
+        </div>
+        <div class="adm-kpi accent" role="button" tabindex="0" data-action="open-pizzas-cal">
+          <span class="adm-kpi-ic">🍕</span>
+          <div class="adm-kpi-val" id="kpi-pizzas-val">–</div>
+          <div class="adm-kpi-lab">Pizzas baked today<span class="adm-kpi-drill">stats ›</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="group">
+      <p class="glab">Needs your attention</p>
+      <div class="adm-action hot" role="button" tabindex="0" data-action="open-bug-reports">
+        <div class="adm-badge-ic">🐞</div>
+        <div class="body"><div class="t">Bug Reports <span class="adm-count-pill" id="bug-count-pill" hidden></span></div><div class="s" id="bug-sub">Loading&hellip;</div></div>
+        <span class="chevron" aria-hidden="true">›</span>
+      </div>
+      <div class="adm-action hot" role="button" tabindex="0" data-action="open-moderation">
+        <div class="adm-badge-ic">🛡️</div>
+        <div class="body"><div class="t">Moderation <span class="adm-count-pill" id="mod-count-pill" hidden></span></div><div class="s" id="mod-sub">Loading&hellip;</div></div>
+        <span class="chevron" aria-hidden="true">›</span>
+      </div>
+    </div>
+
+    <div class="group">
+      <p class="glab">Manage the pizzeria</p>
+      <div class="adm-action" role="button" tabindex="0" data-action="open-users">
+        <div class="adm-badge-ic">👥</div>
+        <div class="body"><div class="t">Users</div><div class="s" id="users-sub">Edit pizzas, coins &amp; names</div></div>
+        <span class="chevron" aria-hidden="true">›</span>
+      </div>
+      <div class="adm-action" role="button" tabindex="0" data-action="open-compose">
+        <div class="adm-badge-ic">📣</div>
+        <div class="body"><div class="t">Send Notification</div><div class="s">Message one chef, a few, or everyone</div></div>
+        <span class="chevron" aria-hidden="true">›</span>
+      </div>
+    </div>
+
+    <div class="group">
+      <p class="glab">Setup</p>
+      <div class="adm-setup-list">
+        <div class="adm-srow" role="button" tabindex="0" data-action="open-presets">
+          <span class="adm-sic">🖼️</span><span class="adm-st">Preset Pictures</span><span class="adm-sn" id="setup-presets-n">–</span><span class="chevron" aria-hidden="true">›</span>
+        </div>
+        <div class="adm-srow" role="button" tabindex="0" data-action="open-emotes">
+          <span class="adm-sic">🏷️</span><span class="adm-st">Emote Types</span><span class="adm-sn" id="setup-emotes-n">–</span><span class="chevron" aria-hidden="true">›</span>
+        </div>
+        <div class="adm-srow" role="button" tabindex="0" data-action="open-group-icons">
+          <span class="adm-sic">🧩</span><span class="adm-st">Group Icons</span><span class="adm-sn" id="setup-groupicons-n">–</span><span class="chevron" aria-hidden="true">›</span>
+        </div>
+      </div>
+    </div>
+    <div style="height:8px"></div>
+  `
+
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
+    app.querySelector('[data-action="open-pizzas-cal"]').addEventListener('click', renderAdminPizzasCal)
+    app.querySelector('[data-action="open-chefs"]').addEventListener('click', renderAdminChefs)
+    app.querySelector('[data-action="open-bug-reports"]').addEventListener('click', renderBugReports)
+    app.querySelector('[data-action="open-moderation"]').addEventListener('click', () => renderModerationCenter())
+    app.querySelector('[data-action="open-users"]').addEventListener('click', renderAdminUsers)
+    app.querySelector('[data-action="open-compose"]').addEventListener('click', renderComposeNotification)
+    app.querySelector('[data-action="open-presets"]').addEventListener('click', renderAdminPresets)
+    app.querySelector('[data-action="open-emotes"]').addEventListener('click', renderAdminEmotes)
+    app.querySelector('[data-action="open-group-icons"]').addEventListener('click', renderAdminGroupIcons)
+
+    loadModSummary()
+    loadBugSummary()
+    loadAdminDashboardStats()
+  }, { key: 'admin' })
+}
+
+// Populates the KPI strip, the "N baking" pill, the Users row's chef count,
+// and the Setup row counts. Every query here is a light head:true/small
+// select run in parallel, so one slow table never blocks the rest of the
+// dashboard from painting.
+async function loadAdminDashboardStats() {
+  const start = admStartOfDay(new Date())
+  const [chefsRes, newTodayRes, pizzasRes, presetsRes, tagsRes, iconsRes, bakingRes] = await Promise.all([
+    supabase.from('profiles').select('id', { count: 'exact', head: true }),
+    supabase.from('profiles').select('id', { count: 'exact', head: true }).gte('created_at', start.toISOString()),
+    // Needs "admin can view all sessions" (see migration_admin_sessions.sql) -
+    // until that's run, RLS quietly limits this to the admin's own (+
+    // friends') sessions, so the total under-counts rather than erroring.
+    supabase.from('sessions').select('pizzas').gte('completed_at', start.toISOString()),
+    supabase.from('preset_avatars').select('id', { count: 'exact', head: true }),
+    supabase.from('emote_tags').select('id', { count: 'exact', head: true }),
+    supabase.from('group_icons').select('id', { count: 'exact', head: true }), // errors pre-migration_group_icons.sql - handled below
+    // Chefs mid-session right now. Errors pre-migration_baking_now.sql, which
+    // is handled below by falling back to a dash rather than a wrong number.
+    supabase.from('profiles').select('id', { count: 'exact', head: true }).gt('baking_since', bakingCutoffISO()),
+  ])
+
+  const chefsN = chefsRes.count || 0
+  const newTodayN = newTodayRes.count || 0
+  const pizzasToday = (pizzasRes.data || []).reduce((sum, r) => sum + Number(r.pizzas), 0)
+
+  const set = (id, txt) => { const el = app.querySelector('#' + id); if (el) el.textContent = txt }
+  set('kpi-chefs-val', chefsN.toLocaleString())
+  set('kpi-pizzas-val', formatScore(pizzasToday))
+  // A dash, not 0, when the column isn't there yet: "0 baking" would read as
+  // a real measurement of nobody baking rather than "not tracked here".
+  set('hq-baking-n', (bakingRes.error ? '–' : (bakingRes.count || 0).toLocaleString()) + ' baking')
+  set('users-sub', `Edit pizzas, coins & names · ${chefsN} chef${chefsN === 1 ? '' : 's'}`)
+  set('setup-presets-n', presetsRes.error ? '–' : String(presetsRes.count || 0))
+  set('setup-emotes-n', tagsRes.error ? '–' : String(tagsRes.count || 0))
+  set('setup-groupicons-n', iconsRes.error ? '–' : String(iconsRes.count || 0))
+
+  const chefsSub = app.querySelector('#kpi-chefs-sub')
+  if (chefsSub) { chefsSub.textContent = `+${newTodayN} new today`; chefsSub.hidden = false }
+}
+
+// =================================================================
+//  Admin: Chefs (placeholder subpage - Task 3)
+// =================================================================
+function renderAdminChefs() {
+  if (!isAdmin()) { renderSettings(); return }
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Chefs</h2></div>
+    <div class="adm-soon">
+      <span class="ic">🐧</span>
+      <div class="t">Chef stats coming soon</div>
+      <div class="s">Signups, retention and activity trends will live here.<br>Not needed to run the pizzeria today.</div>
+    </div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+  }, { key: 'admin-chefs' })
+}
+
+// =================================================================
+//  Admin: Users (moved off the dashboard - reuses loadAdminUsers() /
+//  renderAdminUserList() / openAdminAdjustPopup(), which are all agnostic
+//  to which screen mounted their target ids)
+// =================================================================
+function renderAdminUsers() {
+  if (!isAdmin()) { renderSettings(); return }
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Users</h2></div>
     <div class="admin-dash">
-      <div class="group">
-        <p class="glab">Moderation</p>
-        <div class="glist">
-          <div class="grow mod-summary-row" role="button" tabindex="0" data-action="open-moderation">
-            <div class="mod-summary-body">
-              <div class="gt">Reports and Blocks</div>
-              <div class="mod-summary-counts" id="mod-summary-counts">
-                <span class="count-pip"><span class="pip-dot rep"></span>Loading&hellip;</span>
-              </div>
-            </div>
-            <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <p class="glab">Support</p>
-        <div class="glist">
-          <div class="grow mod-summary-row" role="button" tabindex="0" data-action="open-bug-reports">
-            <div class="mod-summary-body">
-              <div class="gt">Bug Reports</div>
-              <div class="mod-summary-counts" id="bug-summary-counts">
-                <span class="count-pip"><span class="pip-dot rep"></span>Loading&hellip;</span>
-              </div>
-            </div>
-            <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <p class="glab">Notifications</p>
-        <div class="glist">
-          <div class="grow" role="button" tabindex="0" data-action="open-compose">
-            <div><div class="gt">Send Notification</div><div class="gs">Message one chef, a few, or everyone</div></div>
-            <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <p class="glab">Preset Profile Pictures</p>
-        <div class="adm-preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
-        <button class="admin-upload-btn" type="button" data-action="toggle-preset-edit">Edit Pictures</button>
-        <input type="file" accept="image/*" id="preset-input" hidden />
-      </div>
-
-      <div class="group">
-        <p class="glab">Emote Types</p>
-        <div class="adm-tags" id="adm-tags"><p class="editpic-empty">Loading&hellip;</p></div>
-        <div class="adm-search-card" style="margin-top:0.75rem">
-          <input id="adm-new-tag" type="text" placeholder="New type name" maxlength="20" />
-          <button type="button" data-action="add-tag">Add</button>
-        </div>
-        <p class="glab" style="margin-top:1.5rem">Tag Emotes</p>
-        <div class="glist" id="adm-emote-list"></div>
-      </div>
-
-      <!-- Users last: this list can get long, so it lives at the bottom -->
-      <div class="group">
-        <p class="glab">Edit User Pizzas, Coins &amp; Names</p>
+      <div class="group" style="margin-top:0">
         <div class="adm-search-card">
           <span class="adm-search-ic" aria-hidden="true">🔍</span>
           <input id="admin-search-input" type="text" placeholder="Filter by name or friend code" />
@@ -3697,15 +4547,33 @@ function renderAdminDashboard() {
     </div>
     <div style="height:8px"></div>
   `
-
-  presetEditMode = false
   mountScreen('settings', content, () => {
-    loadModSummary()
-    loadBugSummary()
-    app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
-    app.querySelector('[data-action="open-moderation"]').addEventListener('click', () => renderModerationCenter())
-    app.querySelector('[data-action="open-bug-reports"]').addEventListener('click', renderBugReports)
-    app.querySelector('[data-action="open-compose"]').addEventListener('click', renderComposeNotification)
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+    loadAdminUsers()
+    app.querySelector('#admin-search-input').addEventListener('input', (e) => renderAdminUserList(e.target.value))
+  }, { key: 'admin-users' })
+}
+
+// =================================================================
+//  Admin: Preset Pictures (moved off the dashboard - Setup)
+// =================================================================
+function renderAdminPresets() {
+  if (!isAdmin()) { renderSettings(); return }
+  presetEditMode = false
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Preset Pictures</h2></div>
+    <div class="admin-dash">
+      <div class="group" style="margin-top:0">
+        <div class="adm-preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
+        <button class="admin-upload-btn" type="button" data-action="toggle-preset-edit">Edit Pictures</button>
+        <input type="file" accept="image/*" id="preset-input" hidden />
+      </div>
+    </div>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
     loadPresetAvatars()
     app.querySelector('#preset-input').addEventListener('change', (e) => {
       const file = e.target.files[0]; e.target.value = ''
@@ -3715,14 +4583,359 @@ function renderAdminDashboard() {
       presetEditMode = !presetEditMode
       renderPresetGrid()
     })
+  }, { key: 'admin-presets' })
+}
 
+// =================================================================
+//  Admin: Emote Types (moved off the dashboard - Setup)
+// =================================================================
+function renderAdminEmotes() {
+  if (!isAdmin()) { renderSettings(); return }
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Emote Types</h2></div>
+    <div class="admin-dash">
+      <div class="group" style="margin-top:0">
+        <p class="glab">Types</p>
+        <div class="adm-tags" id="adm-tags"><p class="editpic-empty">Loading&hellip;</p></div>
+        <div class="adm-search-card" style="margin-top:0.75rem">
+          <input id="adm-new-tag" type="text" placeholder="New type name" maxlength="20" />
+          <button type="button" data-action="add-tag">Add</button>
+        </div>
+      </div>
+      <div class="group">
+        <p class="glab">Tag Emotes</p>
+        <div class="glist" id="adm-emote-list"></div>
+      </div>
+    </div>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
     loadEmoteData(true).then(renderAdminEmoteTypes)
     app.querySelector('[data-action="add-tag"]').addEventListener('click', addEmoteTag)
     app.querySelector('#adm-new-tag').addEventListener('keydown', (e) => { if (e.key === 'Enter') addEmoteTag() })
+  }, { key: 'admin-emotes' })
+}
 
-    loadAdminUsers()
-    app.querySelector('#admin-search-input').addEventListener('input', (e) => renderAdminUserList(e.target.value))
-  }, { key: 'admin' })
+// =================================================================
+//  Admin: Group Icons (Setup) - Task 4
+//  A curated emoji set for a future "pick a group icon" picker (see
+//  migration_groups.sql's groups.emoji, currently free text). Table + RPCs
+//  live in migration_group_icons.sql, which hasn't necessarily been run
+//  yet - loadGroupIcons() falls back to a small hardcoded default set (and
+//  hides the remove/add controls) rather than throwing.
+// =================================================================
+const GROUP_ICONS_FALLBACK = ['🐧', '🍕', '🔥', '⭐', '🏆', '🎉']
+let groupIconsCache = []
+let groupIconsFromDb = true // false once group_icons 404s - Add/Remove no-op instead of hitting a table that doesn't exist
+
+async function loadGroupIcons() {
+  const { data, error } = await supabase.from('group_icons').select('id, emoji').order('created_at', { ascending: true })
+  if (error) {
+    groupIconsFromDb = false
+    groupIconsCache = GROUP_ICONS_FALLBACK.map(e => ({ id: null, emoji: e }))
+  } else {
+    groupIconsFromDb = true
+    groupIconsCache = data || []
+  }
+  renderGroupIconTiles()
+}
+
+function renderGroupIconTiles() {
+  const grid = app.querySelector('#group-icons-grid')
+  if (!grid) return
+  grid.innerHTML = groupIconsCache.length
+    ? groupIconsCache.map(g => `
+        <span class="adm-tag-chip" data-icon-id="${g.id || ''}">
+          <span class="adm-tag-emoji">${escapeHtml(g.emoji)}</span>
+          ${groupIconsFromDb ? `<button type="button" class="adm-tag-del" data-action="remove-icon" aria-label="Remove icon">✕</button>` : ''}
+        </span>`).join('')
+    : '<p class="editpic-empty">No icons yet. Add one below.</p>'
+  grid.querySelectorAll('[data-action="remove-icon"]').forEach(b => b.addEventListener('click', () => {
+    removeGroupIcon(b.closest('[data-icon-id]').dataset.iconId)
+  }))
+  const note = app.querySelector('#group-icons-note')
+  if (note) note.hidden = groupIconsFromDb
+}
+
+async function addGroupIcon() {
+  const input = app.querySelector('#group-icon-input')
+  const emoji = input.value.trim()
+  if (!emoji) return
+  if (!groupIconsFromDb) { toast('Run migration_group_icons.sql first'); return }
+  const { error } = await supabase.rpc('add_group_icon', { emoji })
+  if (error) { toast(error.message); return }
+  input.value = ''
+  await loadGroupIcons()
+}
+
+async function removeGroupIcon(id) {
+  if (!id || !groupIconsFromDb) return
+  const { error } = await supabase.rpc('remove_group_icon', { id })
+  if (error) { toast(error.message); return }
+  loadGroupIcons()
+}
+
+function renderAdminGroupIcons() {
+  if (!isAdmin()) { renderSettings(); return }
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Group Icons</h2></div>
+    <p class="adm-cal-note" id="group-icons-note" hidden style="margin:0 0.25rem 0.875rem">Showing a default set — run migration_group_icons.sql in Supabase to make this editable.</p>
+    <div class="adm-tags" id="group-icons-grid"><p class="editpic-empty">Loading&hellip;</p></div>
+    <div class="adm-search-card" style="margin-top:0.875rem">
+      <input id="group-icon-input" type="text" placeholder="Type an emoji…" maxlength="8" />
+      <button type="button" data-action="add-icon">Add</button>
+    </div>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+    app.querySelector('[data-action="add-icon"]').addEventListener('click', addGroupIcon)
+    app.querySelector('#group-icon-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') addGroupIcon() })
+    loadGroupIcons()
+  }, { key: 'admin-group-icons' })
+}
+
+// =================================================================
+//  Admin: Pizzas Baked calendar (Task 2) - a read-only, AGGREGATE copy of
+//  the chef-facing History calendar (renderHistory() above). Same
+//  Month/Week/Day shape and the same cal-* CSS/date helpers (calKey,
+//  calDateFromKey, calWeekDays, calIntensity, CAL_MONTHS...), but every
+//  query sums public.sessions across ALL chefs instead of the signed-in
+//  user's own log, and per-day/session detail is never shown - totals only.
+//
+//  NOTE: this needs the "admin can view all sessions" RLS policy - see
+//  migration_admin_sessions.sql. Until that's run, RLS quietly limits every
+//  query below to the admin's own (+ friends') sessions, so totals
+//  under-count rather than erroring - there's nothing for the client to
+//  detect and warn about there, since a RLS-filtered result isn't an error.
+// =================================================================
+let admCalView = 'month'      // 'month' | 'week' | 'day'
+let admCalY = null            // month-view anchor year
+let admCalMo = null           // month-view anchor month (0-11)
+let admCalWeekKey = null      // any 'YYYY-MM-DD' key inside the displayed week
+let admCalDayKey = null       // day-view anchor
+let admCalFilter = 'all'      // 'all' or a TASK_TYPES key - persists across Month/Week/Day
+let admCalSelectedDay = null  // day key currently "pinned" in the top total line, or null = whole period
+let admCalTypeColOk = true    // false once a `type`-column query fails (pre-migration_task_types.sql) - disables the filter rather than crashing
+
+// Sessions in [start, endExclusive) across every chef, summed per day and
+// filtered by admCalFilter. Falls back to a type-less query (and disables
+// the filter) if the `type` column doesn't exist yet, so the calendar still
+// renders pre-migration instead of showing an error screen.
+async function admCalFetchDayTotals(start, endExclusive) {
+  const range = (q) => q.gte('completed_at', start.toISOString()).lt('completed_at', endExclusive.toISOString())
+  let data, error
+  if (admCalTypeColOk) {
+    let q = range(supabase.from('sessions').select('completed_at, pizzas, type'))
+    if (admCalFilter !== 'all') q = q.eq('type', admCalFilter)
+    ;({ data, error } = await q)
+    if (error) admCalTypeColOk = false
+  }
+  if (!admCalTypeColOk) {
+    ;({ data, error } = await range(supabase.from('sessions').select('completed_at, pizzas')))
+  }
+  const map = new Map()
+  ;(data || []).forEach(r => {
+    const k = calKeyFromTs(new Date(r.completed_at).getTime())
+    map.set(k, (map.get(k) || 0) + Number(r.pizzas))
+  })
+  return map
+}
+
+function admCalMonthRange() { return { start: new Date(admCalY, admCalMo, 1), end: new Date(admCalY, admCalMo + 1, 1) } }
+function admCalWeekRange() {
+  const days = calWeekDays(admCalWeekKey)
+  return { start: admStartOfDay(days[0]), end: new Date(days[6].getFullYear(), days[6].getMonth(), days[6].getDate() + 1), days }
+}
+function admCalDayRange() {
+  const start = calDateFromKey(admCalDayKey)
+  return { start, end: new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1) }
+}
+
+// Only the date number - never a per-day count in the cell itself (that
+// read as clutter/confusing in the mockup); volume is conveyed purely by the
+// heat-map background.
+//
+// Intensity is scaled to the busiest day IN THIS MONTH rather than reusing
+// calIntensity(), which saturates at 4 pizzas. That threshold is right for a
+// single chef's calendar but meaningless once every day is the sum across all
+// chefs - every cell would hit maximum and the heat map would say nothing.
+// The week view already scales this way; this matches it.
+function admCalMonthBodyHtml(dayMap, todayKey) {
+  const dim = new Date(admCalY, admCalMo + 1, 0).getDate()
+  const off = (new Date(admCalY, admCalMo, 1).getDay() + 6) % 7
+  const monthMax = Math.max(
+    ...Array.from({ length: dim }, (_, i) => dayMap.get(calKey(admCalY, admCalMo, i + 1)) || 0),
+    1,
+  )
+  const relIntensity = (pz) => (pz <= 0 ? 0 : Math.min(4, Math.max(1, Math.ceil((pz / monthMax) * 4))))
+
+  let h = '<div class="cal-monthpanel"><div class="cal-dow">' + CAL_DOW.map(d => `<span>${d}</span>`).join('') + '</div><div class="cal-grid">'
+  for (let i = 0; i < off; i++) h += '<div class="cal-cell cal-empty-month"></div>'
+  for (let d = 1; d <= dim; d++) {
+    const key = calKey(admCalY, admCalMo, d)
+    const pz = dayMap.get(key) || 0
+    const inten = relIntensity(pz)
+    // Only days with bakes are tappable, so an empty day doesn't get the
+    // pointer cursor and brighter number of a day that has data.
+    const cls = 'cal-cell' + (pz ? ' cal-has' : '') + (inten ? ' cal-i' + inten : '')
+      + (key === todayKey ? ' cal-today' : '') + (key === admCalSelectedDay ? ' cal-sel' : '')
+    h += `<div class="${cls}" data-day="${key}"><div class="cal-dnum">${d}</div></div>`
+  }
+  h += '</div></div>'
+  return h
+}
+
+function admCalWeekBodyHtml(days, todayKey, dayMap) {
+  const vals = days.map(d => dayMap.get(calKeyFromDate(d)) || 0)
+  const max = Math.max(...vals, 1)
+  let h = '<div class="adm-wk-panel">'
+  days.forEach((dt, i) => {
+    const key = calKeyFromDate(dt)
+    const val = vals[i]
+    const pct = val ? Math.max(Math.round((val / max) * 100), 4) : 0
+    const cls = 'adm-wk-row' + (key === todayKey ? ' today' : '') + (key === admCalSelectedDay ? ' sel' : '')
+    h += `<div class="${cls}" data-day="${key}">
+      <span class="adm-wk-d">${CAL_DOW_FULL[dt.getDay()].slice(0, 3)}</span>
+      <span class="adm-wk-bar"><i style="width:${pct}%"></i></span>
+      <span class="adm-wk-n">${formatScore(val)}</span>
+    </div>`
+  })
+  h += '</div>'
+  return h
+}
+
+function admCalDayBodyHtml(val) {
+  const filterSuffix = admCalFilter !== 'all' ? ` · ${escapeHtml(taskTypeLabel(admCalFilter)?.title || '')}` : ''
+  return `<div class="adm-daybig"><div class="dv">${formatScore(val)}</div><div class="dk">pizzas baked${filterSuffix}</div></div>`
+}
+
+// Single-select "All" + the 5 task types - unlike the chef calendar's
+// multi-select pills (calTypeFilter), this always narrows to exactly one
+// bucket, matching the approved mockup's chip row.
+function admCalFilterChipsHtml() {
+  const chips = [`<button type="button" class="tt-chip${admCalFilter === 'all' ? ' active' : ''}" data-tf="all">All</button>`]
+    .concat(TASK_TYPES.map(t => `<button type="button" class="tt-chip${admCalFilter === t.key ? ' active' : ''}" data-tf="${t.key}">${calTypeChipLabel(t.key)}</button>`))
+  return `<div class="tt-cal-filter"><div class="tt-chip-row">${chips.join('')}</div></div>`
+}
+
+// The pill at the top of the page - shows the whole period's total by
+// default, or (the key interaction) the tapped day's total once one is
+// selected, with a label that says which.
+function admCalTotalLineHtml(periodTotal, dayMap) {
+  let val = periodTotal
+  let label = admCalView === 'month' ? 'this month' : admCalView === 'week' ? 'this week' : 'this day'
+  if (admCalSelectedDay && admCalView !== 'day') {
+    val = dayMap.get(admCalSelectedDay) || 0
+    const dt = calDateFromKey(admCalSelectedDay)
+    label = `on ${CAL_DOW[(dt.getDay() + 6) % 7]} ${dt.getDate()} ${CAL_MONTHS_SHORT[dt.getMonth()]}`
+  }
+  const filterSuffix = admCalFilter !== 'all' ? ` · ${escapeHtml(taskTypeLabel(admCalFilter)?.title || '')}` : ''
+  return `<div class="adm-cal-total"><span class="v">${formatScore(val)}</span><span class="k">🍕 pizzas ${label}${filterSuffix}</span></div>`
+}
+
+async function renderAdminPizzasCal() {
+  if (!isAdmin()) { renderSettings(); return }
+  const today = new Date()
+  if (admCalY === null) { admCalY = today.getFullYear(); admCalMo = today.getMonth() }
+  if (admCalWeekKey === null) admCalWeekKey = calKeyFromDate(today)
+  if (admCalDayKey === null) admCalDayKey = calKeyFromDate(today)
+  const todayKey = calKeyFromDate(today)
+
+  const range = admCalView === 'month' ? admCalMonthRange() : admCalView === 'week' ? admCalWeekRange() : admCalDayRange()
+  const dayMap = await admCalFetchDayTotals(range.start, range.end)
+
+  let navLabel, bodyHtml, periodTotal, legendHtml = ''
+  if (admCalView === 'month') {
+    navLabel = `${CAL_MONTHS[admCalMo]} ${admCalY}`
+    bodyHtml = admCalMonthBodyHtml(dayMap, todayKey)
+    periodTotal = [...dayMap.values()].reduce((s, v) => s + v, 0)
+    legendHtml = `<div class="cal-legend"><span>Less 🍕</span>
+      <span class="cal-legend-sw"></span><span class="cal-legend-sw cal-i1"></span>
+      <span class="cal-legend-sw cal-i2"></span><span class="cal-legend-sw cal-i3"></span>
+      <span class="cal-legend-sw cal-i4"></span><span>More 🍕</span></div>`
+  } else if (admCalView === 'week') {
+    const { days } = range
+    const first = days[0], last = days[6]
+    navLabel = (first.getMonth() === last.getMonth())
+      ? `${first.getDate()}–${last.getDate()} ${CAL_MONTHS_SHORT[first.getMonth()]}`
+      : `${first.getDate()} ${CAL_MONTHS_SHORT[first.getMonth()]} – ${last.getDate()} ${CAL_MONTHS_SHORT[last.getMonth()]}`
+    bodyHtml = admCalWeekBodyHtml(days, todayKey, dayMap)
+    periodTotal = days.reduce((s, d) => s + (dayMap.get(calKeyFromDate(d)) || 0), 0)
+  } else {
+    const dt = calDateFromKey(admCalDayKey)
+    navLabel = `${CAL_DOW[(dt.getDay() + 6) % 7]} ${dt.getDate()} ${CAL_MONTHS[dt.getMonth()]}`
+    periodTotal = dayMap.get(admCalDayKey) || 0
+    bodyHtml = admCalDayBodyHtml(periodTotal)
+  }
+
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Pizzas Baked</h2><span class="meta">All chefs · totals only</span></div>
+    <div class="cal-seg" id="adm-cal-seg">
+      <button type="button" class="${admCalView === 'month' ? 'on' : ''}" data-v="month">Month</button>
+      <button type="button" class="${admCalView === 'week' ? 'on' : ''}" data-v="week">Week</button>
+      <button type="button" class="${admCalView === 'day' ? 'on' : ''}" data-v="day">Day</button>
+    </div>
+    <div class="cal-navbar">
+      <button class="cal-chev" type="button" data-action="adm-cal-prev">‹</button>
+      <div class="cal-navlabel">${navLabel}</div>
+      <button class="cal-chev" type="button" data-action="adm-cal-next">›</button>
+    </div>
+    ${admCalTotalLineHtml(periodTotal, dayMap)}
+    <p class="glab" style="margin-top:1.125rem">Filter by task type</p>
+    ${admCalFilterChipsHtml()}
+    <div class="cal-viewbody">${bodyHtml}</div>
+    ${legendHtml}
+    <p class="adm-cal-note">Totals only — individual chefs' tasks aren't shown here.</p>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => admWireCal(), { key: 'admin-pizzas-cal' })
+}
+
+function admCalStep(delta) {
+  admCalSelectedDay = null
+  if (admCalView === 'month') {
+    admCalMo += delta
+    if (admCalMo < 0) { admCalMo = 11; admCalY-- } else if (admCalMo > 11) { admCalMo = 0; admCalY++ }
+  } else if (admCalView === 'week') {
+    const dt = calDateFromKey(admCalWeekKey); dt.setDate(dt.getDate() + delta * 7); admCalWeekKey = calKeyFromDate(dt)
+  } else {
+    const dt = calDateFromKey(admCalDayKey); dt.setDate(dt.getDate() + delta); admCalDayKey = calKeyFromDate(dt)
+  }
+  renderAdminPizzasCal()
+}
+
+function admWireCal() {
+  app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+  app.querySelectorAll('#adm-cal-seg button').forEach(b => {
+    b.addEventListener('click', () => {
+      if (b.dataset.v === admCalView) return
+      admCalView = b.dataset.v
+      admCalSelectedDay = null
+      renderAdminPizzasCal()
+    })
+  })
+  app.querySelector('[data-action="adm-cal-prev"]')?.addEventListener('click', () => admCalStep(-1))
+  app.querySelector('[data-action="adm-cal-next"]')?.addEventListener('click', () => admCalStep(1))
+  app.querySelectorAll('.tt-cal-filter .tt-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      admCalFilter = chip.dataset.tf
+      renderAdminPizzasCal()
+    })
+  })
+  // Tapping a day (month cell or week row) pins the top total to that day;
+  // tapping the same day again clears it back to the period total.
+  app.querySelectorAll('[data-day]').forEach(el => {
+    el.addEventListener('click', () => {
+      const key = el.dataset.day
+      admCalSelectedDay = admCalSelectedDay === key ? null : key
+      renderAdminPizzasCal()
+    })
+  })
 }
 
 // The dashboard's one-line "Reports and Blocks" summary AND the Moderation
@@ -3742,27 +4955,39 @@ async function fetchModerationCounts() {
 }
 
 async function loadModSummary() {
-  const el = app.querySelector('#mod-summary-counts')
-  if (!el) return
+  const pill = app.querySelector('#mod-count-pill')
+  const sub = app.querySelector('#mod-sub')
+  if (!pill && !sub) return
   const { openReports, newBlocks } = await fetchModerationCounts()
-  el.innerHTML = `
-    <span class="count-pip"><span class="pip-dot rep"></span><b>${openReports}</b>&nbsp;pending report${openReports === 1 ? '' : 's'}</span>
-    <span class="count-pip"><span class="pip-dot blk"></span><b>${newBlocks}</b>&nbsp;new block${newBlocks === 1 ? '' : 's'}</span>
-  `
+  if (pill) { pill.textContent = `${openReports} report${openReports === 1 ? '' : 's'}`; pill.hidden = !openReports }
+  if (sub) sub.textContent = `${openReports} pending report${openReports === 1 ? '' : 's'} · ${newBlocks} new block${newBlocks === 1 ? '' : 's'}`
 }
 
-// Just the count the admin actually asked for on this dashboard row: how many
-// bug reports are still unresolved (status not 'resolved'/'dismissed') — no
-// other stats.
+// Dashboard row breakdown mirroring the Bug Reports tabs: untriaged Open vs.
+// In Progress (sent to Claude). Both exclude resolved/dismissed. Falls back to
+// a single "unresolved" count if the sent_to_claude_at column isn't there yet
+// (pre-migration_bug_claude.sql).
 async function loadBugSummary() {
-  const el = app.querySelector('#bug-summary-counts')
-  if (!el) return
-  const { count, error } = await supabase
-    .from('bug_reports')
-    .select('id', { count: 'exact', head: true })
-    .not('status', 'in', '(resolved,dismissed)')
-  const n = error ? 0 : (count || 0)
-  el.innerHTML = `<span class="count-pip"><span class="pip-dot rep"></span><b>${n}</b>&nbsp;unresolved report${n === 1 ? '' : 's'}</span>`
+  const pill = app.querySelector('#bug-count-pill')
+  const sub = app.querySelector('#bug-sub')
+  if (!pill && !sub) return
+  const base = () => supabase.from('bug_reports').select('id', { count: 'exact', head: true }).not('status', 'in', '(resolved,dismissed)')
+  const [openRes, progRes] = await Promise.all([
+    base().is('sent_to_claude_at', null),
+    base().not('sent_to_claude_at', 'is', null),
+  ])
+  if (openRes.error || progRes.error) {
+    // Column missing / query unsupported — fall back to the combined count.
+    const { count, error } = await base()
+    const n = error ? 0 : (count || 0)
+    if (pill) { pill.textContent = `${n} unresolved`; pill.hidden = !n }
+    if (sub) sub.textContent = `${n} unresolved report${n === 1 ? '' : 's'}`
+    return
+  }
+  const openN = openRes.count || 0
+  const progN = progRes.count || 0
+  if (pill) { pill.textContent = `${openN} open`; pill.hidden = !openN }
+  if (sub) sub.textContent = `${openN} open · ${progN} sent to Claude`
 }
 
 // Removes a report row that just got resolved (warned or dismissed) from
@@ -4698,7 +5923,7 @@ function openAdminAdjustPopup(profile) {
     </div>
 
     <label class="field-label" for="admin-name" style="margin-top:0.375rem">Display Name</label>
-    <input id="admin-name" class="rename-input" type="text" maxlength="15" value="${escapeHtml(profile.display_name || '')}" />
+    <input id="admin-name" class="rename-input" type="text" maxlength="7" value="${escapeHtml(profile.display_name || '')}" />
 
     <label class="field-label" for="admin-pizzas">Pizzas</label>
     <input id="admin-pizzas" class="rename-input" type="number" step="0.01" value="${curPizzas}" />
@@ -4722,7 +5947,7 @@ function openAdminAdjustPopup(profile) {
 
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="apply"]').addEventListener('click', async () => {
-    const newName = o.querySelector('#admin-name').value.trim().slice(0, 15) || profile.display_name
+    const newName = o.querySelector('#admin-name').value.trim().slice(0, 7) || profile.display_name
     const newPizzas = Number(o.querySelector('#admin-pizzas').value)
     const newCoins = Number(o.querySelector('#admin-coins').value)
     if (Number.isNaN(newPizzas) || Number.isNaN(newCoins)) { toast('Enter valid numbers'); return }
@@ -4740,7 +5965,7 @@ function openAdminAdjustPopup(profile) {
     // migration needed here.
     if (hasProfileUpdates) {
       const { error } = await supabase.from('profiles').update(profileUpdates).eq('id', profile.id)
-      if (error) { toast(error.message); return }
+      if (error) { toast(friendlyNameError(error)); return }
       Object.assign(profile, profileUpdates)
     }
     const ok = (pizzaDelta || coinDelta) ? await applyAdminEdit(profile, pizzaDelta, coinDelta) : true
@@ -4825,10 +6050,28 @@ const NAME_BLOCKLIST = [
   'fuck', 'shit', 'bitch', 'asshole', 'assh0le', 'cunt', 'dick', 'pussy',
   'nigger', 'nigga', 'fag', 'faggot', 'whore', 'slut', 'retard', 'rape',
   'nazi', 'cock', 'twat', 'bastard', 'dyke', 'chink', 'spic', 'kike',
+  // Anatomy/sexual terms - substring match, so e.g. "boobs" and "boobies"
+  // are both caught by "boob".
+  'penis', 'vagina', 'breast', 'boob', 'dildo', 'porn', 'sex',
+  'blowjob', 'handjob', 'anal', 'clit', 'testicle', 'scrotum', 'semen',
+  'orgasm', 'nude', 'naked', 'xxx', 'jizz',
 ]
 function isNameAllowed(name) {
   const n = (name || '').toLowerCase().replace(/[^a-z0-9]/g, '')
   return !NAME_BLOCKLIST.some(w => n.includes(w))
+}
+
+// migration_unique_names.sql adds a case-insensitive unique index on
+// display_name, so two chefs can never share a name (renaming away from one
+// frees it immediately for someone else - that's the point of a plain
+// uniqueness constraint, no separate reservation table needed). Postgres
+// reports that collision as a raw "duplicate key value violates unique
+// constraint..." error, which would be confusing shown as-is.
+function friendlyNameError(error) {
+  if (error?.code === '23505' || /duplicate key|already exists/i.test(error?.message || '')) {
+    return 'That name is already taken — try another.'
+  }
+  return error?.message || 'Could not save — try again.'
 }
 
 function openRenamePopup() {
@@ -4838,7 +6081,7 @@ function openRenamePopup() {
     <h3>Edit name</h3>
     <div class="rename-chef-row">
       <span class="rename-chef-prefix">Chef</span>
-      <input id="rename-input" class="rename-input" type="text" maxlength="15" value="${escapeHtml(myRawName())}" placeholder="Your name" />
+      <input id="rename-input" class="rename-input" type="text" maxlength="7" value="${escapeHtml(myRawName())}" placeholder="Your name" />
     </div>
     <p class="inline-error" id="rename-error">That name isn't allowed &mdash; please choose another.</p>
     <div class="home-btn-col">
@@ -4862,11 +6105,11 @@ function openRenamePopup() {
   setTimeout(() => input.focus(), 50)
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="save"]').addEventListener('click', async () => {
-    const newName = stripChef(input.value).slice(0, 15)
+    const newName = stripChef(input.value).slice(0, 7)
     if (!newName) return
     if (!validate()) return
     const { error } = await supabase.from('profiles').update({ display_name: newName }).eq('id', currentUser.id)
-    if (error) { toast(error.message); return }
+    if (error) { toast(friendlyNameError(error)); return }
     currentProfile.display_name = newName
     o.remove()
     renderSettings()
@@ -5048,7 +6291,27 @@ function startSession(minutes, task, type) {
     remainingMsSnapshot: null,
   }
   save()
+  setBakingNow(true)
   renderTimerLoop(true)
+}
+
+// Marks this chef as mid-session so friends'/admin "N baking" counts have
+// something to read - a sessions row only exists once a session finishes.
+// Fire-and-forget: a failed write must never block or break the timer, and
+// the staleness cutoff in bakingCutoffISO() cleans up anything left behind.
+function setBakingNow(on) {
+  if (!currentUser) return
+  supabase.from('profiles')
+    .update({ baking_since: on ? new Date().toISOString() : null })
+    .eq('id', currentUser.id)
+    .then(() => {}, () => {})
+}
+
+// Anything older than this is treated as abandoned (app closed mid-session)
+// rather than still baking, so a stale row can't inflate the count forever.
+const BAKING_STALE_HOURS = 4
+function bakingCutoffISO() {
+  return new Date(Date.now() - BAKING_STALE_HOURS * 3600 * 1000).toISOString()
 }
 
 // ---------- Timer + looping gameplay video (unchanged mechanics) ----------
