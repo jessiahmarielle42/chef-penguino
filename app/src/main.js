@@ -1979,6 +1979,7 @@ async function loadChefsFriendsTab() {
   if (!body) return
   body.innerHTML = `
     <input class="chefs-search" id="chefs-search" placeholder="Search chefs to add" autocomplete="off">
+    <div class="section-h" id="chefs-board-head"><h2>Weekly Scoreboard</h2><span class="meta">Resets&nbsp;${nextMondayLabel()}</span></div>
     <div id="chefs-friends-list"><p class="log-empty">Loading&hellip;</p></div>
     <div class="section-h" style="margin-top:2.75rem"><h2>Add by code</h2></div>
     <div class="addfriend"><input id="friend-code-input" placeholder="Friend's code" maxlength="6" /><button type="button" data-action="add">Add</button></div>
@@ -2039,6 +2040,8 @@ async function loadFriendsList() {
   const cutoff = bakingCutoffISO()
   friends.forEach(f => { f.baking = !!f.baking_since && f.baking_since > cutoff })
   showChefsPill(friends.filter(f => f.baking).length)
+  const boardHead = app.querySelector('#chefs-board-head')
+  if (boardHead) boardHead.hidden = false
 
   if (!friends.length) {
     listEl.innerHTML = `<div class="frow lonely-card">It's lonely here. Add friends to start climbing the ladder!</div>`
@@ -2125,6 +2128,9 @@ async function runChefsSearch(q) {
   const listEl = app.querySelector('#chefs-friends-list')
   if (!listEl) return
   hideChefsPill() // search results aren't a baking-count scope
+  // Search results are not the weekly board, so its heading goes with it.
+  const head = app.querySelector('#chefs-board-head')
+  if (head) head.hidden = true
   const myCall = ++chefsSearchAbort
   listEl.innerHTML = `<p class="log-empty">Searching&hellip;</p>`
   const { data, error } = await supabase.rpc('search_chefs', { q, lim: 30 })
