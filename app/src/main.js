@@ -2190,7 +2190,7 @@ async function loadChefsGroupsTab() {
 async function runChefsGroupSearch(q) {
   const listEl = app.querySelector('#chefs-groups-list')
   if (!listEl) return
-  const { data: mineData, error: mineErr } = await supabase.rpc('my_groups')
+  const { data: mineData, error: mineErr } = await supabase.rpc('my_groups', { week_start: startOfThisWeek().toISOString() })
   if (mineErr) {
     listEl.innerHTML = `<p class="chefs-empty-hint">Groups aren't available yet.</p>` + chefsGroupActionsHtml(!q)
     wireChefsGroupActions(listEl)
@@ -2396,8 +2396,8 @@ async function loadChefsGroupDetail(groupId) {
   const bodyEl = app.querySelector('#chefs-group-body')
   if (!bodyEl) return
   const [{ data: mineData }, { data: memberData, error: memErr }] = await Promise.all([
-    supabase.rpc('my_groups'),
-    supabase.rpc('group_members_list', { group_id: groupId }),
+    supabase.rpc('my_groups', { week_start: startOfThisWeek().toISOString() }),
+    supabase.rpc('group_members_list', { group_id: groupId, week_start: startOfThisWeek().toISOString() }),
   ])
   const g = (mineData || []).find(x => x.group_id === groupId)
   if (!g) { bodyEl.innerHTML = `<p class="chefs-empty-hint">This group is no longer available.</p>`; return }
@@ -2419,7 +2419,7 @@ async function loadChefsGroupDetail(groupId) {
       </div>
       ${g.role === 'owner' ? `<button type="button" class="chefs-gear-btn" data-action="group-settings" aria-label="Group settings">⚙️</button>` : ''}
     </div>
-    <div class="section-h" style="margin-top:1.25rem"><h2>Leaderboard</h2></div>
+    <div class="section-h" style="margin-top:1.25rem"><h2>Weekly Leaderboard</h2><span class="meta">Resets&nbsp;${nextMondayLabel()}</span></div>
     ${ranked.map((m, i) => chefsMemberRowHtml(m, i)).join('')}
     <div class="chefs-group-actions">
       <button type="button" class="chefs-grp-btn secondary" data-action="share-code">Share join code</button>
@@ -2441,12 +2441,24 @@ async function loadChefsGroupDetail(groupId) {
 function chefsMemberRowHtml(m, i) {
   const rank = i < 3 ? `<div class="medal">${['🥇', '🥈', '🥉'][i]}</div>` : `<div class="rank">${i + 1}</div>`
   const isMe = m.user_id === currentUser.id
+  // Same two-line layout as the Friends leaderboard rows: the name gets the
+  // full row on line 1, and the score + you/owner tags drop to a quieter
+  // line 2. This row used to cram name + "(you)" + "Owner" onto one line
+  // competing with a right-aligned score - which the shared .fn ellipsis
+  // rule (added for long names) would then truncate mid-word.
+  const meta = [
+    `<span class="chefs-score">🍕 ${formatScore(Number(m.weekly_pizzas) || 0)}</span>`,
+    isMe ? '<span class="you-tag">you</span>' : '',
+    m.role === 'owner' ? '<span class="chefs-role-tag">Owner</span>' : '',
+  ].filter(Boolean).join('')
   return `
     <div class="frow ${isMe ? 'me' : ''}" style="cursor:default">
       ${rank}
       <img src="${m.avatar_url || DEFAULT_AVATAR}" alt="" />
-      <div class="finfo"><span class="fn">${escapeHtml(chefName(m.display_name))}${isMe ? ' <span class="you-tag">(you)</span>' : ''}${m.role === 'owner' ? ' <span class="chefs-role-tag">Owner</span>' : ''}</span></div>
-      <div class="score">🍕 ${formatScore(Number(m.weekly_pizzas) || 0)}</div>
+      <div class="finfo">
+        <div class="chefs-fn-row"><span class="fn">${escapeHtml(chefName(m.display_name))}</span></div>
+        <div class="chefs-meta-row">${meta}</div>
+      </div>
     </div>`
 }
 
@@ -2486,8 +2498,8 @@ async function loadChefsGroupSettings(groupId) {
   const bodyEl = app.querySelector('#chefs-settings-body')
   if (!bodyEl) return
   const [{ data: mineData }, { data: memberData, error: memErr }] = await Promise.all([
-    supabase.rpc('my_groups'),
-    supabase.rpc('group_members_list', { group_id: groupId }),
+    supabase.rpc('my_groups', { week_start: startOfThisWeek().toISOString() }),
+    supabase.rpc('group_members_list', { group_id: groupId, week_start: startOfThisWeek().toISOString() }),
   ])
   const g = (mineData || []).find(x => x.group_id === groupId)
   // Not the owner (or the group's gone) - this screen isn't theirs to see.
