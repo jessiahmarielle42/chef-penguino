@@ -6116,7 +6116,17 @@ const NAME_BLOCKLIST = [
   'blowjob', 'handjob', 'anal', 'clit', 'testicle', 'scrotum', 'semen',
   'orgasm', 'nude', 'naked', 'xxx', 'jizz',
 ]
+// Letters, numbers and single spaces only. Emoji in particular are excluded:
+// they render far wider than a letter and each one eats two of the character
+// budget (maxlength counts UTF-16 units), so "Chef ****" would blow past the
+// width the row is measured against - and the same applies to symbols and
+// zero-width/control characters pasted in from a keyboard or clipboard.
+const NAME_CHARS_RE = /^[A-Za-z0-9]+(?: [A-Za-z0-9]+)*$/
+function isNameCharsOk(name) {
+  return NAME_CHARS_RE.test((name || '').trim())
+}
 function isNameAllowed(name) {
+  if (!isNameCharsOk(name)) return false
   const n = (name || '').toLowerCase().replace(/[^a-z0-9]/g, '')
   return !NAME_BLOCKLIST.some(w => n.includes(w))
 }
@@ -6143,7 +6153,7 @@ function openRenamePopup() {
       <span class="rename-chef-prefix">Chef</span>
       <input id="rename-input" class="rename-input" type="text" maxlength="13" value="${escapeHtml(myRawName())}" placeholder="Your name" />
     </div>
-    <p class="inline-error" id="rename-error">That name isn't allowed &mdash; please choose another.</p>
+    <p class="inline-error" id="rename-error"></p>
     <p class="name-status" id="rename-status" hidden></p>
     <div class="home-btn-col">
       <button type="button" data-action="save">Save</button>
@@ -6192,6 +6202,11 @@ function openRenamePopup() {
   const validate = () => {
     const val = input.value.trim()
     const blocked = !!val && !isNameAllowed(input.value)
+    // Say WHICH rule was broken - "not allowed" alone leaves someone who
+    // typed an emoji or an apostrophe with no idea what to change.
+    errEl.textContent = !blocked ? '' : (isNameCharsOk(input.value)
+      ? "That name isn't allowed \u2014 please choose another."
+      : 'Letters, numbers and spaces only.')
     errEl.classList.toggle('show', blocked)
     input.classList.toggle('err', blocked)
     const ok = !!val && !blocked
