@@ -403,11 +403,18 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .viewing-banner {
   background: linear-gradient(180deg, #FFB25E, var(--fire) 55%, var(--fire-deep));
   box-shadow: 0 12px 26px -10px rgba(251,122,46,0.8), inset 0 1px 0 rgba(255,255,255,0.4);
-  border: none; border-radius:1.25rem; padding:1.125rem;
-  margin-top:2.25rem; margin-bottom:0.875rem; text-align: center;
+  border: none; border-radius:1.25rem; padding:1.125rem 1rem;
+  margin-top:2.25rem; margin-bottom:0.875rem;
   font-family: var(--font-display); font-weight: 800; font-size:1.1875rem; color: #2a1405;
   cursor: pointer;
+  /* Chevron pinned left, title centred in the remaining space - a long chef
+     name truncates instead of shoving the chevron around or wrapping. */
+  display: flex; align-items: center; gap:0.5rem;
 }
+.viewing-back { flex: none; font-size:1.5rem; line-height: 1; margin-top:-0.125rem; }
+.viewing-title { flex: 1; min-width: 0; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Mirrors the chevron's width so the title stays optically centred. */
+.viewing-banner::after { content: ''; flex: none; width:0.75rem; }
 .frow.me { border-color: rgba(251,122,46,0.4); background: linear-gradient(160deg, rgba(251,122,46,0.12), var(--card)); }
 .you-tag { color: var(--muted); font-weight: 700; font-size:0.75rem; text-transform: none; letter-spacing: normal; }
 .lonely-card { display: block; text-align: center; color: var(--muted); font-size:0.8125rem; line-height: 1.5; padding:1.25rem 1rem; }
@@ -2510,7 +2517,7 @@ img.shop-image {
 /* Sits between the tab row and the search field, so it needs real breathing
    room on BOTH sides - the old negative top margin pulled it up against the
    tabs and left it looking wedged in. */
-.chefs-pill-bar { display: flex; justify-content: flex-end; margin:0.625rem 0.125rem 0.875rem; }
+.chefs-pill-bar { display: flex; justify-content: flex-end; margin:0.625rem 0.125rem 0; }
 .chefs-pill-bar[hidden] { display: none; }
 .chefs-pill { cursor: default; }
 .adm-live-dot.off { color: var(--muted); background: var(--soft-fill); border-color: var(--line); }
@@ -2518,7 +2525,10 @@ img.shop-image {
 
 .chefs-search {
   width: 100%; box-sizing: border-box; padding:0.7rem 0.9rem; border-radius:0.9rem; border: 1px solid var(--line);
-  background: var(--card); color: var(--cream); font-family: var(--font-body); font-size:0.875rem; margin-bottom:0.75rem; outline: none;
+  background: var(--card); color: var(--cream); font-family: var(--font-body); font-size:0.875rem; outline: none;
+  /* Own top spacing rather than relying on the pill bar above it: that bar is
+     hidden on Groups/Requests, which left the field jammed against the tabs. */
+  margin:0.625rem 0 0.75rem;
 }
 .chefs-search::placeholder { color: var(--muted-2); }
 .chefs-search:focus { border-color: var(--fire); }
@@ -2605,7 +2615,7 @@ img.shop-image {
 /* ＋ Create group / Join with code row */
 .chefs-group-actions { display: flex; gap:0.5rem; margin-top:1rem; }
 .chefs-grp-btn { flex: 1; padding:0.75rem 0; border-radius:0.9rem; font-weight: 800; font-size:0.83rem; cursor: pointer; text-align: center; border: none; font-family: var(--font-body); }
-.chefs-grp-btn.primary { background: linear-gradient(180deg, var(--fire), var(--fire-deep)); color:#2a1405; box-shadow: 0 0.125rem 0 var(--ember); }
+.chefs-grp-btn.primary { background: linear-gradient(180deg, var(--gold), var(--gold-deep)); color:#3a2708; box-shadow: 0 0.125rem 0 #b56e00; }
 .chefs-grp-btn.secondary { border: 1px solid var(--line); background: var(--soft-fill); color: var(--cream); box-shadow: none; }
 .chefs-grp-btn:active { transform: translateY(1px); }
 
@@ -2653,3 +2663,19 @@ img.shop-image {
 }
 .chefs-wide-btn:active { background: var(--soft-fill-2); }
 .chefs-wide-btn.danger { color:#ff8f7a; border-color: rgba(255,107,107,0.35); background: rgba(255,107,107,0.1); }
+
+/* Native select styled to match .rename-input, with a custom chevron since
+   the default arrow is unstyleable and looks foreign on the dark popup. */
+.em-type-select {
+  appearance: none; -webkit-appearance: none; cursor: pointer; padding-right:2.25rem;
+  background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23b39a86' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 0.875rem center; background-size:0.875rem;
+}
+.em-type-select option { background: var(--card-2); color: var(--cream); }
+
+/* Live name-availability line under the rename field. */
+.name-status {
+  margin:-0.5rem 0 0.75rem; font-size:0.8125rem; font-weight: 700; color: var(--muted); text-align: center;
+}
+.name-status.ok  { color: var(--owned); }
+.name-status.bad { color: #ff8f7a; }

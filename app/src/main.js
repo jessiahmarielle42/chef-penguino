@@ -632,6 +632,30 @@ function warmEmote(id) {
   preloadedEmotes[id]?.load()
 }
 
+// Waits until a clip can play through, THEN plays it once - used when a
+// screen first appears, so the emote never starts mid-buffer or judders.
+// Falls back to a short timeout so a clip that never reports canplaythrough
+// (or is already cached and fires nothing) still gets its one play.
+function autoplayEmoteWhenReady(imgEl, emoteId, revertSrc) {
+  const v = preloadedEmotes[emoteId]
+  if (!v || !imgEl) return
+  warmEmote(emoteId)
+  let started = false
+  const start = () => {
+    if (started) return
+    started = true
+    clearTimeout(timer)
+    v.removeEventListener('canplaythrough', start)
+    // The element may have been re-rendered away while we were buffering.
+    if (!imgEl.isConnected) return
+    playEmoteInto(imgEl, emoteId, revertSrc)
+  }
+  // HAVE_ENOUGH_DATA already - no need to wait on an event that won't fire.
+  if (v.readyState >= 4) { start(); return }
+  v.addEventListener('canplaythrough', start)
+  const timer = setTimeout(start, 2500)
+}
+
 // Swap an <img> for the equipped/given emote clip, play it, then revert.
 function playEmoteInto(imgEl, emoteId, revertSrc, onRevert) {
   const v = preloadedEmotes[emoteId]
@@ -1001,7 +1025,9 @@ async function renderHome() {
       })
     }
     attachEmoteTap(app.querySelector('#hero-card'))
-    warmEmote(equippedEmote())
+    // Greet the chef with their equipped emote on arrival - buffered first so
+    // it plays smoothly rather than stuttering into life.
+    autoplayEmoteWhenReady(app.querySelector('#hero-card .hero-still'), equippedEmote(), heroSrc)
 
     // Log content is already in the DOM (built above) — just wire the swipes.
     wireLogSwipe(app.querySelector('#home-log'))
@@ -3026,7 +3052,10 @@ function renderFriendHome(friend) {
   const heroSrc = pizzaImagePath(stash)
 
   const content = `
-    <div class="viewing-banner" id="viewing-banner" role="button" tabindex="0">Viewing: ${escapeHtml(chefName(friend.display_name))}'s Pizzeria</div>
+    <div class="viewing-banner" id="viewing-banner" role="button" tabindex="0" aria-label="Back to Chefs">
+      <span class="viewing-back" aria-hidden="true">‹</span>
+      <span class="viewing-title">${escapeHtml(chefName(friend.display_name))}'s Pizzeria</span>
+    </div>
     <div class="hero-card" id="hero-card" role="button" tabindex="0">
       <img class="hero-still" src="${heroSrc}" alt="" />
       <div class="glow"></div>
@@ -3053,7 +3082,8 @@ function renderFriendHome(friend) {
 
   mountScreen('friends', content, () => {
     loadHomeLog(friend.id)
-    warmEmote(friend.equipped_emote || 'waving')
+    // Same welcome on a friend's Pizzeria: preload, then play once.
+    autoplayEmoteWhenReady(app.querySelector('#hero-card .hero-still'), friend.equipped_emote || 'waving', heroSrc)
     app.querySelector('#hero-card')?.addEventListener('click', () => {
       const img = app.querySelector('#hero-card .hero-still')
       if (img && img.tagName === 'IMG') playEmoteInto(img, friend.equipped_emote || 'waving', heroSrc)
@@ -5766,19 +5796,20 @@ function openEmoteEditPopup(emote) {
     <input id="em-title" class="rename-input" type="text" maxlength="40" value="${escapeHtml(emoteName(emote))}" />
     <label class="field-label" for="em-desc">Description</label>
     <input id="em-desc" class="rename-input" type="text" maxlength="80" value="${escapeHtml(emoteDesc(emote))}" />
-    <label class="field-label">Type</label>
-    <div class="sort-options">
-      ${typeOpts.map(op => `<button type="button" class="sort-option ${(selectedTag || '') === op.id ? 'active' : ''}" data-type="${op.id}">${escapeHtml(op.label)}</button>`).join('')}
-    </div>
+    <label class="field-label" for="em-type">Type</label>
+    <!-- A native select, not a stack of full-width buttons: with five-plus
+         types those buttons made the popup taller than the screen. -->
+    <select id="em-type" class="rename-input em-type-select">
+      ${typeOpts.map(op => `<option value="${escapeHtml(op.id)}" ${(selectedTag || '') === op.id ? 'selected' : ''}>${escapeHtml(op.label)}</option>`).join('')}
+    </select>
     <div class="home-btn-col" style="margin-top:1.25rem">
       <button type="button" data-action="save">Save</button>
       <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
     </div>
   `, { popupClass: 'popup-wide' })
-  o.querySelectorAll('[data-type]').forEach(b => b.addEventListener('click', () => {
-    selectedTag = b.dataset.type || null
-    o.querySelectorAll('[data-type]').forEach(x => x.classList.toggle('active', x === b))
-  }))
+  o.querySelector('#em-type').addEventListener('change', (e) => {
+    selectedTag = e.target.value || null
+  })
   o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="save"]').addEventListener('click', async () => {
     // Store null for a field left equal to the hardcoded default, so defaults
@@ -6104,6 +6135,7 @@ function openRenamePopup() {
       <input id="rename-input" class="rename-input" type="text" maxlength="13" value="${escapeHtml(myRawName())}" placeholder="Your name" />
     </div>
     <p class="inline-error" id="rename-error">That name isn't allowed &mdash; please choose another.</p>
+    <p class="name-status" id="rename-status" hidden></p>
     <div class="home-btn-col">
       <button type="button" data-action="save">Save</button>
       <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
@@ -6111,13 +6143,52 @@ function openRenamePopup() {
   `)
   const input = o.querySelector('#rename-input')
   const errEl = o.querySelector('#rename-error')
+  const statusEl = o.querySelector('#rename-status')
   const saveBtn = o.querySelector('[data-action="save"]')
+  const originalName = myRawName()
+
+  const setStatus = (state, text) => {
+    statusEl.hidden = !text
+    statusEl.textContent = text || ''
+    statusEl.classList.toggle('ok', state === 'ok')
+    statusEl.classList.toggle('bad', state === 'bad')
+  }
+
+  // Availability is checked as you type. Each keystroke bumps a token so a
+  // slow earlier response can't overwrite the verdict for what's now in the box.
+  let checkToken = 0
+  let debounce = null
+  const checkAvailability = (val) => {
+    const myCall = ++checkToken
+    clearTimeout(debounce)
+    // Unchanged name is trivially yours - no round trip, no "taken" flash.
+    if (val.toLowerCase() === originalName.toLowerCase()) { setStatus(null, ''); saveBtn.disabled = false; return }
+    setStatus(null, 'Checking\u2026')
+    debounce = setTimeout(async () => {
+      const { data, error } = await supabase.rpc('is_display_name_available', { candidate: val })
+      if (myCall !== checkToken) return   // a newer keystroke already superseded this
+      if (error) {
+        // Pre-migration or offline: stay quiet and let the save-time unique
+        // constraint be the backstop rather than claiming a wrong verdict.
+        setStatus(null, '')
+        saveBtn.disabled = false
+        return
+      }
+      const free = data === true
+      setStatus(free ? 'ok' : 'bad', free ? `Chef ${val} is available \u2713` : `Chef ${val} is taken`)
+      saveBtn.disabled = !free
+    }, 300)
+  }
+
   const validate = () => {
     const val = input.value.trim()
-    const ok = !!val && isNameAllowed(input.value)
-    errEl.classList.toggle('show', !!val && !isNameAllowed(input.value))
-    input.classList.toggle('err', !!val && !isNameAllowed(input.value))
+    const blocked = !!val && !isNameAllowed(input.value)
+    errEl.classList.toggle('show', blocked)
+    input.classList.toggle('err', blocked)
+    const ok = !!val && !blocked
     saveBtn.disabled = !ok
+    if (!ok) { clearTimeout(debounce); checkToken++; setStatus(null, '') }
+    else checkAvailability(val)
     return ok
   }
   input.addEventListener('input', validate)
