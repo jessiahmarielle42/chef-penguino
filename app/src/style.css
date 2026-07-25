@@ -2098,6 +2098,7 @@ img.shop-image {
 }
 .seg span.on { background: var(--card-2); color: var(--cream); box-shadow: inset 0 0 0 0.0625rem var(--line); }
 .seg span b { font-weight: 800; }
+.seg span.on .seg-badge { background: var(--fire); color: #2a1405; }
 
 /* ---------- moderation row state chips (adm-mod-chip) ---------- */
 .adm-mod-chip {

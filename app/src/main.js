@@ -614,6 +614,18 @@ for (const e of EMOTES) {
   parkVideo(v)
   preloadedEmotes[e.id] = v
 }
+// Test-only hook for driving these module-scope functions directly from
+// Playwright (they aren't on `window`) - lets a review script reproduce
+// "navigate away mid-emote-play" deterministically instead of depending on
+// real video playback, which headless Chromium here can't decode anyway.
+// Dead-code-eliminated along with the rest of the VITE_REVIEW branch.
+// (playEmoteInto/forceParkLiveEmotes are function declarations, so they're
+// hoisted and safe to reference here even though they're defined below -
+// preloadedEmotes above is a const and needs to be resolved AFTER its own
+// declaration, which is why this isn't up at the top of the review block.)
+if (import.meta.env.VITE_REVIEW) {
+  window.__emoteDebug = { playEmoteInto, forceParkLiveEmotes, preloadedEmotes }
+}
 function parkVideo(v) {
   v.pause()
   try { v.currentTime = 0 } catch {}
@@ -663,6 +675,15 @@ function autoplayEmoteWhenReady(imgEl, emoteId, revertSrc) {
 function playEmoteInto(imgEl, emoteId, revertSrc, onRevert) {
   const v = preloadedEmotes[emoteId]
   if (!v) return
+  // Each emote id has exactly ONE shared <video> node reused everywhere it
+  // plays (see preloadedEmotes above). If a previous play was interrupted by
+  // navigating away before 'ended' fired - e.g. tapping Back on a friend's
+  // Pizzeria mid-clip - that old play's "revert to <img>" closure is still
+  // attached. Left in place, it fires later against stale/detached elements
+  // (the wrong revertSrc, an id from a screen that no longer exists), which
+  // is what corrupted the shared node into not autoplaying and, once, into
+  // sitting on top of the back button eating clicks. One node, one listener.
+  if (v._pendingRevert) v.removeEventListener('ended', v._pendingRevert)
   v.className = imgEl.className
   v.id = imgEl.id
   v.style.cssText = ''
@@ -675,18 +696,42 @@ function playEmoteInto(imgEl, emoteId, revertSrc, onRevert) {
   const back = () => {
     if (done) return
     done = true
+    v._pendingRevert = null
     const img = document.createElement('img')
     img.className = v.className
     img.id = v.id
     img.alt = ''
     img.src = revertSrc
     if (objectPosition) img.style.objectPosition = objectPosition
-    v.replaceWith(img)
+    // The video may already have been force-parked by mountScreen (see
+    // forceParkLiveEmotes) if this fired after the screen moved on - only
+    // touch the DOM if v is still actually where we put it.
+    if (v.isConnected) v.replaceWith(img)
     parkVideo(v)
     if (onRevert) onRevert(img)
   }
+  v._pendingRevert = back
   v.addEventListener('ended', back, { once: true })
   v.play().catch(back)
+}
+
+// Called right before mountScreen wipes #app's DOM. Any preloaded emote
+// <video> currently swapped into the outgoing screen (mid-play, 'ended' not
+// yet fired) is about to be destroyed along with it - park it immediately
+// instead of leaving it detached-but-still-"live" with a stale revert
+// closure attached, which is what let a shared emote node break for every
+// future play. innerHTML wiping a node doesn't fire 'ended', so this is the
+// only place that can catch this.
+function forceParkLiveEmotes() {
+  for (const id in preloadedEmotes) {
+    const v = preloadedEmotes[id]
+    if (v.isConnected && v.parentElement !== document.body) {
+      if (v._pendingRevert) v.removeEventListener('ended', v._pendingRevert)
+      v._pendingRevert = null
+      v.pause()
+      parkVideo(v)
+    }
+  }
 }
 
 // =================================================================
@@ -803,6 +848,7 @@ function mountScreen(active, contentHtml, after, opts = {}) {
   const prevScroll = app.querySelector('.scroll')
   if (prevScroll && mountedScreenKey) scrollMemory.set(mountedScreenKey, prevScroll.scrollTop)
   const carryTop = scrollMemory.get(key) || 0
+  forceParkLiveEmotes()
   app.innerHTML = `
     <div class="app">
       ${opts.hideStatusBar ? '' : statusBarHtml()}
@@ -5092,8 +5138,8 @@ function renderModerationCenter(tab = 'reports') {
     <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
     <div class="section-h" style="margin-top:2px"><h2>Reports &amp; Blocks</h2></div>
     <div class="seg" id="mod-seg">
-      <span data-seg="reports" class="${tab === 'reports' ? 'on' : ''}">Reports · <b id="seg-reports-n">–</b></span>
-      <span data-seg="blocks" class="${tab === 'blocks' ? 'on' : ''}">Blocks · <b id="seg-blocks-n">–</b></span>
+      <span data-seg="reports" class="${tab === 'reports' ? 'on' : ''}">Reports<span class="seg-badge" id="seg-reports-n">–</span></span>
+      <span data-seg="blocks" class="${tab === 'blocks' ? 'on' : ''}">Blocks<span class="seg-badge" id="seg-blocks-n">–</span></span>
       <span data-seg="history" class="${tab === 'history' ? 'on' : ''}">History</span>
     </div>
     <div id="mod-body"><p class="editpic-empty">Loading&hellip;</p></div>
