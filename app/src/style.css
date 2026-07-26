@@ -1866,6 +1866,11 @@ img.shop-image {
   background: var(--ember); color: #fff; border:1.5px solid var(--page-bg);
   font-variant-numeric: tabular-nums;
 }
+/* [hidden] must win explicitly: it's only UA-level `display:none`, so the
+   author `display:flex` above beat it and every badge stayed visible even
+   after JS set .hidden - which is how a count of 0 still rendered a badge.
+   Same guard .tab-notif-badge and .chefs-pill-bar already carry. */
+.seg-badge[hidden] { display: none; }
 
 .cal-navbar { display: flex; align-items: center; gap:0.5rem; padding:0.75rem 0 0.125rem; }
 .cal-chev {

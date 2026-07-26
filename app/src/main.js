@@ -1000,6 +1000,18 @@ function updateNotifBadgeDom() {
   }
 }
 
+// One place that decides how a count badge renders, so "0 shows no badge"
+// holds everywhere rather than each tab bar re-implementing it (the
+// Moderation tabs used to just write textContent and so sat on a literal
+// "0"). Pass the id of a .seg-badge span.
+function setSegBadge(id, n) {
+  const el = app.querySelector('#' + id)
+  if (!el) return
+  const count = Number(n) || 0
+  el.textContent = String(count)
+  el.hidden = count <= 0
+}
+
 function wireStatusBar() {
   app.querySelector('[data-action="profile"]')?.addEventListener('click', openProfilePopup)
   app.querySelector('[data-action="coin-info"]')?.addEventListener('click', openCoinInfo)
@@ -2293,7 +2305,7 @@ async function runChefsGroupSearch(q) {
   const mine = (mineData || []).filter(g => !q || g.name.toLowerCase().includes(q.toLowerCase()))
   let found = []
   if (q) {
-    const { data: discData } = await supabase.rpc('discover_groups', { q })
+    const { data: discData } = await supabase.rpc('discover_groups', { q, week_start: startOfThisWeek().toISOString() })
     found = discData || []
   }
   let html = ''
@@ -2378,7 +2390,7 @@ function chefsPrivacyChip(privacy) {
 let chefsCreateEmoji = null
 async function openCreateGroupPopup() {
   await loadGroupIcons() // same curated set (+ fallback) as the admin picker
-  chefsCreateEmoji = groupIconsCache[0]?.emoji || '🍕'
+  chefsCreateEmoji = groupIconChoices()[0]?.emoji || '🍕'
   let privacy = 'public'
   const o = overlay(`
     <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
@@ -2430,8 +2442,17 @@ async function openCreateGroupPopup() {
 // Scoped as `.chefs-emoji-picker .chefs-epick` in CSS (not just `.chefs-epick`)
 // so it outranks the generic `.popup button` gold-fill rule these buttons sit
 // inside here - same trick already used for `.popup .gbtn`/`.popup .abtn`.
+// The picker must never come up empty. groupIconsCache is the real DB state
+// (the admin Group Icons manager needs that truth, including "none yet"), but
+// a chef creating a group still has to have something to pick - an empty
+// "Group icon" section just reads as broken. So the picker, and only the
+// picker, falls back to the default set.
+function groupIconChoices() {
+  return groupIconsCache.length ? groupIconsCache : GROUP_ICONS_FALLBACK.map(e => ({ id: null, emoji: e }))
+}
+
 function chefsEmojiPickerHtml(selected) {
-  return groupIconsCache.map(g => `<button type="button" class="chefs-epick ${g.emoji === selected ? 'on' : ''}" data-emoji="${escapeHtml(g.emoji)}">${escapeHtml(g.emoji)}</button>`).join('')
+  return groupIconChoices().map(g => `<button type="button" class="chefs-epick ${g.emoji === selected ? 'on' : ''}" data-emoji="${escapeHtml(g.emoji)}">${escapeHtml(g.emoji)}</button>`).join('')
 }
 
 function chefsPrivacyOptHtml(val, isOn) {
@@ -4301,12 +4322,6 @@ async function loadBugReports() {
   const progressCount = (data || []).filter(r => tabOf(r) === 'in_progress').length
   // Counts render as badges beside the label (not "(3)" in the text), so the
   // four tabs keep identical widths whatever the numbers are.
-  const setSegBadge = (id, n) => {
-    const el = app.querySelector('#' + id)
-    if (!el) return
-    el.textContent = n
-    el.hidden = !n
-  }
   setSegBadge('bugtab-open-n', openCount)
   setSegBadge('bugtab-prog-n', progressCount)
   const shown = (data || []).filter(r => tabOf(r) === bugTab)
@@ -5171,7 +5186,9 @@ function removeResolvedReportRow(reportId) {
 function bumpSegCount(id, delta) {
   const el = document.getElementById(id)
   if (!el) return
-  el.textContent = String(Math.max(0, (parseInt(el.textContent, 10) || 0) + delta))
+  // Goes through setSegBadge so decrementing the last one to 0 removes the
+  // badge instead of leaving a "0" sitting there.
+  setSegBadge(id, Math.max(0, (parseInt(el.textContent, 10) || 0) + delta))
 }
 
 // CSS.escape isn't available in every test/SSR-ish environment this file
@@ -5195,8 +5212,8 @@ function renderModerationCenter(tab = 'reports') {
     <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
     <div class="section-h" style="margin-top:2px"><h2>Reports &amp; Blocks</h2></div>
     <div class="seg" id="mod-seg">
-      <span data-seg="reports" class="${tab === 'reports' ? 'on' : ''}">Reports<span class="seg-badge" id="seg-reports-n">–</span></span>
-      <span data-seg="blocks" class="${tab === 'blocks' ? 'on' : ''}">Blocks<span class="seg-badge" id="seg-blocks-n">–</span></span>
+      <span data-seg="reports" class="${tab === 'reports' ? 'on' : ''}">Reports<span class="seg-badge" id="seg-reports-n" hidden></span></span>
+      <span data-seg="blocks" class="${tab === 'blocks' ? 'on' : ''}">Blocks<span class="seg-badge" id="seg-blocks-n" hidden></span></span>
       <span data-seg="history" class="${tab === 'history' ? 'on' : ''}">History</span>
     </div>
     <div id="mod-body"><p class="editpic-empty">Loading&hellip;</p></div>
@@ -5214,8 +5231,8 @@ function renderModerationCenter(tab = 'reports') {
 
 async function loadModSegCounts() {
   const { openReports, newBlocks } = await fetchModerationCounts()
-  const rn = app.querySelector('#seg-reports-n'); if (rn) rn.textContent = openReports
-  const bn = app.querySelector('#seg-blocks-n'); if (bn) bn.textContent = newBlocks
+  setSegBadge('seg-reports-n', openReports)
+  setSegBadge('seg-blocks-n', newBlocks)
 }
 
 function switchModTab(tab) {
@@ -5311,7 +5328,7 @@ async function loadModBlocksTab() {
   }).join('')}</div>
   <p class="mod-blocks-note">Opening this tab marks blocks as seen — the dashboard "new blocks" count clears to 0.</p>`
   const { error: seenError } = await supabase.rpc('mark_blocks_seen')
-  if (!seenError) { const n = app.querySelector('#seg-blocks-n'); if (n) n.textContent = '0' }
+  if (!seenError) setSegBadge('seg-blocks-n', 0)
 }
 
 // ---------- History tab: a client-side merge of 3 admin-visible queries ----------
