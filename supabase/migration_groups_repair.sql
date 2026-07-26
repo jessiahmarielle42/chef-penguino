@@ -37,14 +37,23 @@
 --  (Do NOT re-run migration_groups.sql; it will just abort again.)
 -- ============================================================
 
--- ---------- 0. guard against stale overloads ----------
--- No-ops on the current database (the live signatures are
--- my_groups(timestamptz) and group_members_list(uuid, timestamptz), which
--- these DROPs do not match). Here so that if the old migration is ever
--- replayed, the ambiguous duplicates get cleaned up rather than left to
--- break every group screen with PGRST203.
-drop function if exists public.my_groups();
-drop function if exists public.group_members_list(uuid);
+-- ---------- 0. (removed - this section was harmful) ----------
+-- This file used to open with
+--     drop function if exists public.my_groups();
+--     drop function if exists public.group_members_list(uuid);
+-- described as no-ops meant to clear stale overloads, on the assumption
+-- that the live signatures were the week-synced my_groups(timestamptz) /
+-- group_members_list(uuid, timestamptz) which those DROPs would not match.
+--
+-- That assumption was wrong on the real database: migration_baking_now.sql
+-- had been run but migration_group_week_sync.sql had not, so the live
+-- functions still WERE the zero-arg / one-arg versions - and these two
+-- statements deleted them, taking out the whole Groups tab.
+--
+-- Removed rather than corrected. Dropping a function to pre-empt a
+-- hypothetical overload is not worth the risk of deleting the live one;
+-- if migration_groups.sql is ever replayed and creates a duplicate, fix it
+-- then, against the signatures actually present.
 
 -- ---------- 1. the SELECT policy that never got created ----------
 -- Without this, RLS hides every row of group_invites, so an invited chef
