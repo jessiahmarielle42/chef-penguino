@@ -521,7 +521,7 @@ if (import.meta.env.VITE_REVIEW) {
     renderers: {
       renderAdminDashboard, renderModerationCenter, renderSystemNotifications,
       renderComposeNotification, renderSettings, renderFriends,
-      renderTaskTypesEditor, renderBugReports, renderHistory, renderHome,
+      renderTaskTypesEditor, renderBugReports, renderHistory, renderHome, renderShop,
       renderAdminPizzasCal, renderAdminChefs, renderAdminUsers,
       renderAdminPresets, renderAdminEmotes, renderAdminGroupIcons,
       renderTypePicker: () => renderTypePicker(30, 'Essay writing'),
@@ -575,6 +575,7 @@ const EMOTES = [
   { id: 'whack-a-meelo', name: 'Whack-a-Meelo', desc: 'An excellent stress-reliever', clip: 'whack-a-meelo.mp4' },
   { id: 'my-favourite', name: 'My Favourite!', desc: 'Chef hugs Meelo the monkey plush toy', clip: 'my-favourite.mp4' },
   { id: 'lightsaber-battle', name: 'Lightsaber battle!', desc: 'Chef vs Meelo. who will win?', clip: 'lightsaber-battle.mp4' },
+  { id: 'meelo-omelette', name: 'Meelo Omelette', desc: "Let's cook Meelo. Delicious!", clip: 'meelo-omelette.mp4' },
 ]
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
 
@@ -2366,10 +2367,9 @@ function chefsGroupCardHtml(g, joinable) {
           <div class="chefs-gname">${escapeHtml(g.name)}</div>
           <div class="chefs-gmeta">${chefsPrivacyChip(g.privacy)} · ${members} member${members === 1 ? '' : 's'}</div>
         </div>
-        <div class="chefs-gscore"><div class="num">${formatScore(Number(g.weekly_pizzas) || 0)}</div><div class="unit">pizzas</div></div>
       </div>
       <div class="chefs-gbottom">
-        <div class="chefs-stack">${chefsAvatarStack(members)}</div>
+        <div class="chefs-gscore"><span class="ic">🍕</span><span class="num">${formatScore(Number(g.weekly_pizzas) || 0)}</span><span class="unit">pizzas</span></div>
         ${joinable
           ? `<button type="button" class="chefs-join-btn" data-join="${id}">Join</button>`
           // baking_count comes from my_groups(); it's absent on an older
@@ -2380,13 +2380,6 @@ function chefsGroupCardHtml(g, joinable) {
               : chefsPillHtml(Number(g.baking_count)))}
       </div>
     </div>`
-}
-
-// Decorative only - my_groups()/discover_groups() don't return member
-// identities, so this just visualises "there are N members", not who they are.
-function chefsAvatarStack(memberCount) {
-  const n = Math.min(4, memberCount || 0)
-  return Array.from({ length: n }).map(() => `<div class="chefs-stack-avatar">🐧</div>`).join('')
 }
 
 const CHEFS_ICON_GLOBE = `<svg class="chefs-pic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.7 3.8 5.8 3.8 9S14.5 18.3 12 21c-2.5-2.7-3.8-5.8-3.8-9S9.5 5.7 12 3z"/></svg>`

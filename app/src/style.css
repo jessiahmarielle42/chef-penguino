@@ -2613,9 +2613,14 @@ img.shop-image {
 .chefs-gname { font-weight: 800; color: var(--cream); font-size:0.98rem; font-family: var(--font-display); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chefs-gname.lg { font-size:1.15rem; white-space: normal; }
 .chefs-gmeta { font-size:0.75rem; color: var(--muted-2); margin-top:0.15rem; }
-.chefs-gscore { margin-left: auto; text-align: right; flex: none; }
+/* Sits bottom-left of the card, opposite the baking pill, rather than
+   stacked in the top-right corner. Moving it down gives the group name the
+   whole top row (long names used to compete with it) and gives the bottom
+   row something on the left now that the decorative avatar stack is gone. */
+.chefs-gscore { display: flex; align-items: baseline; gap:0.3rem; min-width: 0; }
+.chefs-gscore .ic { font-size:0.9rem; line-height: 1; }
 .chefs-gscore .num { font-family: var(--font-display); font-weight: 800; color: var(--fire); font-size:1.05rem; }
-.chefs-gscore .unit { font-size:0.6rem; font-weight: 700; color: var(--muted-2); text-transform: uppercase; }
+.chefs-gscore .unit { font-size:0.6rem; font-weight: 700; color: var(--muted-2); text-transform: uppercase; letter-spacing:0.03em; }
 .chefs-gbottom { display: flex; align-items: center; justify-content: space-between; margin-top:0.75rem; padding-top:0.7rem; border-top: 1px solid var(--line); }
 /* .chefs-gbaking (a bare "🔥 N baking" line) removed - group cards now use
    the shared .adm-live-dot pill like every other baking readout. */
@@ -2626,12 +2631,9 @@ img.shop-image {
 .chefs-join-btn:active { transform: translateY(1px); box-shadow: none; }
 
 /* decorative member-avatar stack on a group card */
-.chefs-stack { display: flex; }
-.chefs-stack-avatar {
-  width:1.75rem; height:1.75rem; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-  font-size:0.85rem; margin-left:-0.5rem; border: 2px solid var(--card); background: linear-gradient(160deg, #4a382b, #2c211a);
-}
-.chefs-stack-avatar:first-child { margin-left: 0; }
+/* .chefs-stack / .chefs-stack-avatar removed - the row of identical 🐧
+   placeholders was decorative only (my_groups() returns no member
+   identities, so it never showed who was actually in the group). */
 
 /* ＋ Create group / Join with code row */
 /* ---------- Invite friends popup (owner only) ----------
