@@ -214,17 +214,24 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 }
 .coin-chip .info-badge { color: var(--gold-ink); border-color: rgba(246,198,75,0.4); background: rgba(246,198,75,0.16); }
 
-/* coins are rendered as <img class="coin"> in the real app; sizing/effects only here */
+/* coins are rendered as <img class="coin"> in the real app; sizing only here.
+   No filter: drop-shadow() on any of them. iOS Safari draws a faint square
+   box around a filtered transparent PNG - the shadow gets rasterised to the
+   image's bounding box instead of its alpha silhouette - which shows up as a
+   grey rectangle behind the coin. It's there in both themes but only really
+   visible against light backgrounds, which is why it read as a light-mode bug.
+   A previous pass documented this and meant to drop the shadow from the large
+   coins, but .lg/.xl only override width/height - the filter kept cascading
+   from the base .coin rule, so every coin in the app still had it. Removing it
+   at the source is what that fix intended. The coin art is a clean circle with
+   its own shading and doesn't need the shadow. */
 .coin {
   width:1.1875rem; height:1.1875rem;
   display: inline-block;
-  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));
 }
-/* No drop-shadow on the large coins: iOS Safari renders a faint square box
-   around a filtered transparent PNG. The coin is a clean circle on its own. */
 .coin.lg { width:3.875rem; height:3.875rem; }
 .coin.xl { width:7.5rem; height:7.5rem; margin:0 auto 1rem; }
-.coin.log-coin { width:1rem; height:1rem; vertical-align:-0.15em; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.3)); }
+.coin.log-coin { width:1rem; height:1rem; vertical-align:-0.15em; }
 
 /* bottom padding clears the fire FAB, which pokes ~56px above the tab bar's own box via its
    negative margin + glow — flex layout alone only reserves space up to the bar's normal edge */
