@@ -214,6 +214,12 @@ returns void
 language plpgsql
 security definer set search_path = public
 as $$
+-- The ON CONFLICT target below names the group_id COLUMN, but this function
+-- also has a group_id PARAMETER, and PL/pgSQL substitutes its variables into
+-- that clause - which made it ambiguous and failed every invite. Bare names
+-- resolve to columns here; the parameters are still reachable as
+-- invite_to_group.<param>, which is how they are written throughout.
+#variable_conflict use_column
 declare
   is_blocked boolean;
 begin
@@ -257,6 +263,8 @@ returns void
 language plpgsql
 security definer set search_path = public
 as $$
+-- Same group_id parameter-vs-column clash as invite_to_group above.
+#variable_conflict use_column
 begin
   if auth.uid() is null then
     raise exception 'Not signed in';
