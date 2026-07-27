@@ -542,6 +542,13 @@ if (import.meta.env.VITE_REVIEW) {
       renderFriendPizzeria: () => renderFriendHome({ id:'u-2', display_name:'Wolfeschlegel', pizzas:412, avatar_url:null, equipped_emote:'waving' }),
       renderEmoteEdit: () => { renderAdminEmotes(); return openEmoteEditPopup(EMOTE_BY_ID['waving']) },
       renderChefsCreateGroup: async () => { chefsTab = 'groups'; renderChefsScreen(); await openCreateGroupPopup() },
+      // g1's fixture members are Keefe/Waddles/Pip, and the friend fixtures are
+      // Waddles/Skua/Nix - so this also exercises "already a member" filtering
+      // (Waddles should not be offered).
+      renderChefsGroupInvite: async () => {
+        chefsTab = 'groups'; await openChefsGroup('g1')
+        await openGroupInvitePopup('g1', 'Late Night Bakers', ['admin-1', 'u-2', 'u-3'])
+      },
     },
   }))
 } else {
@@ -2050,10 +2057,15 @@ function chefsTimeAgo(iso) {
   return `${Math.floor(hr / 24)}d ago`
 }
 
-// The "N baking" pill below the seg row. count===0 renders the muted/off
-// variant (spec requirement) instead of just looking identical-but-wrong.
+// The one "N baking" indicator used everywhere in the app - Friends, the
+// Groups list, a group's detail screen - so they all read as the same live
+// signal. It matches the admin dashboard's pill, which is where this design
+// started: green, with a pulsing dot.
+// A count of 0 keeps that exact styling rather than dropping to a muted
+// variant. This isn't a badge (badges hide at 0, see setSegBadge) - it's a
+// live-status readout, and "0 baking" is a real, useful answer.
 function chefsPillHtml(count) {
-  return `<div class="adm-live-dot chefs-pill ${count === 0 ? 'off' : ''}"><i></i><span>${count} baking</span></div>`
+  return `<div class="adm-live-dot chefs-pill"><i></i><span>${count} baking</span></div>`
 }
 function showChefsPill(count) {
   const bar = app.querySelector('#chefs-pill-bar')
@@ -2365,7 +2377,7 @@ function chefsGroupCardHtml(g, joinable) {
           // asserting "0 baking" as if it were measured.
           : (g.baking_count === undefined || g.baking_count === null
               ? ''
-              : `<div class="chefs-gbaking">🔥 ${Number(g.baking_count)} baking</div>`)}
+              : chefsPillHtml(Number(g.baking_count)))}
       </div>
     </div>`
 }
@@ -2537,19 +2549,25 @@ async function loadChefsGroupDetail(groupId) {
     <div class="section-h" style="margin-top:1.25rem"><h2>Weekly Leaderboard</h2><span class="meta">Resets&nbsp;${nextMondayLabel()}</span></div>
     ${ranked.map((m, i) => chefsMemberRowHtml(m, i)).join('')}
     <div class="chefs-group-actions">
-      <button type="button" class="chefs-grp-btn secondary" data-action="share-code">Share join code</button>
       ${g.role === 'owner'
-        ? `<button type="button" class="chefs-grp-btn secondary" data-action="leave-blocked">Leave</button>`
+        // Owner only: both ways of getting new people in belong to whoever
+        // owns the group. A member has neither - they just have the way out.
+        // No "Leave" here for the owner: leave_group() rejects the owner by
+        // design, so that button could only ever toast its own refusal. The
+        // owner's real exit is Delete group, in the gear settings.
+        ? `<button type="button" class="chefs-grp-btn primary" data-action="invite-friends">Invite friends</button>
+           <button type="button" class="chefs-grp-btn secondary" data-action="share-code">Share join code</button>`
         : `<button type="button" class="chefs-grp-btn secondary" data-action="leave">Leave group</button>`}
     </div>
   `
   bodyEl.querySelector('[data-action="group-settings"]')?.addEventListener('click', () => openChefsGroupSettings(groupId))
-  bodyEl.querySelector('[data-action="share-code"]').addEventListener('click', () => {
+  bodyEl.querySelector('[data-action="share-code"]')?.addEventListener('click', () => {
     const code = g.join_code || ''
     if (navigator.clipboard) navigator.clipboard.writeText(code).then(() => toast(`Code copied: ${code}`)).catch(() => toast(`Group code: ${code}`))
     else toast(`Group code: ${code}`)
   })
-  bodyEl.querySelector('[data-action="leave-blocked"]')?.addEventListener('click', () => toast("The owner can't leave — delete the group instead."))
+  bodyEl.querySelector('[data-action="invite-friends"]')?.addEventListener('click', () =>
+    openGroupInvitePopup(groupId, g.name, members.map(m => m.user_id)))
   bodyEl.querySelector('[data-action="leave"]')?.addEventListener('click', () => confirmLeaveGroup(groupId, g.name))
 }
 
@@ -2575,6 +2593,78 @@ function chefsMemberRowHtml(m, i) {
         <div class="chefs-meta-row">${meta}</div>
       </div>
     </div>`
+}
+
+// Owner-only: invite existing friends straight into a group instead of
+// making them find the join code. Multi-select, because inviting four
+// people shouldn't mean opening this four times.
+// `memberIds` are the chefs already in the group - they're filtered out
+// rather than shown-but-disabled, since a list of people you can't pick is
+// just noise on a phone-sized popup.
+async function openGroupInvitePopup(groupId, groupName, memberIds) {
+  const already = new Set(memberIds || [])
+  const o = overlay(`
+    <h3>Invite friends</h3>
+    <p class="chefs-invite-sub">to ${escapeHtml(groupName)}</p>
+    <div class="chefs-invite-list" id="gi-list"><p class="log-empty" style="margin:0.75rem 0">Loading&hellip;</p></div>
+    <div class="home-btn-col">
+      <button type="button" data-action="send" disabled>Send invites</button>
+      <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+    </div>
+  `)
+  const listEl = o.querySelector('#gi-list')
+  const sendBtn = o.querySelector('[data-action="send"]')
+  o.querySelector('[data-action="cancel"]').addEventListener('click', () => o.remove())
+
+  const rows = await fetchAcceptedFriends()
+  const friends = rows.map(r => r.profiles).filter(Boolean).filter(f => !already.has(f.id))
+  if (!friends.length) {
+    listEl.innerHTML = `<p class="chefs-empty-hint" style="margin:0.75rem 0">${
+      rows.length ? 'All your friends are already in this group.' : 'Add some friends first, then you can invite them here.'
+    }</p>`
+    sendBtn.remove()
+    return
+  }
+
+  const picked = new Set()
+  listEl.innerHTML = friends.map(f => `
+    <button type="button" class="chefs-invite-row" data-id="${escapeHtml(f.id)}">
+      <img class="chefs-invite-av" src="${f.avatar_url || DEFAULT_AVATAR}" alt="" />
+      <span class="chefs-invite-name">${escapeHtml(chefName(f.display_name))}</span>
+      <span class="chefs-check" aria-hidden="true"></span>
+    </button>`).join('')
+
+  const syncSend = () => {
+    sendBtn.disabled = picked.size === 0
+    sendBtn.textContent = picked.size ? `Send ${picked.size} invite${picked.size === 1 ? '' : 's'}` : 'Send invites'
+  }
+  listEl.querySelectorAll('.chefs-invite-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const id = row.dataset.id
+      if (picked.has(id)) { picked.delete(id); row.classList.remove('on'); row.setAttribute('aria-pressed', 'false') }
+      else { picked.add(id); row.classList.add('on'); row.setAttribute('aria-pressed', 'true') }
+      syncSend()
+    })
+  })
+
+  sendBtn.addEventListener('click', async () => {
+    sendBtn.disabled = true
+    sendBtn.textContent = 'Sending…'
+    const ids = [...picked]
+    const results = await Promise.all(ids.map(id =>
+      supabase.rpc('invite_to_group', { group_id: groupId, target_id: id })))
+    o.remove()
+    const failed = results.filter(r => r.error)
+    if (!failed.length) {
+      toast(`Invited ${ids.length} chef${ids.length === 1 ? '' : 's'} 🐧`)
+    } else if (failed.length === ids.length) {
+      toast(failed[0].error.message || "Couldn't send those invites.")
+    } else {
+      // Partial success is worth stating plainly - silently reporting
+      // success would leave the owner thinking everyone got one.
+      toast(`Invited ${ids.length - failed.length} of ${ids.length} — ${failed[0].error.message || 'some failed'}`)
+    }
+  })
 }
 
 function confirmLeaveGroup(groupId, name) {
