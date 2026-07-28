@@ -16,9 +16,17 @@
 -- Parameter NAMES are deliberately unchanged (still `emoji` and `id`): the app
 -- calls these by keyword, supabase.rpc('add_group_icon', { emoji }), so
 -- renaming them would break the client until both sides deployed together.
--- create or replace keeps the same signature, so no drop is needed.
+--
+-- The drops are required, not precautionary: the deployed add_group_icon
+-- returns a different type than the uuid declared here, and create or replace
+-- refuses to change an existing function's return type (42P13). Both
+-- signatures are exact and both functions are recreated immediately below, so
+-- nothing is left missing. Grants come after, since dropping discards them.
 --
 -- Run this once in the Supabase SQL Editor.
+
+drop function if exists public.add_group_icon(text);
+drop function if exists public.remove_group_icon(uuid);
 
 create or replace function public.add_group_icon(emoji text)
 returns uuid
