@@ -779,6 +779,17 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   box-shadow: var(--shadow); width:100%; max-width:21rem; box-sizing: border-box;
   animation: pop 0.35s cubic-bezier(.2,.9,.3,1.2);
 }
+/* Warm gold halo behind every popup's content - the treatment the level
+   popup introduced, promoted to the base so popups read as one family.
+   inset:0 + border-radius:inherit deliberately, NOT the level popup's
+   inset:-20% + overflow:hidden: overflow:hidden on every popup would clip
+   the absolutely-positioned close buttons and badges that sit on the corners.
+   z-index:-1 paints it over the card gradient but under the content. */
+.popup::before {
+  content: ""; position: absolute; z-index: -1; inset: 0; border-radius: inherit;
+  background: radial-gradient(circle at 50% 22%, rgba(246,198,75,0.2), rgba(246,198,75,0) 70%);
+  pointer-events: none;
+}
 @keyframes pop { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .popup .spin { margin:0 auto 1rem; animation: spin 1.6s ease-in-out infinite; }
 @keyframes spin { 0%,100% { transform: rotateY(0); } 50% { transform: rotateY(180deg); } }
@@ -943,6 +954,16 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
    height (no free vertical space to grow into) - pin it back to a fixed,
    non-flexing size so the bar actually renders. */
 .lv-bar.wide { flex: none; width: 100%; height:0.3125rem; max-width: none; }
+/* The bar sits directly above its "x / y pizzas to Level n" caption, which
+   otherwise crowds it. Scoped with .popup so it beats nothing in the
+   settings row, where the bar is last in its block and needs no gap. */
+.popup .lv-bar.wide { margin-bottom:0.875rem; }
+
+/* Level block inside the profile popup. The number is dialled back from the
+   celebration popup's 3.5rem: here it shares the screen with the avatar, the
+   name and two buttons, and at full size the popup overflows a short phone. */
+.profile-lv { margin:0.25rem 0 1.25rem; }
+.lvup-num.compact { font-size:2.25rem; margin:0 0 0.625rem; }
 .lv-guest { font-size:0.6875rem; color: var(--muted); line-height: 1; }
 
 /* ---------- settings profile row level line ---------- */
@@ -952,11 +973,9 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .profile-level-lab span { color: var(--muted-2); }
 
 /* ---------- level-up popup ---------- */
-.popup-levelup { position: relative; overflow: hidden; }
+/* The celebration keeps a stronger version of the halo every popup now has. */
 .popup-levelup::before {
-  content: ""; position: absolute; z-index: -1; inset:-20%;
-  background: radial-gradient(circle at 50% 30%, rgba(246,198,75,0.35), rgba(246,198,75,0) 65%);
-  pointer-events: none;
+  background: radial-gradient(circle at 50% 30%, rgba(246,198,75,0.35), rgba(246,198,75,0) 68%);
 }
 .lvup-kicker {
   font-size:0.6875rem; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase;

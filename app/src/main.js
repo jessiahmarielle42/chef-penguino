@@ -560,7 +560,7 @@ if (import.meta.env.VITE_REVIEW) {
       // popup's overlay gets appended before that mount finishes, the mount
       // wipes it straight back out. Await renderHome() to completion first so
       // the popup overlay is always the last thing appended to the DOM.
-      levelPopup: async () => { await renderHome(); return openLevelPopup() },
+      levelPopup: async () => { await renderHome(); return openProfilePopup() },
       levelUpPopup: async () => { await renderHome(); return openLevelUpPopup(9, [window.__reviewFixtures.presetAvatars.find(p => p.unlock_level === 9)]) },
       levelUpPopupNoArt: async () => { await renderHome(); return openLevelUpPopup(9, []) },
       editPicture: () => { renderSettings(); return openEditPicturePopup() },
@@ -1111,7 +1111,7 @@ function wireStatusBar() {
   app.querySelector('[data-action="profile"]')?.addEventListener('click', openProfilePopup)
   app.querySelector('[data-action="coin-info"]')?.addEventListener('click', openCoinInfo)
   app.querySelector('[data-action="pizza-info"]')?.addEventListener('click', openPizzaInfo)
-  app.querySelector('[data-action="level-info"]')?.addEventListener('click', openLevelPopup)
+  app.querySelector('[data-action="level-info"]')?.addEventListener('click', openProfilePopup)
 }
 
 function wireTabBar() {
@@ -1986,31 +1986,6 @@ function openPizzaInfo() {
 }
 
 // =================================================================
-//  Level progress popup (the level pill, top-left header)
-// =================================================================
-async function openLevelPopup() {
-  const { level, next, into, need } = levelProgress()
-  const { data } = await supabase
-    .from('preset_avatars')
-    .select('id, url, unlock_level')
-    .gt('unlock_level', level)
-    .order('unlock_level', { ascending: true })
-    .limit(1)
-  const teaser = (data && data[0])
-    ? `<div class="lvup-next"><img class="lvup-next-art" src="${data[0].url}" alt="" /><span>New picture at <b>Level ${data[0].unlock_level}</b></span></div>`
-    : `<div class="lvup-next"><span>You've unlocked every picture</span></div>`
-  const o = overlay(`
-    <div class="lvup-kicker">Level</div>
-    <div class="lvup-num">${level}</div>
-    <div class="lv-bar wide"><span class="lv-bar-fill" style="width:${need ? Math.min(100, Math.max(0, (into / need) * 100)) : 0}%"></span></div>
-    <p class="lvup-sub">${formatScore(into)} / ${need} pizzas to Level ${next}</p>
-    ${teaser}
-    <button type="button" data-action="ok">Got it</button>
-  `, { popupClass: 'popup-levelup' })
-  o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
-}
-
-// =================================================================
 //  Level-up celebration popup + detection
 // =================================================================
 function openLevelUpPopup(newLevel, unlockedPresets) {
@@ -2088,8 +2063,34 @@ function openStashInfo() {
 // =================================================================
 //  Profile popup (tap the status-bar avatar)
 // =================================================================
-function openProfilePopup() {
+async function openProfilePopup() {
   const signed = isSignedIn()
+  // Level lives here rather than in its own popup: tapping the header avatar
+  // or the Lv. pill both land on this one screen, so there's a single place
+  // that answers "how am I doing".
+  let levelBlock = ''
+  if (signed) {
+    const { level, next, into, need } = levelProgress()
+    const { data } = await supabase
+      .from('preset_avatars')
+      .select('id, url, unlock_level')
+      .gt('unlock_level', level)
+      .order('unlock_level', { ascending: true })
+      .limit(1)
+    const up = (data && data[0]) || null
+    const teaser = up
+      ? `<div class="lvup-next"><img class="lvup-next-art" src="${up.url}" alt="" /><span>New picture at <b>Level ${up.unlock_level}</b></span></div>`
+      : `<div class="lvup-next"><span>You've unlocked every picture</span></div>`
+    levelBlock = `
+      <div class="profile-lv">
+        <div class="lvup-kicker">Level</div>
+        <div class="lvup-num compact">${level}</div>
+        <div class="lv-bar wide"><span class="lv-bar-fill" style="width:${need ? Math.min(100, Math.max(0, (into / need) * 100)) : 0}%"></span></div>
+        <p class="lvup-sub">${formatScore(into)} / ${need} pizzas to Level ${next}</p>
+        ${teaser}
+      </div>
+    `
+  }
   const editOrGuest = signed
     ? `<button class="btn-edit-profile" type="button" data-action="edit-profile">${PENCIL_SVG}<span style="margin-left:8px">Edit Profile</span></button>
        <button class="btn-danger" type="button" data-action="sign-out" style="margin-top:0.625rem">Sign Out</button>`
@@ -2099,6 +2100,7 @@ function openProfilePopup() {
     <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
     <div class="popup-profile-name">${escapeHtml(myName())}</div>
     <img class="popup-profile-avatar" src="${myAvatar()}" alt="" />
+    ${levelBlock}
     ${editOrGuest}
   `, { popupClass: 'popup-profile' })
 
