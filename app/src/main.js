@@ -69,13 +69,13 @@ async function refreshProfile() {
   // loads and the app doesn't break for signed-in users before the migration.
   let { data } = await supabase
     .from('profiles')
-    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels')
+    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels, level_seen')
     .eq('id', currentUser.id)
     .single()
   if (!data) {
     ({ data } = await supabase
       .from('profiles')
-      .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment')
+      .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, level_seen')
       .eq('id', currentUser.id)
       .single())
   }
@@ -455,8 +455,11 @@ async function finalizeSession(playAlarm) {
   const coinsAfter = Math.floor(Math.floor(oldTotal + pizzasEarned) / 12)
   if (coinsAfter > coinsBefore) await logCoinConversion(coinsAfter - coinsBefore, completedAt)
 
-  if (playAlarm) renderTapToContinue(() => renderHome(), true, { minutes, pizzas: pizzasEarned })
-  else renderHome()
+  // checkLevelUp() runs only after the results screen has been dismissed (or
+  // immediately for a silent/background finalize with no results screen) so
+  // a level-up popup never fights the tap-to-continue/results screen for it.
+  if (playAlarm) renderTapToContinue(() => { renderHome(); checkLevelUp() }, true, { minutes, pizzas: pizzasEarned })
+  else { renderHome(); checkLevelUp() }
 }
 
 // ---------- boot ----------
@@ -464,12 +467,14 @@ async function boot() {
   const { data } = await supabase.auth.getSession()
   if (data.session?.user) {
     await handleSignedIn(data.session.user)
+    checkLevelUp()
   }
 
   supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_IN' && session?.user) {
       handleSignedIn(session.user).then(() => {
         if (!state.timer) renderHome()
+        checkLevelUp()
         checkPendingNoots()
         checkPendingCoinGifts()
         checkPendingWarnings()
@@ -621,6 +626,53 @@ function coinsEarned() { return Math.floor(Math.floor(displayPizzas()) / 12) }
 function coinAdjustment() { return currentProfile ? (currentProfile.coin_adjustment || 0) : 0 }
 function coinBalance() { return Math.max(0, coinsEarned() - ownedEmotes().length + coinAdjustment()) }
 function stashCount() { return Math.floor(displayPizzas()) % 12 }
+
+// =================================================================
+//  Levels (derived from lifetime pizzas, same pattern as coins - never
+//  stored). Curve: level N -> N+1 costs min(12, ceil(N/2)) pizzas, so early
+//  levels are cheap and it caps at 12 pizzas/level from level 24 onward.
+//  Cumulative pizzas to REACH level L is floor(L*L/4) while L <= 24 (that's
+//  where the per-level cost first hits the 12 cap), then grows linearly by
+//  12/level after that: 144 + 12*(L-24).
+//
+//  Hand-verified inverse (levelForPizzas):
+//    p=0     -> 1   (floor(sqrt(1))=1)
+//    p=1     -> 2   (floor(sqrt(5))=2)
+//    p=2     -> 3   (floor(sqrt(9))=3)
+//    p=4     -> 4   (floor(sqrt(17))=4)
+//    p=6     -> 5   (floor(sqrt(25))=5)
+//    p=100   -> 20  (floor(sqrt(401))=20)
+//    p=143.9 -> 23  (p floored to 143 first: floor(sqrt(573))=23)
+//    p=144   -> 24  (>=144 branch: 24 + floor(0/12) = 24)
+//    p=156   -> 25  (>=144 branch: 24 + floor(12/12) = 25)
+function levelForPizzas(p) {
+  if (p >= 144) return 24 + Math.floor((p - 144) / 12)
+  // p is floored here (all cumulative thresholds are whole numbers, so
+  // fractional progress can never cross one) - this must match the SQL
+  // function public.level_for_pizzas() exactly, since a server-side trigger
+  // uses it to reject locked pictures.
+  return Math.max(1, Math.floor(Math.sqrt(4 * Math.floor(Math.max(p, 0)) + 1)))
+}
+// Total lifetime pizzas needed to REACH level L (inverse of levelForPizzas).
+function pizzasForLevel(L) {
+  if (L <= 24) return Math.floor((L * L) / 4)
+  return 144 + 12 * (L - 24)
+}
+function myLevel() { return isSignedIn() ? levelForPizzas(displayPizzas()) : null }
+// { level, next, into, need, pct } describing progress toward the current
+// user's next level. into = pizzas earned into the current level, need =
+// pizzas the current level costs, pct = 0-100 clamped.
+function levelProgress() {
+  const level = myLevel() || 1
+  const next = level + 1
+  const cur = pizzasForLevel(level)
+  const nxt = pizzasForLevel(next)
+  const into = Math.max(0, displayPizzas() - cur)
+  const need = Math.max(1, nxt - cur)
+  const pct = Math.min(100, Math.max(0, (into / need) * 100))
+  return { level, next, into, need, pct }
+}
+
 function equippedEmote() {
   const e = (currentProfile ? currentProfile.equipped_emote : state.equippedEmote) || 'waving'
   return isOwned(e) ? e : 'waving'
@@ -848,6 +900,10 @@ function statusBarHtml() {
         <div>
           <div class="greet">${isSignedIn() ? 'Welcome back,' : 'Hello,'}</div>
           <div class="nm">${escapeHtml(myName())}</div>
+          ${isSignedIn() ? (() => {
+            const { level, pct } = levelProgress()
+            return `<div class="lv-line"><button class="lv-pill" type="button" data-action="level-info">Lv. ${level}</button><span class="lv-bar"><span class="lv-bar-fill" style="width:${pct}%"></span></span></div>`
+          })() : `<div class="lv-guest">Sign in to level up</div>`}
         </div>
       </div>
       <div class="stats">
@@ -1024,6 +1080,7 @@ function wireStatusBar() {
   app.querySelector('[data-action="profile"]')?.addEventListener('click', openProfilePopup)
   app.querySelector('[data-action="coin-info"]')?.addEventListener('click', openCoinInfo)
   app.querySelector('[data-action="pizza-info"]')?.addEventListener('click', openPizzaInfo)
+  app.querySelector('[data-action="level-info"]')?.addEventListener('click', openLevelPopup)
 }
 
 function wireTabBar() {
@@ -1898,6 +1955,78 @@ function openPizzaInfo() {
 }
 
 // =================================================================
+//  Level progress popup (the level pill, top-left header)
+// =================================================================
+async function openLevelPopup() {
+  const { level, next, into, need } = levelProgress()
+  const { data } = await supabase
+    .from('preset_avatars')
+    .select('id, url, unlock_level')
+    .gt('unlock_level', level)
+    .order('unlock_level', { ascending: true })
+    .limit(1)
+  const teaser = (data && data[0])
+    ? `<div class="lvup-next"><img src="${data[0].url}" alt="" style="width:2rem;height:2rem;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:0.5rem;filter:grayscale(0.7) brightness(0.7)" />Unlocks a new picture at Level ${data[0].unlock_level}</div>`
+    : `<div class="lvup-next">You've unlocked every picture</div>`
+  const o = overlay(`
+    <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
+    <div class="lvup-num">${level}</div>
+    <div class="lv-bar wide"><span class="lv-bar-fill" style="width:${need ? Math.min(100, Math.max(0, (into / need) * 100)) : 0}%"></span></div>
+    <p>${formatScoreFixed2(into)} / ${need} pizzas to Level ${next}</p>
+    ${teaser}
+    <button type="button" data-action="ok">Got it</button>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
+}
+
+// =================================================================
+//  Level-up celebration popup + detection
+// =================================================================
+function openLevelUpPopup(newLevel, unlockedPresets) {
+  const art = unlockedPresets && unlockedPresets[0]
+  const artHtml = art
+    ? `<img class="lvup-art" src="${art.url}" alt="" /><div class="lvup-sub">New profile picture unlocked</div>`
+    : ''
+  const o = overlay(`
+    <div class="lvup-kicker">Level Up</div>
+    <div class="lvup-num">${newLevel}</div>
+    ${artHtml}
+    <div class="home-btn-col">
+      ${art ? `<button type="button" data-action="equip">Equip now</button>` : ''}
+      <button type="button" class="btn-secondary" data-action="later">${art ? 'Later' : 'Nice!'}</button>
+    </div>
+  `, { popupClass: 'popup-levelup' })
+  o.querySelector('[data-action="later"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="equip"]')?.addEventListener('click', () => {
+    o.remove()
+    openEditPicturePopup()
+  })
+}
+
+// Compares the current derived level against currentProfile.level_seen and,
+// if it's advanced, shows ONE consolidated celebration popup for the highest
+// level reached (never a stack), then persists level_seen so it doesn't fire
+// again. Guests never level up, so this is a no-op unless signed in.
+async function checkLevelUp() {
+  if (!currentUser || !currentProfile) return
+  const level = myLevel()
+  if (level == null) return
+  const seen = currentProfile.level_seen ?? 1
+  if (level <= seen) return
+  let unlocked = []
+  const { data } = await supabase
+    .from('preset_avatars')
+    .select('id, url, unlock_level')
+    .gt('unlock_level', seen)
+    .lte('unlock_level', level)
+    .order('unlock_level', { ascending: false })
+  if (data && data.length) unlocked = data
+  openLevelUpPopup(level, unlocked)
+  currentProfile.level_seen = level
+  await supabase.from('profiles').update({ level_seen: level }).eq('id', currentUser.id)
+}
+
+// =================================================================
 //  Emotes info popup (the (i) education popup, home hero card)
 // =================================================================
 function openEmoteInfo() {
@@ -1933,7 +2062,7 @@ function openProfilePopup() {
   const editOrGuest = signed
     ? `<button class="btn-edit-profile" type="button" data-action="edit-profile">${PENCIL_SVG}<span style="margin-left:8px">Edit Profile</span></button>
        <button class="btn-danger" type="button" data-action="sign-out" style="margin-top:0.625rem">Sign Out</button>`
-    : `<p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 16px">Sign in to save your progress and customise your profile.</p>${googleBtn()}`
+    : `<p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 16px">Sign in to save your progress and customise your profile.</p><div class="lv-guest" style="margin-bottom:16px">Sign in to level up</div>${googleBtn()}`
 
   const o = overlay(`
     <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
@@ -3711,18 +3840,51 @@ function openEditPicturePopup() {
 async function loadEditPicPresets(editPopupEl) {
   const grid = app.querySelector('#editpic-presets')
   if (!grid) return
-  const { data, error } = await supabase.from('preset_avatars').select('id, url').order('created_at', { ascending: false })
+  const { data, error } = await supabase.from('preset_avatars').select('id, url, unlock_level').order('created_at', { ascending: false })
   if (error) { grid.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
   if (!data || !data.length) { grid.innerHTML = '<p class="editpic-empty">No presets available yet.</p>'; return }
   const current = myAvatar()
-  grid.innerHTML = data.map(p => `
-    <button class="editpic-preset ${p.url === current ? 'selected' : ''}" type="button" data-url="${escapeHtml(p.url)}">
-      <img src="${p.url}" alt="" />
-    </button>
-  `).join('')
-  grid.querySelectorAll('[data-url]').forEach(btn => {
-    btn.addEventListener('click', () => confirmPresetSelection(btn.dataset.url, editPopupEl))
+  const level = myLevel() // null for guests; not reachable here but guarded anyway
+  // A preset already equipped is always shown as selected/unlocked-looking
+  // even if it's above the user's current level (grandfathering) - never
+  // strip a picture the server already has equipped.
+  const isLocked = (p) => p.url !== current && (level == null ? (p.unlock_level || 1) > 1 : (p.unlock_level || 1) > level)
+  const sorted = [...data].sort((a, b) => {
+    const aLocked = isLocked(a), bLocked = isLocked(b)
+    if (aLocked !== bLocked) return aLocked ? 1 : -1
+    if (aLocked) return (a.unlock_level || 1) - (b.unlock_level || 1)
+    return 0
   })
+  grid.innerHTML = sorted.map(p => {
+    const locked = isLocked(p)
+    return `
+    <button class="editpic-preset ${p.url === current ? 'selected' : ''} ${locked ? 'locked' : ''}" type="button" data-url="${escapeHtml(p.url)}" data-unlock="${p.unlock_level || 1}">
+      <img src="${p.url}" alt="" />
+      ${locked ? '<span class="editpic-lock">🔒</span>' : ''}
+    </button>
+  `}).join('')
+  grid.querySelectorAll('[data-url]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.classList.contains('locked')) openLockedPresetPreview(btn.dataset.url, Number(btn.dataset.unlock) || 1)
+      else confirmPresetSelection(btn.dataset.url, editPopupEl)
+    })
+  })
+}
+
+// Preview popup shown when tapping a locked preset - no equip path, just the
+// requirement to unlock it.
+function openLockedPresetPreview(url, unlockLevel) {
+  const remaining = Math.max(0, pizzasForLevel(unlockLevel) - displayPizzas())
+  const o = overlay(`
+    <h3>Locked</h3>
+    <div class="editpic-preview-wrap">
+      <img class="editpic-preview" src="${url}" alt="" />
+      <span class="editpic-preview-lock">🔒</span>
+    </div>
+    <p class="editpic-req">Unlocks at Level ${unlockLevel} &mdash; ${formatScoreFixed2(remaining)} pizzas to go</p>
+    <button type="button" class="btn-secondary" data-action="close">Close</button>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
 }
 
 // Shows a preview + Confirm/Cancel before actually applying the picked
@@ -3879,6 +4041,13 @@ function renderSettings(highlightProfile) {
               <button class="icon-btn" type="button" data-action="rename" aria-label="Edit name">${PENCIL_SVG}</button>
             </div>
             <div class="gs">${chefSinceLabel()}</div>
+            ${(() => {
+              const { level, next, into, need } = levelProgress()
+              return `<div class="profile-level">
+                <div class="profile-level-lab"><b>Level ${level}</b><span>${formatScoreFixed2(into)} / ${need} pizzas to Level ${next}</span></div>
+                <div class="lv-bar wide"><span class="lv-bar-fill" style="width:${need ? Math.min(100, Math.max(0, (into / need) * 100)) : 0}%"></span></div>
+              </div>`
+            })()}
           </div>
         </div>
       </div>
