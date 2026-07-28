@@ -555,9 +555,14 @@ if (import.meta.env.VITE_REVIEW) {
         await openGroupInvitePopup('g1', 'Late Night Bakers', ['admin-1', 'u-2', 'u-3'])
       },
       // Level system (review-only entry points; see app/review/shots.mjs).
-      levelPopup: () => { renderHome(); return openLevelPopup() },
-      levelUpPopup: () => { renderHome(); return openLevelUpPopup(9, [window.__reviewFixtures.presetAvatars.find(p => p.unlock_level === 9)]) },
-      levelUpPopupNoArt: () => { renderHome(); return openLevelUpPopup(9, []) },
+      // renderHome() is async (it awaits the session log fetch before
+      // mounting) and mountScreen() replaces app.innerHTML wholesale - if the
+      // popup's overlay gets appended before that mount finishes, the mount
+      // wipes it straight back out. Await renderHome() to completion first so
+      // the popup overlay is always the last thing appended to the DOM.
+      levelPopup: async () => { await renderHome(); return openLevelPopup() },
+      levelUpPopup: async () => { await renderHome(); return openLevelUpPopup(9, [window.__reviewFixtures.presetAvatars.find(p => p.unlock_level === 9)]) },
+      levelUpPopupNoArt: async () => { await renderHome(); return openLevelUpPopup(9, []) },
       editPicture: () => { renderSettings(); return openEditPicturePopup() },
       lockedPreview: () => {
         renderSettings()
@@ -1988,16 +1993,16 @@ async function openLevelPopup() {
     .order('unlock_level', { ascending: true })
     .limit(1)
   const teaser = (data && data[0])
-    ? `<div class="lvup-next"><img src="${data[0].url}" alt="" style="width:2rem;height:2rem;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:0.5rem;filter:grayscale(0.7) brightness(0.7)" />Unlocks a new picture at Level ${data[0].unlock_level}</div>`
-    : `<div class="lvup-next">You've unlocked every picture</div>`
+    ? `<div class="lvup-next"><img class="lvup-next-art" src="${data[0].url}" alt="" /><span>New picture at <b>Level ${data[0].unlock_level}</b></span></div>`
+    : `<div class="lvup-next"><span>You've unlocked every picture</span></div>`
   const o = overlay(`
-    <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
+    <div class="lvup-kicker">Level</div>
     <div class="lvup-num">${level}</div>
     <div class="lv-bar wide"><span class="lv-bar-fill" style="width:${need ? Math.min(100, Math.max(0, (into / need) * 100)) : 0}%"></span></div>
-    <p>${formatScoreFixed2(into)} / ${need} pizzas to Level ${next}</p>
+    <p class="lvup-sub">${formatScore(into)} / ${need} pizzas to Level ${next}</p>
     ${teaser}
     <button type="button" data-action="ok">Got it</button>
-  `, { popupClass: 'popup-wide' })
+  `, { popupClass: 'popup-levelup' })
   o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
 }
 
@@ -3903,7 +3908,8 @@ function openLockedPresetPreview(url, unlockLevel) {
       <img class="editpic-preview" src="${url}" alt="" />
       <span class="editpic-preview-lock">🔒</span>
     </div>
-    <p class="editpic-req">Unlocks at Level ${unlockLevel} &mdash; ${formatScoreFixed2(remaining)} pizzas to go</p>
+    <p class="editpic-req">Unlocks at Level ${unlockLevel}</p>
+    <p class="editpic-req-sub">${formatScore(remaining)} more ${remaining === 1 ? 'pizza' : 'pizzas'} to go</p>
     <button type="button" class="btn-secondary" data-action="close">Close</button>
   `, { popupClass: 'popup-wide' })
   o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
@@ -4066,7 +4072,7 @@ function renderSettings(highlightProfile) {
             ${(() => {
               const { level, next, into, need } = levelProgress()
               return `<div class="profile-level">
-                <div class="profile-level-lab"><b>Level ${level}</b><span>${formatScoreFixed2(into)} / ${need} pizzas to Level ${next}</span></div>
+                <div class="profile-level-lab"><b>Level ${level}</b><span>${formatScore(into)} / ${need} pizzas to Level ${next}</span></div>
                 <div class="lv-bar wide"><span class="lv-bar-fill" style="width:${need ? Math.min(100, Math.max(0, (into / need) * 100)) : 0}%"></span></div>
               </div>`
             })()}
