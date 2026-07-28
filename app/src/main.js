@@ -4860,7 +4860,7 @@ function renderAdminDashboard() {
         <div class="adm-kpi" role="button" tabindex="0" data-action="open-chefs">
           <span class="adm-kpi-ic">🐧</span>
           <div class="adm-kpi-val" id="kpi-chefs-val">–</div>
-          <div class="adm-kpi-lab">Active chefs<span class="adm-kpi-sub" id="kpi-chefs-sub" hidden></span></div>
+          <div class="adm-kpi-lab">Active chefs this week<span class="adm-kpi-sub" id="kpi-chefs-sub" hidden></span></div>
         </div>
         <div class="adm-kpi accent" role="button" tabindex="0" data-action="open-pizzas-cal">
           <span class="adm-kpi-ic">🍕</span>
@@ -4939,9 +4939,13 @@ function renderAdminDashboard() {
 // dashboard from painting.
 async function loadAdminDashboardStats() {
   const start = admStartOfDay(new Date())
-  const [chefsRes, newTodayRes, pizzasRes, presetsRes, tagsRes, iconsRes, bakingRes] = await Promise.all([
+  const [chefsRes, activeWeekRes, pizzasRes, presetsRes, tagsRes, iconsRes, bakingRes] = await Promise.all([
     supabase.from('profiles').select('id', { count: 'exact', head: true }),
-    supabase.from('profiles').select('id', { count: 'exact', head: true }).gte('created_at', start.toISOString()),
+    // Chefs who cooked at all this week, however briefly - not signups. Shares
+    // startOfThisWeek() with the Weekly Scoreboard so both roll over together
+    // on Monday rather than drifting apart. Rows, not a head-count: Postgrest
+    // has no count-distinct, so the distinct user_ids are tallied client-side.
+    supabase.from('sessions').select('user_id').gte('completed_at', startOfThisWeek().toISOString()),
     // Needs "admin can view all sessions" (see migration_admin_sessions.sql) -
     // until that's run, RLS quietly limits this to the admin's own (+
     // friends') sessions, so the total under-counts rather than erroring.
@@ -4955,11 +4959,11 @@ async function loadAdminDashboardStats() {
   ])
 
   const chefsN = chefsRes.count || 0
-  const newTodayN = newTodayRes.count || 0
+  const activeWeekN = new Set((activeWeekRes.data || []).map(r => r.user_id)).size
   const pizzasToday = (pizzasRes.data || []).reduce((sum, r) => sum + Number(r.pizzas), 0)
 
   const set = (id, txt) => { const el = app.querySelector('#' + id); if (el) el.textContent = txt }
-  set('kpi-chefs-val', chefsN.toLocaleString())
+  set('kpi-chefs-val', activeWeekN.toLocaleString())
   set('kpi-pizzas-val', formatScore(pizzasToday))
   // A dash, not 0, when the column isn't there yet: "0 baking" would read as
   // a real measurement of nobody baking rather than "not tracked here".
@@ -4969,8 +4973,10 @@ async function loadAdminDashboardStats() {
   set('setup-emotes-n', tagsRes.error ? '–' : String(tagsRes.count || 0))
   set('setup-groupicons-n', iconsRes.error ? '–' : String(iconsRes.count || 0))
 
+  // Denominator for the headline number - "3" alone doesn't say whether that's
+  // most of the pizzeria or a handful of it.
   const chefsSub = app.querySelector('#kpi-chefs-sub')
-  if (chefsSub) { chefsSub.textContent = `+${newTodayN} new today`; chefsSub.hidden = false }
+  if (chefsSub) { chefsSub.textContent = `of ${chefsN} chef${chefsN === 1 ? '' : 's'}`; chefsSub.hidden = false }
 }
 
 // =================================================================

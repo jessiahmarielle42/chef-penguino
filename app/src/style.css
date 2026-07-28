@@ -774,6 +774,13 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .overlay.show { display: flex; }
 .popup {
   position: relative;
+  /* Keeps the ::before halo visible. A z-index:-1 child only paints above its
+     parent's background when the parent forms a stacking context; position
+     alone doesn't. The pop animation's transform formed one for its 0.35s, so
+     the glow flashed and then vanished the moment the transform lifted (and
+     never showed at all under prefers-reduced-motion, where there's no
+     animation). isolation makes that stacking context permanent. */
+  isolation: isolate;
   background: linear-gradient(180deg, var(--card-2), var(--card));
   border: 1px solid rgba(246,198,75,0.4); border-radius:1.625rem; padding:1.75rem 1.5rem; text-align: center;
   box-shadow: var(--shadow); width:100%; max-width:21rem; box-sizing: border-box;
