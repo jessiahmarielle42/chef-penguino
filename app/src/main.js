@@ -908,8 +908,12 @@ const APPLE_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColo
 function googleBtn() {
   return `
     <button class="gbtn" type="button" data-action="google">${GOOGLE_SVG}<span>Sign in with Google</span></button>
-    <button class="abtn" type="button" data-action="apple">${APPLE_SVG}<span>Sign in with Apple</span></button>
   `
+  // Sign in with Apple is fully wired (signInWithApple() above, the
+  // data-action="apple" handler, .abtn CSS) but hidden until Supabase Auth
+  // has a real Apple provider configured - see signInWithApple()'s comment.
+  // Uncomment the button below to bring it back:
+  // <button class="abtn" type="button" data-action="apple">${APPLE_SVG}<span>Sign in with Apple</span></button>
 }
 
 const CAL_BACK_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>`
