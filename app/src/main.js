@@ -569,7 +569,7 @@ if (import.meta.env.VITE_REVIEW) {
         const locked = window.__reviewFixtures.presetAvatars.find(p => p.unlock_level === 15)
         return openLockedPresetPreview(locked.url, locked.unlock_level)
       },
-      // renderPresetGrid's move-up/down arrows are edit-mode only, gated
+      // renderPresetGrid's remove (X) buttons are edit-mode only, gated
       // behind clicking "Edit Pictures" - drive that same real toggle here
       // (after waiting for the async preset fetch to populate the grid)
       // rather than reaching into presetEditMode directly, so this exercises
@@ -581,6 +581,23 @@ if (import.meta.env.VITE_REVIEW) {
         }
         document.querySelector('[data-action="toggle-preset-edit"]')?.click()
       },
+      // Same real toggle path as adminPresetsEdit but for the new drag-to-
+      // reorder "Arrange" mode, so this exercises the actual click handler.
+      adminPresetsArrange: async () => {
+        renderAdminPresets()
+        for (let i = 0; i < 50 && !document.querySelector('#preset-grid .adm-preset-item'); i++) {
+          await new Promise(r => setTimeout(r, 20))
+        }
+        document.querySelector('[data-action="toggle-preset-arrange"]')?.click()
+      },
+      // Not a screen to screenshot - a read-only escape hatch so Playwright
+      // can assert the arrange-mode drag actually persisted new
+      // unlock_levels, without fighting the fixture layer's .order() chain
+      // (each chained .order() call re-sorts from scratch instead of
+      // combining sort keys, so a second .order('created_at') call wipes out
+      // an earlier .order('unlock_level') - a fixture quirk, not a real
+      // Postgrest behavior, and irrelevant to what's actually persisted).
+      getPresetLevels: () => presetAvatarsCache.map(p => ({ id: p.id, level: p.unlock_level })),
     },
   }))
 } else {
@@ -5033,6 +5050,8 @@ function renderAdminUsers() {
 function renderAdminPresets() {
   if (!isAdmin()) { renderSettings(); return }
   presetEditMode = false
+  presetArrangeMode = false
+  presetArrangeAbort?.abort()
   const content = `
     <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
     <div class="section-h" style="margin-top:2px"><h2>Preset Pictures</h2></div>
@@ -5042,7 +5061,7 @@ function renderAdminPresets() {
         <div class="adm-preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
         <div class="adm-preset-actions">
           <button class="admin-upload-btn" type="button" data-action="toggle-preset-edit">Edit Pictures</button>
-          <button class="admin-upload-btn" type="button" data-action="renumber-ladder">Renumber Ladder</button>
+          <button class="admin-upload-btn" type="button" data-action="toggle-preset-arrange">Arrange</button>
         </div>
         <input type="file" accept="image/*" id="preset-input" hidden />
       </div>
@@ -5058,9 +5077,15 @@ function renderAdminPresets() {
     })
     app.querySelector('[data-action="toggle-preset-edit"]').addEventListener('click', () => {
       presetEditMode = !presetEditMode
+      if (presetEditMode) presetArrangeMode = false
       renderPresetGrid()
     })
-    app.querySelector('[data-action="renumber-ladder"]').addEventListener('click', () => renumberPresetLadder())
+    app.querySelector('[data-action="toggle-preset-arrange"]').addEventListener('click', () => {
+      presetArrangeMode = !presetArrangeMode
+      if (presetArrangeMode) presetEditMode = false
+      else presetArrangeAbort?.abort()
+      renderPresetGrid()
+    })
   }, { key: 'admin-presets' })
 }
 
@@ -6273,6 +6298,10 @@ function openEmoteEditPopup(emote) {
 // Whether the preset grid shows the remove/add controls - gated behind the
 // "Edit Pictures" button so a stray tap can't land on a delete affordance.
 let presetEditMode = false
+// Whether the preset grid is in iPhone-homescreen-style drag-to-reorder mode -
+// gated behind the "Arrange" button. Mutually exclusive with presetEditMode
+// (see the two toggle handlers in renderAdminPresets).
+let presetArrangeMode = false
 let presetAvatarsCache = []
 
 async function loadPresetAvatars() {
@@ -6301,15 +6330,10 @@ function renderPresetGrid() {
     }
   }
   const items = presetAvatarsCache.map((p, i) => `
-    <div class="adm-preset-item" data-preset-id="${p.id}" data-preset-path="${escapeHtml(p.path)}">
+    <div class="adm-preset-item${presetArrangeMode ? ' is-arrange' : ''}" data-preset-id="${p.id}" data-preset-path="${escapeHtml(p.path)}">
       <span class="adm-preset-lv">Lv. ${p.unlock_level || 1}</span>
-      <img src="${p.url}" alt="" />
+      <img src="${p.url}" alt="" draggable="false" />
       ${presetEditMode ? `<button class="adm-preset-remove" type="button" data-action="remove-preset" aria-label="Remove preset">✕</button>` : ''}
-      ${presetEditMode ? `
-        <div class="adm-preset-move">
-          <button class="adm-preset-move-btn" type="button" data-action="move-up" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>↑</button>
-          <button class="adm-preset-move-btn" type="button" data-action="move-down" aria-label="Move down" ${i === n - 1 ? 'disabled' : ''}>↓</button>
-        </div>` : ''}
     </div>
   `).join('')
   grid.innerHTML = items + (presetEditMode ? `<button class="adm-preset-add" type="button" data-action="upload-preset" aria-label="Upload new preset">+</button>` : '')
@@ -6317,32 +6341,126 @@ function renderPresetGrid() {
   grid.querySelectorAll('[data-action="remove-preset"]').forEach(btn => {
     btn.addEventListener('click', () => confirmRemovePreset(btn.closest('.adm-preset-item')))
   })
-  grid.querySelectorAll('[data-action="move-up"]').forEach(btn => {
-    btn.addEventListener('click', () => movePresetAvatar(btn.closest('.adm-preset-item').dataset.presetId, -1))
-  })
-  grid.querySelectorAll('[data-action="move-down"]').forEach(btn => {
-    btn.addEventListener('click', () => movePresetAvatar(btn.closest('.adm-preset-item').dataset.presetId, 1))
-  })
-  const toggleBtn = app.querySelector('[data-action="toggle-preset-edit"]')
-  if (toggleBtn) toggleBtn.textContent = presetEditMode ? 'Done Editing' : 'Edit Pictures'
+  const editBtn = app.querySelector('[data-action="toggle-preset-edit"]')
+  if (editBtn) editBtn.textContent = presetEditMode ? 'Done Editing' : 'Edit Pictures'
+  const arrangeBtn = app.querySelector('[data-action="toggle-preset-arrange"]')
+  if (arrangeBtn) arrangeBtn.textContent = presetArrangeMode ? 'Done Arranging' : 'Arrange'
+  if (presetArrangeMode) initPresetArrangeDrag(grid)
 }
 
-// Swaps the unlock_level of the preset at `id` with its neighbour in the
-// given direction (-1 = up/earlier, 1 = down/later), persists both rows,
-// then re-renders from the fresh order.
-async function movePresetAvatar(id, dir) {
-  const i = presetAvatarsCache.findIndex(p => p.id === id)
-  const j = i + dir
-  if (i < 0 || j < 0 || j >= presetAvatarsCache.length) return
-  const a = presetAvatarsCache[i], b = presetAvatarsCache[j]
-  const aLevel = a.unlock_level || 1, bLevel = b.unlock_level || 1
-  const [r1, r2] = await Promise.all([
-    supabase.from('preset_avatars').update({ unlock_level: bLevel }).eq('id', a.id),
-    supabase.from('preset_avatars').update({ unlock_level: aLevel }).eq('id', b.id),
-  ])
-  if (r1.error || r2.error) { toast((r1.error || r2.error).message); return }
-  toast('Order updated')
-  loadPresetAvatars()
+// iPhone-homescreen-style drag-to-reorder for the Arrange mode. Pointer
+// Events (not HTML5 draggable/dragstart, which is unreliable on touch) drive
+// a dragged tile that follows the pointer while the rest of the grid
+// reflows live around it; drop commits the new order via renumberPresetLadder.
+// Aborts the previous render's document-level drag listeners before a fresh
+// renderPresetGrid() call wires up new ones - otherwise every re-render
+// while arrange mode stays on (e.g. the reload after a drop persists) would
+// pile up another set of document listeners with their own stale closures.
+let presetArrangeAbort = null
+
+function initPresetArrangeDrag(grid) {
+  presetArrangeAbort?.abort()
+  presetArrangeAbort = new AbortController()
+  const { signal } = presetArrangeAbort
+  const LONG_PRESS_MS = 180
+  let dragEl = null
+  let startX = 0, startY = 0
+  let originX = 0, originY = 0
+  let pressTimer = null
+  let dragging = false
+
+  const tiles = () => Array.from(grid.querySelectorAll('.adm-preset-item'))
+
+  function updateLvBadges() {
+    tiles().forEach((el, i) => {
+      const lv = el.querySelector('.adm-preset-lv')
+      if (lv) lv.textContent = `Lv. ${i + 2}`
+    })
+  }
+
+  function pointForEvent(e) { return { x: e.clientX, y: e.clientY } }
+
+  function tileUnderPoint(x, y, exclude) {
+    const els = tiles().filter(el => el !== exclude)
+    let best = null, bestDist = Infinity
+    for (const el of els) {
+      const r = el.getBoundingClientRect()
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2
+      const d = Math.hypot(cx - x, cy - y)
+      if (d < bestDist) { bestDist = d; best = el }
+    }
+    return best
+  }
+
+  // Drag state lives at document level rather than being captured on the
+  // dragged tile itself: reordering moves `item` in the DOM (target.after/
+  // .before), and per spec that remove-and-reinsert releases any
+  // setPointerCapture on it mid-drag, so a captured pointerup would silently
+  // land on whatever's now under the cursor instead of the tile. Tracking
+  // the drag with document-level move/up listeners sidesteps that entirely.
+  grid.querySelectorAll('.adm-preset-item').forEach(item => {
+    item.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('.adm-preset-remove')) return
+      const p = pointForEvent(e)
+      startX = p.x; startY = p.y
+      clearTimeout(pressTimer)
+      pressTimer = setTimeout(() => {
+        dragEl = item
+        dragging = true
+        const r = item.getBoundingClientRect()
+        originX = r.left; originY = r.top
+        item.classList.add('is-dragging')
+      }, LONG_PRESS_MS)
+    })
+  })
+
+  // Arrange-mode tiles set touch-action:none so a drag isn't stolen by the
+  // page scroller - which also means a finger on a tile can't scroll. With 20
+  // pictures the ladder is several screens tall, so without this the admin
+  // could never drag a picture from level 2 down to level 21. Dragging near
+  // the top or bottom edge scrolls the page toward it, the way iOS does when
+  // you drag an app icon to the edge of the screen.
+  function autoScrollNearEdge(y) {
+    const EDGE = 90   // px from the viewport edge that starts scrolling
+    const SPEED = 12  // px per pointermove
+    const scroller = shellEl() || document.scrollingElement || document.documentElement
+    if (y < EDGE) scroller.scrollTop -= SPEED
+    else if (y > window.innerHeight - EDGE) scroller.scrollTop += SPEED
+  }
+
+  document.addEventListener('pointermove', (e) => {
+    if (!dragging || !dragEl) return
+    const p = pointForEvent(e)
+    const dx = p.x - startX, dy = p.y - startY
+    dragEl.style.transform = `translate(${dx}px, ${dy}px) scale(1.08)`
+    autoScrollNearEdge(p.y)
+    const target = tileUnderPoint(p.x, p.y, dragEl)
+    if (target) {
+      const items = tiles()
+      const from = items.indexOf(dragEl)
+      const to = items.indexOf(target)
+      if (from !== to) {
+        if (from < to) target.after(dragEl)
+        else target.before(dragEl)
+        updateLvBadges()
+      }
+    }
+  }, { signal })
+
+  const endDrag = () => {
+    clearTimeout(pressTimer)
+    if (!dragging || !dragEl) return
+    dragging = false
+    const el = dragEl
+    dragEl = null
+    el.classList.remove('is-dragging')
+    el.style.transform = ''
+    const newOrder = tiles().map(node => node.dataset.presetId)
+    presetAvatarsCache = newOrder.map(id => presetAvatarsCache.find(p => p.id === id))
+    renumberPresetLadder()
+  }
+  document.addEventListener('pointerup', endDrag, { signal })
+  document.addEventListener('pointercancel', endDrag, { signal })
 }
 
 // Reassigns unlock_level sequentially (2, 3, 4, ...) in current display

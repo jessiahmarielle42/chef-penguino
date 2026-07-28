@@ -478,10 +478,8 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 
 /* ---------- admin dashboard ---------- */
 .adm-preset-summary { font-size:0.8125rem; color: var(--muted); margin:0.875rem 0 0; line-height:1.4; }
-/* Extra row-gap (vs. column-gap) so each tile + its up/down arrows reads as
-   one unit, clearly separated from the next tile-group below. */
-.adm-preset-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap:1.875rem 0.75rem; margin:0.875rem 0 0.25rem; }
-.adm-preset-item { position: relative; padding-top:0.6875rem; }
+.adm-preset-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap:1.25rem 0.75rem; margin:0.875rem 0 0.25rem; }
+.adm-preset-item { position: relative; padding-top:0.6875rem; transition: transform 0.22s ease; }
 .adm-preset-item img { width: 100%; aspect-ratio: 1/1; border-radius: 50%; object-fit: cover; border: 2px solid var(--line); background: var(--card-2); }
 /* Lv. badge and remove (x) get distinct corners above the circle so they
    never crowd each other or the circle's edge. */
@@ -497,14 +495,24 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   border: 2px solid var(--page-bg); background: var(--ember); color:#fff; font-size:0.625rem; font-weight: 800;
   display: grid; place-items: center; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.35); z-index: 2;
 }
-.adm-preset-move { display: flex; justify-content: center; gap:0.375rem; margin-top:0.25rem; }
-.adm-preset-move-btn {
-  width:2rem; height:2rem; border-radius:0.625rem; border: 1px solid var(--line); background: var(--card-2);
-  color: var(--cream); font-size:0.9375rem; font-weight: 800; line-height: 1; cursor: pointer;
-  display: grid; place-items: center;
+/* Arrange mode - iPhone-homescreen-style drag to reorder. Tiles wiggle to
+   signal "grab me"; the actively-dragged tile stops wiggling, lifts with a
+   shadow + scale, and sits above its siblings while they reflow live. */
+.adm-preset-item.is-arrange { touch-action: none; cursor: grab; animation: adm-preset-wiggle 0.26s ease-in-out infinite; }
+.adm-preset-item.is-arrange:nth-child(even) { animation-delay: -0.13s; }
+.adm-preset-item.is-arrange.is-dragging {
+  animation: none; cursor: grabbing; z-index: 5; transition: none;
+  box-shadow: 0 0.5rem 1.25rem rgba(0,0,0,0.35);
 }
-.adm-preset-move-btn:active:not(:disabled) { transform: scale(0.94); }
-.adm-preset-move-btn:disabled { opacity: 0.3; cursor: default; }
+.adm-preset-item.is-arrange.is-dragging img { box-shadow: 0 0.5rem 1.25rem rgba(0,0,0,0.35); }
+@keyframes adm-preset-wiggle {
+  0% { transform: rotate(-1.2deg); }
+  50% { transform: rotate(1.2deg); }
+  100% { transform: rotate(-1.2deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .adm-preset-item.is-arrange { animation: none; }
+}
 .adm-preset-actions { display: flex; gap:0.625rem; margin-top:0.625rem; }
 .adm-preset-actions .admin-upload-btn { flex: 1; }
 .adm-preset-add {
