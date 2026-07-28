@@ -477,14 +477,36 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .chevron { color: var(--muted); font-size:1.25rem; font-weight: 800; line-height: 1; }
 
 /* ---------- admin dashboard ---------- */
-.adm-preset-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap:0.875rem 0.75rem; margin:0.875rem 0 0.25rem; }
-.adm-preset-item { position: relative; }
+.adm-preset-summary { font-size:0.8125rem; color: var(--muted); margin:0.875rem 0 0; line-height:1.4; }
+/* Extra row-gap (vs. column-gap) so each tile + its up/down arrows reads as
+   one unit, clearly separated from the next tile-group below. */
+.adm-preset-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap:1.875rem 0.75rem; margin:0.875rem 0 0.25rem; }
+.adm-preset-item { position: relative; padding-top:0.6875rem; }
 .adm-preset-item img { width: 100%; aspect-ratio: 1/1; border-radius: 50%; object-fit: cover; border: 2px solid var(--line); background: var(--card-2); }
-.adm-preset-remove {
-  position: absolute; top:-0.25rem; right:-0.25rem; width:1.5rem; height:1.5rem; border-radius: 50%;
-  border: 2px solid var(--page-bg); background: var(--ember); color:#fff; font-size:0.625rem; font-weight: 800;
-  display: grid; place-items: center; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+/* Lv. badge and remove (x) get distinct corners above the circle so they
+   never crowd each other or the circle's edge. */
+.adm-preset-lv {
+  position: absolute; top:0; left:0.125rem; z-index: 1;
+  font-family: inherit; font-weight: 800; font-size:0.625rem; letter-spacing: 0.02em;
+  color: var(--gold-ink); background: linear-gradient(180deg, rgba(246,198,75,0.28), rgba(246,198,75,0.12));
+  border: 1px solid rgba(246,198,75,0.45); border-radius:62.4375rem; padding:0.0625rem 0.375rem;
+  line-height: 1.3; white-space: nowrap; font-variant-numeric: tabular-nums;
 }
+.adm-preset-remove {
+  position: absolute; top:-0.1875rem; right:-0.1875rem; width:1.5rem; height:1.5rem; border-radius: 50%;
+  border: 2px solid var(--page-bg); background: var(--ember); color:#fff; font-size:0.625rem; font-weight: 800;
+  display: grid; place-items: center; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.35); z-index: 2;
+}
+.adm-preset-move { display: flex; justify-content: center; gap:0.375rem; margin-top:0.25rem; }
+.adm-preset-move-btn {
+  width:2rem; height:2rem; border-radius:0.625rem; border: 1px solid var(--line); background: var(--card-2);
+  color: var(--cream); font-size:0.9375rem; font-weight: 800; line-height: 1; cursor: pointer;
+  display: grid; place-items: center;
+}
+.adm-preset-move-btn:active:not(:disabled) { transform: scale(0.94); }
+.adm-preset-move-btn:disabled { opacity: 0.3; cursor: default; }
+.adm-preset-actions { display: flex; gap:0.625rem; margin-top:0.625rem; }
+.adm-preset-actions .admin-upload-btn { flex: 1; }
 .adm-preset-add {
   aspect-ratio: 1/1; border-radius: 50%; border: 2px dashed var(--muted-2); background: var(--soft-fill);
   color: var(--muted); display: grid; place-items: center; font-size:1.5rem; font-weight: 800; font-family: var(--font-display); cursor: pointer;
@@ -894,6 +916,104 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast-coin { width:0.9375rem; height:0.9375rem; }
+
+/* ============================================================
+   LEVELS
+   ============================================================ */
+
+/* ---------- header level line (under .nm in .who) ---------- */
+.lv-line { display: flex; align-items: center; gap:0.375rem; line-height: 1; margin-top:0.1875rem; }
+.lv-pill {
+  flex: none; appearance: none; font-family: inherit; cursor: pointer;
+  display: inline-flex; align-items: center;
+  border: 1px solid rgba(246,198,75,0.45);
+  background: linear-gradient(180deg, rgba(246,198,75,0.22), rgba(246,198,75,0.08));
+  color: var(--gold-ink); font-weight: 800; font-size:0.625rem; letter-spacing: 0.02em;
+  padding:0.125rem 0.375rem; border-radius:62.4375rem; line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.lv-pill:active { transform: scale(0.95); }
+.lv-bar {
+  flex: 1; min-width:2.5rem; max-width:5rem; height:0.1875rem; border-radius:62.4375rem;
+  background: var(--soft-fill); overflow: hidden;
+}
+.lv-bar-fill { display: block; height: 100%; border-radius:62.4375rem; background: linear-gradient(90deg, var(--gold), var(--gold-deep)); }
+/* Reused inside .profile-level's COLUMN flex layout, where the base
+   `.lv-bar` rule's `flex:1` (flex-basis:0%) would collapse this to zero
+   height (no free vertical space to grow into) - pin it back to a fixed,
+   non-flexing size so the bar actually renders. */
+.lv-bar.wide { flex: none; width: 100%; height:0.3125rem; max-width: none; }
+.lv-guest { font-size:0.6875rem; color: var(--muted); line-height: 1; }
+
+/* ---------- settings profile row level line ---------- */
+.profile-level { margin-top:0.3125rem; display: flex; flex-direction: column; gap:0.3125rem; }
+.profile-level-lab { display: flex; align-items: baseline; gap:0.375rem; font-size:0.75rem; }
+.profile-level-lab b { color: var(--cream); font-weight: 800; }
+.profile-level-lab span { color: var(--muted-2); }
+
+/* ---------- level-up popup ---------- */
+.popup-levelup { position: relative; overflow: hidden; }
+.popup-levelup::before {
+  content: ""; position: absolute; z-index: -1; inset:-20%;
+  background: radial-gradient(circle at 50% 30%, rgba(246,198,75,0.35), rgba(246,198,75,0) 65%);
+  pointer-events: none;
+}
+.lvup-kicker {
+  font-size:0.6875rem; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin-bottom:0.25rem;
+}
+.lvup-num {
+  font-family: var(--font-display); font-weight: 800; font-size:3.5rem; line-height: 1;
+  color: var(--gold); /* fallback for browsers without background-clip:text */
+  background: linear-gradient(180deg, #FFE29A, var(--gold) 55%, var(--gold-deep));
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  margin:0 0 0.75rem;
+}
+.lvup-art {
+  width:7.5rem; height:7.5rem; border-radius: 50%; object-fit: cover;
+  border: 3px solid rgba(246,198,75,0.55);
+  box-shadow: 0 10px 26px -10px rgba(246,198,75,0.6);
+  margin:0 auto 0.875rem; display: block;
+}
+/* Also .popup-scoped: this is a <div> in the level-up popup but a <p> in the
+   progress popup, and as a <p> the base `.popup p` rule would outrank it and
+   silently change its spacing in one place but not the other. */
+.popup .lvup-sub { color: var(--muted); font-size:0.875rem; line-height: 1.5; margin:0 0 1rem; }
+/* One tidy centred row - thumbnail beside its label - rather than letting
+   the text wrap underneath a floated image. */
+.lvup-next {
+  display: flex; align-items: center; justify-content: center; gap:0.5rem;
+  color: var(--muted-2); font-size:0.8125rem; font-weight: 700;
+  background: var(--soft-fill); border-radius:0.625rem; padding:0.5rem 0.75rem; margin-bottom:1.25rem;
+}
+.lvup-next[hidden] { display: none; }
+.lvup-next b { color: var(--gold-ink); }
+.lvup-next-art {
+  width:2rem; height:2rem; border-radius: 50%; object-fit: cover; flex: none;
+  filter: grayscale(0.35) brightness(0.88);
+}
+
+/* ---------- avatar picker lock states ---------- */
+.popup .editpic-preset { position: relative; }
+.editpic-preset.locked img { filter: grayscale(0.35) brightness(0.88); }
+.editpic-lock {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  background: rgba(10,6,4,0.28); font-size:1.125rem; border-radius: 50%;
+}
+/* display:block + width:fit-content lets margin:auto actually center this
+   (inline-block's auto margins do not self-center; they only work when an
+   ancestor's text-align happens to do it, which is not reliable enough). */
+.editpic-preview-wrap { position: relative; display: block; width: fit-content; margin:0.75rem auto 1.25rem; }
+.editpic-preview-wrap .editpic-preview { margin: 0; }
+.editpic-preview-lock {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  background: rgba(10,6,4,0.28); font-size:2.5rem; border-radius: 50%;
+}
+/* Scoped with .popup so these beat the base `.popup p` rule (0-1-1), which
+   otherwise wins on specificity and reimposes its own margin and colour -
+   the two lines then read as one loose, same-weight pair. */
+.popup .editpic-req { color: var(--gold-ink); font-weight: 800; font-size:0.9375rem; text-align: center; margin:0 0 0.1875rem; }
+.popup .editpic-req-sub { color: var(--muted); font-weight: 700; font-size:0.8125rem; text-align: center; margin:0 0 1.25rem; }
 
 /* ============================================================
    TIMER / GAMEPLAY / INTRO (preserved)

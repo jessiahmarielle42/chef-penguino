@@ -69,13 +69,13 @@ async function refreshProfile() {
   // loads and the app doesn't break for signed-in users before the migration.
   let { data } = await supabase
     .from('profiles')
-    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels')
+    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels, level_seen')
     .eq('id', currentUser.id)
     .single()
   if (!data) {
     ({ data } = await supabase
       .from('profiles')
-      .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment')
+      .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, level_seen')
       .eq('id', currentUser.id)
       .single())
   }
@@ -455,8 +455,11 @@ async function finalizeSession(playAlarm) {
   const coinsAfter = Math.floor(Math.floor(oldTotal + pizzasEarned) / 12)
   if (coinsAfter > coinsBefore) await logCoinConversion(coinsAfter - coinsBefore, completedAt)
 
-  if (playAlarm) renderTapToContinue(() => renderHome(), true, { minutes, pizzas: pizzasEarned })
-  else renderHome()
+  // checkLevelUp() runs only after the results screen has been dismissed (or
+  // immediately for a silent/background finalize with no results screen) so
+  // a level-up popup never fights the tap-to-continue/results screen for it.
+  if (playAlarm) renderTapToContinue(() => { renderHome(); checkLevelUp() }, true, { minutes, pizzas: pizzasEarned })
+  else { renderHome(); checkLevelUp() }
 }
 
 // ---------- boot ----------
@@ -464,12 +467,14 @@ async function boot() {
   const { data } = await supabase.auth.getSession()
   if (data.session?.user) {
     await handleSignedIn(data.session.user)
+    checkLevelUp()
   }
 
   supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_IN' && session?.user) {
       handleSignedIn(session.user).then(() => {
         if (!state.timer) renderHome()
+        checkLevelUp()
         checkPendingNoots()
         checkPendingCoinGifts()
         checkPendingWarnings()
@@ -549,6 +554,33 @@ if (import.meta.env.VITE_REVIEW) {
         chefsTab = 'groups'; await openChefsGroup('g1')
         await openGroupInvitePopup('g1', 'Late Night Bakers', ['admin-1', 'u-2', 'u-3'])
       },
+      // Level system (review-only entry points; see app/review/shots.mjs).
+      // renderHome() is async (it awaits the session log fetch before
+      // mounting) and mountScreen() replaces app.innerHTML wholesale - if the
+      // popup's overlay gets appended before that mount finishes, the mount
+      // wipes it straight back out. Await renderHome() to completion first so
+      // the popup overlay is always the last thing appended to the DOM.
+      levelPopup: async () => { await renderHome(); return openLevelPopup() },
+      levelUpPopup: async () => { await renderHome(); return openLevelUpPopup(9, [window.__reviewFixtures.presetAvatars.find(p => p.unlock_level === 9)]) },
+      levelUpPopupNoArt: async () => { await renderHome(); return openLevelUpPopup(9, []) },
+      editPicture: () => { renderSettings(); return openEditPicturePopup() },
+      lockedPreview: () => {
+        renderSettings()
+        const locked = window.__reviewFixtures.presetAvatars.find(p => p.unlock_level === 15)
+        return openLockedPresetPreview(locked.url, locked.unlock_level)
+      },
+      // renderPresetGrid's move-up/down arrows are edit-mode only, gated
+      // behind clicking "Edit Pictures" - drive that same real toggle here
+      // (after waiting for the async preset fetch to populate the grid)
+      // rather than reaching into presetEditMode directly, so this exercises
+      // the actual click path.
+      adminPresetsEdit: async () => {
+        renderAdminPresets()
+        for (let i = 0; i < 50 && !document.querySelector('#preset-grid .adm-preset-item'); i++) {
+          await new Promise(r => setTimeout(r, 20))
+        }
+        document.querySelector('[data-action="toggle-preset-edit"]')?.click()
+      },
     },
   }))
 } else {
@@ -621,6 +653,53 @@ function coinsEarned() { return Math.floor(Math.floor(displayPizzas()) / 12) }
 function coinAdjustment() { return currentProfile ? (currentProfile.coin_adjustment || 0) : 0 }
 function coinBalance() { return Math.max(0, coinsEarned() - ownedEmotes().length + coinAdjustment()) }
 function stashCount() { return Math.floor(displayPizzas()) % 12 }
+
+// =================================================================
+//  Levels (derived from lifetime pizzas, same pattern as coins - never
+//  stored). Curve: level N -> N+1 costs min(12, ceil(N/2)) pizzas, so early
+//  levels are cheap and it caps at 12 pizzas/level from level 24 onward.
+//  Cumulative pizzas to REACH level L is floor(L*L/4) while L <= 24 (that's
+//  where the per-level cost first hits the 12 cap), then grows linearly by
+//  12/level after that: 144 + 12*(L-24).
+//
+//  Hand-verified inverse (levelForPizzas):
+//    p=0     -> 1   (floor(sqrt(1))=1)
+//    p=1     -> 2   (floor(sqrt(5))=2)
+//    p=2     -> 3   (floor(sqrt(9))=3)
+//    p=4     -> 4   (floor(sqrt(17))=4)
+//    p=6     -> 5   (floor(sqrt(25))=5)
+//    p=100   -> 20  (floor(sqrt(401))=20)
+//    p=143.9 -> 23  (p floored to 143 first: floor(sqrt(573))=23)
+//    p=144   -> 24  (>=144 branch: 24 + floor(0/12) = 24)
+//    p=156   -> 25  (>=144 branch: 24 + floor(12/12) = 25)
+function levelForPizzas(p) {
+  if (p >= 144) return 24 + Math.floor((p - 144) / 12)
+  // p is floored here (all cumulative thresholds are whole numbers, so
+  // fractional progress can never cross one) - this must match the SQL
+  // function public.level_for_pizzas() exactly, since a server-side trigger
+  // uses it to reject locked pictures.
+  return Math.max(1, Math.floor(Math.sqrt(4 * Math.floor(Math.max(p, 0)) + 1)))
+}
+// Total lifetime pizzas needed to REACH level L (inverse of levelForPizzas).
+function pizzasForLevel(L) {
+  if (L <= 24) return Math.floor((L * L) / 4)
+  return 144 + 12 * (L - 24)
+}
+function myLevel() { return isSignedIn() ? levelForPizzas(displayPizzas()) : null }
+// { level, next, into, need, pct } describing progress toward the current
+// user's next level. into = pizzas earned into the current level, need =
+// pizzas the current level costs, pct = 0-100 clamped.
+function levelProgress() {
+  const level = myLevel() || 1
+  const next = level + 1
+  const cur = pizzasForLevel(level)
+  const nxt = pizzasForLevel(next)
+  const into = Math.max(0, displayPizzas() - cur)
+  const need = Math.max(1, nxt - cur)
+  const pct = Math.min(100, Math.max(0, (into / need) * 100))
+  return { level, next, into, need, pct }
+}
+
 function equippedEmote() {
   const e = (currentProfile ? currentProfile.equipped_emote : state.equippedEmote) || 'waving'
   return isOwned(e) ? e : 'waving'
@@ -846,8 +925,12 @@ function statusBarHtml() {
       <div class="who" role="button" tabindex="0" data-action="profile">
         <img class="who-avatar" src="${myAvatar()}" alt="" />
         <div>
-          <div class="greet">${isSignedIn() ? 'Welcome back,' : 'Hello,'}</div>
+          ${isSignedIn() ? '' : '<div class="greet">Hello,</div>'}
           <div class="nm">${escapeHtml(myName())}</div>
+          ${isSignedIn() ? (() => {
+            const { level, pct } = levelProgress()
+            return `<div class="lv-line"><button class="lv-pill" type="button" data-action="level-info">Lv. ${level}</button><span class="lv-bar"><span class="lv-bar-fill" style="width:${pct}%"></span></span></div>`
+          })() : `<div class="lv-guest">Sign in to level up</div>`}
         </div>
       </div>
       <div class="stats">
@@ -1024,6 +1107,7 @@ function wireStatusBar() {
   app.querySelector('[data-action="profile"]')?.addEventListener('click', openProfilePopup)
   app.querySelector('[data-action="coin-info"]')?.addEventListener('click', openCoinInfo)
   app.querySelector('[data-action="pizza-info"]')?.addEventListener('click', openPizzaInfo)
+  app.querySelector('[data-action="level-info"]')?.addEventListener('click', openLevelPopup)
 }
 
 function wireTabBar() {
@@ -1898,6 +1982,78 @@ function openPizzaInfo() {
 }
 
 // =================================================================
+//  Level progress popup (the level pill, top-left header)
+// =================================================================
+async function openLevelPopup() {
+  const { level, next, into, need } = levelProgress()
+  const { data } = await supabase
+    .from('preset_avatars')
+    .select('id, url, unlock_level')
+    .gt('unlock_level', level)
+    .order('unlock_level', { ascending: true })
+    .limit(1)
+  const teaser = (data && data[0])
+    ? `<div class="lvup-next"><img class="lvup-next-art" src="${data[0].url}" alt="" /><span>New picture at <b>Level ${data[0].unlock_level}</b></span></div>`
+    : `<div class="lvup-next"><span>You've unlocked every picture</span></div>`
+  const o = overlay(`
+    <div class="lvup-kicker">Level</div>
+    <div class="lvup-num">${level}</div>
+    <div class="lv-bar wide"><span class="lv-bar-fill" style="width:${need ? Math.min(100, Math.max(0, (into / need) * 100)) : 0}%"></span></div>
+    <p class="lvup-sub">${formatScore(into)} / ${need} pizzas to Level ${next}</p>
+    ${teaser}
+    <button type="button" data-action="ok">Got it</button>
+  `, { popupClass: 'popup-levelup' })
+  o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
+}
+
+// =================================================================
+//  Level-up celebration popup + detection
+// =================================================================
+function openLevelUpPopup(newLevel, unlockedPresets) {
+  const art = unlockedPresets && unlockedPresets[0]
+  const artHtml = art
+    ? `<img class="lvup-art" src="${art.url}" alt="" /><div class="lvup-sub">New profile picture unlocked</div>`
+    : ''
+  const o = overlay(`
+    <div class="lvup-kicker">Level Up</div>
+    <div class="lvup-num">${newLevel}</div>
+    ${artHtml}
+    <div class="home-btn-col">
+      ${art ? `<button type="button" data-action="equip">Equip now</button>` : ''}
+      <button type="button" class="btn-secondary" data-action="later">${art ? 'Later' : 'Nice!'}</button>
+    </div>
+  `, { popupClass: 'popup-levelup' })
+  o.querySelector('[data-action="later"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="equip"]')?.addEventListener('click', () => {
+    o.remove()
+    openEditPicturePopup()
+  })
+}
+
+// Compares the current derived level against currentProfile.level_seen and,
+// if it's advanced, shows ONE consolidated celebration popup for the highest
+// level reached (never a stack), then persists level_seen so it doesn't fire
+// again. Guests never level up, so this is a no-op unless signed in.
+async function checkLevelUp() {
+  if (!currentUser || !currentProfile) return
+  const level = myLevel()
+  if (level == null) return
+  const seen = currentProfile.level_seen ?? 1
+  if (level <= seen) return
+  let unlocked = []
+  const { data } = await supabase
+    .from('preset_avatars')
+    .select('id, url, unlock_level')
+    .gt('unlock_level', seen)
+    .lte('unlock_level', level)
+    .order('unlock_level', { ascending: false })
+  if (data && data.length) unlocked = data
+  openLevelUpPopup(level, unlocked)
+  currentProfile.level_seen = level
+  await supabase.from('profiles').update({ level_seen: level }).eq('id', currentUser.id)
+}
+
+// =================================================================
 //  Emotes info popup (the (i) education popup, home hero card)
 // =================================================================
 function openEmoteInfo() {
@@ -1933,7 +2089,7 @@ function openProfilePopup() {
   const editOrGuest = signed
     ? `<button class="btn-edit-profile" type="button" data-action="edit-profile">${PENCIL_SVG}<span style="margin-left:8px">Edit Profile</span></button>
        <button class="btn-danger" type="button" data-action="sign-out" style="margin-top:0.625rem">Sign Out</button>`
-    : `<p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 16px">Sign in to save your progress and customise your profile.</p>${googleBtn()}`
+    : `<p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 16px">Sign in to save your progress and customise your profile.</p><div class="lv-guest" style="margin-bottom:16px">Sign in to level up</div>${googleBtn()}`
 
   const o = overlay(`
     <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
@@ -3711,18 +3867,52 @@ function openEditPicturePopup() {
 async function loadEditPicPresets(editPopupEl) {
   const grid = app.querySelector('#editpic-presets')
   if (!grid) return
-  const { data, error } = await supabase.from('preset_avatars').select('id, url').order('created_at', { ascending: false })
+  const { data, error } = await supabase.from('preset_avatars').select('id, url, unlock_level').order('created_at', { ascending: false })
   if (error) { grid.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
   if (!data || !data.length) { grid.innerHTML = '<p class="editpic-empty">No presets available yet.</p>'; return }
   const current = myAvatar()
-  grid.innerHTML = data.map(p => `
-    <button class="editpic-preset ${p.url === current ? 'selected' : ''}" type="button" data-url="${escapeHtml(p.url)}">
-      <img src="${p.url}" alt="" />
-    </button>
-  `).join('')
-  grid.querySelectorAll('[data-url]').forEach(btn => {
-    btn.addEventListener('click', () => confirmPresetSelection(btn.dataset.url, editPopupEl))
+  const level = myLevel() // null for guests; not reachable here but guarded anyway
+  // A preset already equipped is always shown as selected/unlocked-looking
+  // even if it's above the user's current level (grandfathering) - never
+  // strip a picture the server already has equipped.
+  const isLocked = (p) => p.url !== current && (level == null ? (p.unlock_level || 1) > 1 : (p.unlock_level || 1) > level)
+  const sorted = [...data].sort((a, b) => {
+    const aLocked = isLocked(a), bLocked = isLocked(b)
+    if (aLocked !== bLocked) return aLocked ? 1 : -1
+    if (aLocked) return (a.unlock_level || 1) - (b.unlock_level || 1)
+    return 0
   })
+  grid.innerHTML = sorted.map(p => {
+    const locked = isLocked(p)
+    return `
+    <button class="editpic-preset ${p.url === current ? 'selected' : ''} ${locked ? 'locked' : ''}" type="button" data-url="${escapeHtml(p.url)}" data-unlock="${p.unlock_level || 1}">
+      <img src="${p.url}" alt="" />
+      ${locked ? '<span class="editpic-lock">🔒</span>' : ''}
+    </button>
+  `}).join('')
+  grid.querySelectorAll('[data-url]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.classList.contains('locked')) openLockedPresetPreview(btn.dataset.url, Number(btn.dataset.unlock) || 1)
+      else confirmPresetSelection(btn.dataset.url, editPopupEl)
+    })
+  })
+}
+
+// Preview popup shown when tapping a locked preset - no equip path, just the
+// requirement to unlock it.
+function openLockedPresetPreview(url, unlockLevel) {
+  const remaining = Math.max(0, pizzasForLevel(unlockLevel) - displayPizzas())
+  const o = overlay(`
+    <h3>Locked</h3>
+    <div class="editpic-preview-wrap">
+      <img class="editpic-preview" src="${url}" alt="" />
+      <span class="editpic-preview-lock">🔒</span>
+    </div>
+    <p class="editpic-req">Unlocks at Level ${unlockLevel}</p>
+    <p class="editpic-req-sub">${formatScore(remaining)} more ${remaining === 1 ? 'pizza' : 'pizzas'} to go</p>
+    <button type="button" class="btn-secondary" data-action="close">Close</button>
+  `, { popupClass: 'popup-wide' })
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
 }
 
 // Shows a preview + Confirm/Cancel before actually applying the picked
@@ -3879,6 +4069,13 @@ function renderSettings(highlightProfile) {
               <button class="icon-btn" type="button" data-action="rename" aria-label="Edit name">${PENCIL_SVG}</button>
             </div>
             <div class="gs">${chefSinceLabel()}</div>
+            ${(() => {
+              const { level, next, into, need } = levelProgress()
+              return `<div class="profile-level">
+                <div class="profile-level-lab"><b>Level ${level}</b><span>${formatScore(into)} / ${need} pizzas to Level ${next}</span></div>
+                <div class="lv-bar wide"><span class="lv-bar-fill" style="width:${need ? Math.min(100, Math.max(0, (into / need) * 100)) : 0}%"></span></div>
+              </div>`
+            })()}
           </div>
         </div>
       </div>
@@ -4829,8 +5026,12 @@ function renderAdminPresets() {
     <div class="section-h" style="margin-top:2px"><h2>Preset Pictures</h2></div>
     <div class="admin-dash">
       <div class="group" style="margin-top:0">
+        <p class="adm-preset-summary" id="preset-ladder-summary">Loading&hellip;</p>
         <div class="adm-preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
-        <button class="admin-upload-btn" type="button" data-action="toggle-preset-edit">Edit Pictures</button>
+        <div class="adm-preset-actions">
+          <button class="admin-upload-btn" type="button" data-action="toggle-preset-edit">Edit Pictures</button>
+          <button class="admin-upload-btn" type="button" data-action="renumber-ladder">Renumber Ladder</button>
+        </div>
         <input type="file" accept="image/*" id="preset-input" hidden />
       </div>
     </div>
@@ -4847,6 +5048,7 @@ function renderAdminPresets() {
       presetEditMode = !presetEditMode
       renderPresetGrid()
     })
+    app.querySelector('[data-action="renumber-ladder"]').addEventListener('click', () => renumberPresetLadder())
   }, { key: 'admin-presets' })
 }
 
@@ -6064,7 +6266,8 @@ let presetAvatarsCache = []
 async function loadPresetAvatars() {
   const grid = app.querySelector('#preset-grid')
   if (!grid) return
-  const { data, error } = await supabase.from('preset_avatars').select('id, path, url').order('created_at', { ascending: false })
+  const { data, error } = await supabase.from('preset_avatars').select('id, path, url, unlock_level, created_at')
+    .order('unlock_level', { ascending: true }).order('created_at', { ascending: true })
   if (error) { grid.innerHTML = `<p class="log-empty">${escapeHtml(error.message)}</p>`; return }
   presetAvatarsCache = data || []
   renderPresetGrid()
@@ -6073,10 +6276,28 @@ async function loadPresetAvatars() {
 function renderPresetGrid() {
   const grid = app.querySelector('#preset-grid')
   if (!grid) return
-  const items = presetAvatarsCache.map(p => `
+  const n = presetAvatarsCache.length
+  const summaryEl = app.querySelector('#preset-ladder-summary')
+  if (summaryEl) {
+    if (!n) {
+      summaryEl.textContent = 'No pictures yet.'
+    } else {
+      const lo = presetAvatarsCache[0].unlock_level || 1
+      const hi = presetAvatarsCache[n - 1].unlock_level || 1
+      const cost = pizzasForLevel(hi)
+      summaryEl.textContent = `${n} picture${n === 1 ? '' : 's'} — unlocking at levels ${lo} to ${hi} (${cost} pizzas to fully complete)`
+    }
+  }
+  const items = presetAvatarsCache.map((p, i) => `
     <div class="adm-preset-item" data-preset-id="${p.id}" data-preset-path="${escapeHtml(p.path)}">
+      <span class="adm-preset-lv">Lv. ${p.unlock_level || 1}</span>
       <img src="${p.url}" alt="" />
       ${presetEditMode ? `<button class="adm-preset-remove" type="button" data-action="remove-preset" aria-label="Remove preset">✕</button>` : ''}
+      ${presetEditMode ? `
+        <div class="adm-preset-move">
+          <button class="adm-preset-move-btn" type="button" data-action="move-up" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button class="adm-preset-move-btn" type="button" data-action="move-down" aria-label="Move down" ${i === n - 1 ? 'disabled' : ''}>↓</button>
+        </div>` : ''}
     </div>
   `).join('')
   grid.innerHTML = items + (presetEditMode ? `<button class="adm-preset-add" type="button" data-action="upload-preset" aria-label="Upload new preset">+</button>` : '')
@@ -6084,8 +6305,48 @@ function renderPresetGrid() {
   grid.querySelectorAll('[data-action="remove-preset"]').forEach(btn => {
     btn.addEventListener('click', () => confirmRemovePreset(btn.closest('.adm-preset-item')))
   })
+  grid.querySelectorAll('[data-action="move-up"]').forEach(btn => {
+    btn.addEventListener('click', () => movePresetAvatar(btn.closest('.adm-preset-item').dataset.presetId, -1))
+  })
+  grid.querySelectorAll('[data-action="move-down"]').forEach(btn => {
+    btn.addEventListener('click', () => movePresetAvatar(btn.closest('.adm-preset-item').dataset.presetId, 1))
+  })
   const toggleBtn = app.querySelector('[data-action="toggle-preset-edit"]')
   if (toggleBtn) toggleBtn.textContent = presetEditMode ? 'Done Editing' : 'Edit Pictures'
+}
+
+// Swaps the unlock_level of the preset at `id` with its neighbour in the
+// given direction (-1 = up/earlier, 1 = down/later), persists both rows,
+// then re-renders from the fresh order.
+async function movePresetAvatar(id, dir) {
+  const i = presetAvatarsCache.findIndex(p => p.id === id)
+  const j = i + dir
+  if (i < 0 || j < 0 || j >= presetAvatarsCache.length) return
+  const a = presetAvatarsCache[i], b = presetAvatarsCache[j]
+  const aLevel = a.unlock_level || 1, bLevel = b.unlock_level || 1
+  const [r1, r2] = await Promise.all([
+    supabase.from('preset_avatars').update({ unlock_level: bLevel }).eq('id', a.id),
+    supabase.from('preset_avatars').update({ unlock_level: aLevel }).eq('id', b.id),
+  ])
+  if (r1.error || r2.error) { toast((r1.error || r2.error).message); return }
+  toast('Order updated')
+  loadPresetAvatars()
+}
+
+// Reassigns unlock_level sequentially (2, 3, 4, ...) in current display
+// order, batches all writes together, and re-renders once. Level 1 is the
+// default silhouette everyone starts with, so the ladder starts at 2.
+async function renumberPresetLadder() {
+  const updates = presetAvatarsCache
+    .map((p, i) => ({ id: p.id, level: i + 2 }))
+    .filter(u => u.level !== (presetAvatarsCache.find(p => p.id === u.id).unlock_level || 1))
+  if (updates.length) {
+    const results = await Promise.all(updates.map(u => supabase.from('preset_avatars').update({ unlock_level: u.level }).eq('id', u.id)))
+    const failed = results.find(r => r.error)
+    if (failed) { toast(failed.error.message); return }
+  }
+  toast('Ladder renumbered')
+  loadPresetAvatars()
 }
 
 async function uploadPresetAvatar(blob) {
@@ -6093,7 +6354,8 @@ async function uploadPresetAvatar(blob) {
   const { error: uploadError } = await supabase.storage.from('avatars').upload(path, blob, { contentType: 'image/jpeg' })
   if (uploadError) { toast(uploadError.message); return }
   const { data } = supabase.storage.from('avatars').getPublicUrl(path)
-  const { error } = await supabase.from('preset_avatars').insert({ path, url: data.publicUrl })
+  const maxLevel = presetAvatarsCache.reduce((m, p) => Math.max(m, p.unlock_level || 1), 1)
+  const { error } = await supabase.from('preset_avatars').insert({ path, url: data.publicUrl, unlock_level: maxLevel + 1 })
   if (error) { toast(error.message); return }
   loadPresetAvatars()
 }
@@ -6122,7 +6384,8 @@ async function removePresetAvatar(id, path) {
   const { error } = await supabase.from('preset_avatars').delete().eq('id', id)
   if (error) { toast(error.message); return }
   await supabase.storage.from('avatars').remove([path])
-  loadPresetAvatars()
+  presetAvatarsCache = presetAvatarsCache.filter(p => p.id !== id)
+  await renumberPresetLadder()
 }
 
 // Coins aren't a stored column - they're earned pizzas minus owned emotes,
