@@ -947,6 +947,12 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
    otherwise crowds it. Scoped with .popup so it beats nothing in the
    settings row, where the bar is last in its block and needs no gap. */
 .popup .lv-bar.wide { margin-bottom:0.875rem; }
+
+/* Level block inside the profile popup. The number is dialled back from the
+   celebration popup's 3.5rem: here it shares the screen with the avatar, the
+   name and two buttons, and at full size the popup overflows a short phone. */
+.profile-lv { margin:0.25rem 0 1.25rem; }
+.lvup-num.compact { font-size:2.25rem; margin:0 0 0.625rem; }
 .lv-guest { font-size:0.6875rem; color: var(--muted); line-height: 1; }
 
 /* ---------- settings profile row level line ---------- */
