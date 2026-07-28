@@ -920,7 +920,7 @@ function statusBarHtml() {
       <div class="who" role="button" tabindex="0" data-action="profile">
         <img class="who-avatar" src="${myAvatar()}" alt="" />
         <div>
-          <div class="greet">${isSignedIn() ? 'Welcome back,' : 'Hello,'}</div>
+          ${isSignedIn() ? '' : '<div class="greet">Hello,</div>'}
           <div class="nm">${escapeHtml(myName())}</div>
           ${isSignedIn() ? (() => {
             const { level, pct } = levelProgress()
