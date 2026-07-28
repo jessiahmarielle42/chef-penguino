@@ -554,6 +554,28 @@ if (import.meta.env.VITE_REVIEW) {
         chefsTab = 'groups'; await openChefsGroup('g1')
         await openGroupInvitePopup('g1', 'Late Night Bakers', ['admin-1', 'u-2', 'u-3'])
       },
+      // Level system (review-only entry points; see app/review/shots.mjs).
+      levelPopup: () => { renderHome(); return openLevelPopup() },
+      levelUpPopup: () => { renderHome(); return openLevelUpPopup(9, [window.__reviewFixtures.presetAvatars.find(p => p.unlock_level === 9)]) },
+      levelUpPopupNoArt: () => { renderHome(); return openLevelUpPopup(9, []) },
+      editPicture: () => { renderSettings(); return openEditPicturePopup() },
+      lockedPreview: () => {
+        renderSettings()
+        const locked = window.__reviewFixtures.presetAvatars.find(p => p.unlock_level === 15)
+        return openLockedPresetPreview(locked.url, locked.unlock_level)
+      },
+      // renderPresetGrid's move-up/down arrows are edit-mode only, gated
+      // behind clicking "Edit Pictures" - drive that same real toggle here
+      // (after waiting for the async preset fetch to populate the grid)
+      // rather than reaching into presetEditMode directly, so this exercises
+      // the actual click path.
+      adminPresetsEdit: async () => {
+        renderAdminPresets()
+        for (let i = 0; i < 50 && !document.querySelector('#preset-grid .adm-preset-item'); i++) {
+          await new Promise(r => setTimeout(r, 20))
+        }
+        document.querySelector('[data-action="toggle-preset-edit"]')?.click()
+      },
     },
   }))
 } else {
