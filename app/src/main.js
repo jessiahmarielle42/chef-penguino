@@ -104,7 +104,29 @@ async function handleSignedIn(user) {
   await migrateLocalDataIfNeeded()
   await flushPendingSessions()
   await refreshProfile()
+  await ensureStarterAvatar()
   subscribeToSocial()
+}
+
+// A chef with no picture yet gets the first rung of the ladder - the level 1
+// preset - rather than the grey silhouette. That picture is the starting look,
+// not a placeholder, so it's written to the profile like any other choice.
+// Level 1 is always unlocked (level_for_pizzas never returns less than 1), so
+// the avatar-unlock trigger accepts it.
+async function ensureStarterAvatar() {
+  if (!currentUser || !currentProfile || currentProfile.avatar_url) return
+  const { data } = await supabase
+    .from('preset_avatars')
+    .select('url, unlock_level')
+    .order('unlock_level', { ascending: true })
+    .limit(1)
+  const starter = data && data[0]
+  if (!starter || (starter.unlock_level || 1) > 1) return
+  const { error } = await supabase
+    .from('profiles')
+    .update({ avatar_url: starter.url })
+    .eq('id', currentUser.id)
+  if (!error) currentProfile.avatar_url = starter.url
 }
 
 // Live push (Supabase Realtime) for incoming Noots and coin gifts, so they
@@ -3568,13 +3590,6 @@ function groupLogByDate(log) {
   return groups
 }
 
-function chefSinceLabel() {
-  if (!currentUser?.created_at) return 'Chef Penguino'
-  const d = new Date(currentUser.created_at)
-  const formatted = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
-  return `Chef since ${formatted}`
-}
-
 function dateLabel(ts) {
   const d = new Date(ts)
   const now = new Date()
@@ -4094,7 +4109,6 @@ function renderSettings(highlightProfile) {
               <span class="gt">${escapeHtml(myName())}</span>
               <button class="icon-btn" type="button" data-action="rename" aria-label="Edit name">${PENCIL_SVG}</button>
             </div>
-            <div class="gs">${chefSinceLabel()}</div>
             ${(() => {
               const { level, next, into, need } = levelProgress()
               return `<div class="profile-level">
@@ -6367,8 +6381,7 @@ function initPresetArrangeDrag(grid) {
   const { signal } = presetArrangeAbort
   const LONG_PRESS_MS = 180
   let dragEl = null
-  let startX = 0, startY = 0
-  let originX = 0, originY = 0
+  let grabOffsetX = 0, grabOffsetY = 0
   let pressTimer = null
   let dragging = false
 
@@ -6377,22 +6390,24 @@ function initPresetArrangeDrag(grid) {
   function updateLvBadges() {
     tiles().forEach((el, i) => {
       const lv = el.querySelector('.adm-preset-lv')
-      if (lv) lv.textContent = `Lv. ${i + 2}`
+      if (lv) lv.textContent = `Lv. ${i + 1}`
     })
   }
 
   function pointForEvent(e) { return { x: e.clientX, y: e.clientY } }
 
+  // Strictly "is the pointer inside this tile", NOT "which tile is nearest".
+  // Nearest-centre always returns something, so the moment the dragged tile
+  // shifted the pointer was instantly judged to be over a different tile,
+  // which reordered again, which shifted it again - the tiles visibly
+  // flickered as that fought itself every pointermove. Requiring a real
+  // overlap gives the drag a dead zone between tiles and it settles.
   function tileUnderPoint(x, y, exclude) {
-    const els = tiles().filter(el => el !== exclude)
-    let best = null, bestDist = Infinity
-    for (const el of els) {
+    return tiles().find(el => {
+      if (el === exclude) return false
       const r = el.getBoundingClientRect()
-      const cx = r.left + r.width / 2, cy = r.top + r.height / 2
-      const d = Math.hypot(cx - x, cy - y)
-      if (d < bestDist) { bestDist = d; best = el }
-    }
-    return best
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
+    }) || null
   }
 
   // Drag state lives at document level rather than being captured on the
@@ -6405,13 +6420,15 @@ function initPresetArrangeDrag(grid) {
     item.addEventListener('pointerdown', (e) => {
       if (e.target.closest('.adm-preset-remove')) return
       const p = pointForEvent(e)
-      startX = p.x; startY = p.y
       clearTimeout(pressTimer)
       pressTimer = setTimeout(() => {
         dragEl = item
         dragging = true
+        // Where inside the tile the finger landed, so the tile can be kept
+        // under that same spot no matter where it ends up in the DOM.
         const r = item.getBoundingClientRect()
-        originX = r.left; originY = r.top
+        grabOffsetX = p.x - r.left
+        grabOffsetY = p.y - r.top
         item.classList.add('is-dragging')
       }, LONG_PRESS_MS)
     })
@@ -6434,8 +6451,16 @@ function initPresetArrangeDrag(grid) {
   document.addEventListener('pointermove', (e) => {
     if (!dragging || !dragEl) return
     const p = pointForEvent(e)
-    const dx = p.x - startX, dy = p.y - startY
-    dragEl.style.transform = `translate(${dx}px, ${dy}px) scale(1.08)`
+    // Measured fresh from the tile's CURRENT layout box every move, with the
+    // transform cleared first. Offsetting from the original grab point instead
+    // was the other half of the flicker: a reorder relocates the tile in the
+    // grid, so the same translate suddenly pointed somewhere else and the tile
+    // leapt away from the finger, which triggered another reorder.
+    dragEl.style.transform = ''
+    const r = dragEl.getBoundingClientRect()
+    const tx = p.x - grabOffsetX - r.left
+    const ty = p.y - grabOffsetY - r.top
+    dragEl.style.transform = `translate(${tx}px, ${ty}px) scale(1.08)`
     autoScrollNearEdge(p.y)
     const target = tileUnderPoint(p.x, p.y, dragEl)
     if (target) {
@@ -6471,7 +6496,9 @@ function initPresetArrangeDrag(grid) {
 // default silhouette everyone starts with, so the ladder starts at 2.
 async function renumberPresetLadder() {
   const updates = presetAvatarsCache
-    .map((p, i) => ({ id: p.id, level: i + 2 }))
+    // Base 1, not 2: the first picture in the ladder IS the starting picture
+    // every chef is given, rather than a separate grey silhouette nobody chose.
+    .map((p, i) => ({ id: p.id, level: i + 1 }))
     .filter(u => u.level !== (presetAvatarsCache.find(p => p.id === u.id).unlock_level || 1))
   if (updates.length) {
     const results = await Promise.all(updates.map(u => supabase.from('preset_avatars').update({ unlock_level: u.level }).eq('id', u.id)))
