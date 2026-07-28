@@ -968,7 +968,10 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   box-shadow: 0 10px 26px -10px rgba(246,198,75,0.6);
   margin:0 auto 0.875rem; display: block;
 }
-.lvup-sub { color: var(--muted); font-size:0.875rem; line-height: 1.5; margin:0 0 1rem; }
+/* Also .popup-scoped: this is a <div> in the level-up popup but a <p> in the
+   progress popup, and as a <p> the base `.popup p` rule would outrank it and
+   silently change its spacing in one place but not the other. */
+.popup .lvup-sub { color: var(--muted); font-size:0.875rem; line-height: 1.5; margin:0 0 1rem; }
 /* One tidy centred row - thumbnail beside its label - rather than letting
    the text wrap underneath a floated image. */
 .lvup-next {
@@ -999,8 +1002,11 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   position: absolute; inset: 0; display: grid; place-items: center;
   background: rgba(10,6,4,0.28); font-size:2.5rem; border-radius: 50%;
 }
-.editpic-req { color: var(--gold-ink); font-weight: 800; font-size:0.9375rem; text-align: center; margin:0 0 0.1875rem; }
-.editpic-req-sub { color: var(--muted); font-weight: 700; font-size:0.8125rem; text-align: center; margin:0 0 1.25rem; }
+/* Scoped with .popup so these beat the base `.popup p` rule (0-1-1), which
+   otherwise wins on specificity and reimposes its own margin and colour -
+   the two lines then read as one loose, same-weight pair. */
+.popup .editpic-req { color: var(--gold-ink); font-weight: 800; font-size:0.9375rem; text-align: center; margin:0 0 0.1875rem; }
+.popup .editpic-req-sub { color: var(--muted); font-weight: 700; font-size:0.8125rem; text-align: center; margin:0 0 1.25rem; }
 
 /* ============================================================
    TIMER / GAMEPLAY / INTRO (preserved)
