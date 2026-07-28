@@ -2111,7 +2111,10 @@ async function openProfilePopup() {
   const editOrGuest = signed
     ? `<button class="btn-edit-profile" type="button" data-action="edit-profile">${PENCIL_SVG}<span style="margin-left:8px">Edit Profile</span></button>
        <button class="btn-danger" type="button" data-action="sign-out" style="margin-top:0.625rem">Sign Out</button>`
-    : `<p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 16px">Sign in to save your progress and customise your profile.</p><div class="lv-guest" style="margin-bottom:16px">Sign in to level up</div>${googleBtn()}`
+    // No "Sign in to level up" line here - the paragraph above already makes
+    // the case for signing in, and the header carries that exact wording under
+    // a guest's name, so repeating it in the same popup was redundant.
+    : `<p style="color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 16px">Sign in to save your progress and customise your profile.</p>${googleBtn()}`
 
   const o = overlay(`
     <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
@@ -4145,6 +4148,15 @@ function renderSettings(highlightProfile) {
       </div>
     </div>
     <div class="group">
+      <p class="glab">Appearance</p>
+      <div class="glist">
+        <div class="grow">
+          <div><div class="gt">Dark mode</div></div>
+          <div class="right"><div class="switch ${state.lightMode ? 'off' : ''}" role="button" tabindex="0" data-action="toggle-theme"></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="group">
       <p class="glab">Focus session</p>
       <div class="glist">
         <div class="grow">
@@ -4154,15 +4166,6 @@ function renderSettings(highlightProfile) {
         <div class="grow" role="button" tabindex="0" data-action="task-types">
           <div><div class="gt">Task types</div><div class="gs">Rename your task categories</div></div>
           <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
-        </div>
-      </div>
-    </div>
-    <div class="group">
-      <p class="glab">Appearance</p>
-      <div class="glist">
-        <div class="grow">
-          <div><div class="gt">Dark mode</div></div>
-          <div class="right"><div class="switch ${state.lightMode ? 'off' : ''}" role="button" tabindex="0" data-action="toggle-theme"></div></div>
         </div>
       </div>
     </div>
