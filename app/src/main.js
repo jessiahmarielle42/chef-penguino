@@ -4998,8 +4998,12 @@ function renderAdminPresets() {
     <div class="section-h" style="margin-top:2px"><h2>Preset Pictures</h2></div>
     <div class="admin-dash">
       <div class="group" style="margin-top:0">
+        <p class="adm-preset-summary" id="preset-ladder-summary">Loading&hellip;</p>
         <div class="adm-preset-grid" id="preset-grid"><p class="log-empty">Loading&hellip;</p></div>
-        <button class="admin-upload-btn" type="button" data-action="toggle-preset-edit">Edit Pictures</button>
+        <div class="adm-preset-actions">
+          <button class="admin-upload-btn" type="button" data-action="toggle-preset-edit">Edit Pictures</button>
+          <button class="admin-upload-btn" type="button" data-action="renumber-ladder">Renumber Ladder</button>
+        </div>
         <input type="file" accept="image/*" id="preset-input" hidden />
       </div>
     </div>
@@ -5016,6 +5020,7 @@ function renderAdminPresets() {
       presetEditMode = !presetEditMode
       renderPresetGrid()
     })
+    app.querySelector('[data-action="renumber-ladder"]').addEventListener('click', () => renumberPresetLadder())
   }, { key: 'admin-presets' })
 }
 
@@ -6233,7 +6238,8 @@ let presetAvatarsCache = []
 async function loadPresetAvatars() {
   const grid = app.querySelector('#preset-grid')
   if (!grid) return
-  const { data, error } = await supabase.from('preset_avatars').select('id, path, url').order('created_at', { ascending: false })
+  const { data, error } = await supabase.from('preset_avatars').select('id, path, url, unlock_level, created_at')
+    .order('unlock_level', { ascending: true }).order('created_at', { ascending: true })
   if (error) { grid.innerHTML = `<p class="log-empty">${escapeHtml(error.message)}</p>`; return }
   presetAvatarsCache = data || []
   renderPresetGrid()
@@ -6242,10 +6248,28 @@ async function loadPresetAvatars() {
 function renderPresetGrid() {
   const grid = app.querySelector('#preset-grid')
   if (!grid) return
-  const items = presetAvatarsCache.map(p => `
+  const n = presetAvatarsCache.length
+  const summaryEl = app.querySelector('#preset-ladder-summary')
+  if (summaryEl) {
+    if (!n) {
+      summaryEl.textContent = 'No pictures yet.'
+    } else {
+      const lo = presetAvatarsCache[0].unlock_level || 1
+      const hi = presetAvatarsCache[n - 1].unlock_level || 1
+      const cost = pizzasForLevel(hi)
+      summaryEl.textContent = `${n} picture${n === 1 ? '' : 's'} — unlocking at levels ${lo} to ${hi} (${cost} pizzas to fully complete)`
+    }
+  }
+  const items = presetAvatarsCache.map((p, i) => `
     <div class="adm-preset-item" data-preset-id="${p.id}" data-preset-path="${escapeHtml(p.path)}">
+      <span class="adm-preset-lv">Lv. ${p.unlock_level || 1}</span>
       <img src="${p.url}" alt="" />
       ${presetEditMode ? `<button class="adm-preset-remove" type="button" data-action="remove-preset" aria-label="Remove preset">✕</button>` : ''}
+      ${presetEditMode ? `
+        <div class="adm-preset-move">
+          <button class="adm-preset-move-btn" type="button" data-action="move-up" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button class="adm-preset-move-btn" type="button" data-action="move-down" aria-label="Move down" ${i === n - 1 ? 'disabled' : ''}>↓</button>
+        </div>` : ''}
     </div>
   `).join('')
   grid.innerHTML = items + (presetEditMode ? `<button class="adm-preset-add" type="button" data-action="upload-preset" aria-label="Upload new preset">+</button>` : '')
@@ -6253,8 +6277,48 @@ function renderPresetGrid() {
   grid.querySelectorAll('[data-action="remove-preset"]').forEach(btn => {
     btn.addEventListener('click', () => confirmRemovePreset(btn.closest('.adm-preset-item')))
   })
+  grid.querySelectorAll('[data-action="move-up"]').forEach(btn => {
+    btn.addEventListener('click', () => movePresetAvatar(btn.closest('.adm-preset-item').dataset.presetId, -1))
+  })
+  grid.querySelectorAll('[data-action="move-down"]').forEach(btn => {
+    btn.addEventListener('click', () => movePresetAvatar(btn.closest('.adm-preset-item').dataset.presetId, 1))
+  })
   const toggleBtn = app.querySelector('[data-action="toggle-preset-edit"]')
   if (toggleBtn) toggleBtn.textContent = presetEditMode ? 'Done Editing' : 'Edit Pictures'
+}
+
+// Swaps the unlock_level of the preset at `id` with its neighbour in the
+// given direction (-1 = up/earlier, 1 = down/later), persists both rows,
+// then re-renders from the fresh order.
+async function movePresetAvatar(id, dir) {
+  const i = presetAvatarsCache.findIndex(p => p.id === id)
+  const j = i + dir
+  if (i < 0 || j < 0 || j >= presetAvatarsCache.length) return
+  const a = presetAvatarsCache[i], b = presetAvatarsCache[j]
+  const aLevel = a.unlock_level || 1, bLevel = b.unlock_level || 1
+  const [r1, r2] = await Promise.all([
+    supabase.from('preset_avatars').update({ unlock_level: bLevel }).eq('id', a.id),
+    supabase.from('preset_avatars').update({ unlock_level: aLevel }).eq('id', b.id),
+  ])
+  if (r1.error || r2.error) { toast((r1.error || r2.error).message); return }
+  toast('Order updated')
+  loadPresetAvatars()
+}
+
+// Reassigns unlock_level sequentially (2, 3, 4, ...) in current display
+// order, batches all writes together, and re-renders once. Level 1 is the
+// default silhouette everyone starts with, so the ladder starts at 2.
+async function renumberPresetLadder() {
+  const updates = presetAvatarsCache
+    .map((p, i) => ({ id: p.id, level: i + 2 }))
+    .filter(u => u.level !== (presetAvatarsCache.find(p => p.id === u.id).unlock_level || 1))
+  if (updates.length) {
+    const results = await Promise.all(updates.map(u => supabase.from('preset_avatars').update({ unlock_level: u.level }).eq('id', u.id)))
+    const failed = results.find(r => r.error)
+    if (failed) { toast(failed.error.message); return }
+  }
+  toast('Ladder renumbered')
+  loadPresetAvatars()
 }
 
 async function uploadPresetAvatar(blob) {
@@ -6262,7 +6326,8 @@ async function uploadPresetAvatar(blob) {
   const { error: uploadError } = await supabase.storage.from('avatars').upload(path, blob, { contentType: 'image/jpeg' })
   if (uploadError) { toast(uploadError.message); return }
   const { data } = supabase.storage.from('avatars').getPublicUrl(path)
-  const { error } = await supabase.from('preset_avatars').insert({ path, url: data.publicUrl })
+  const maxLevel = presetAvatarsCache.reduce((m, p) => Math.max(m, p.unlock_level || 1), 1)
+  const { error } = await supabase.from('preset_avatars').insert({ path, url: data.publicUrl, unlock_level: maxLevel + 1 })
   if (error) { toast(error.message); return }
   loadPresetAvatars()
 }
@@ -6291,7 +6356,8 @@ async function removePresetAvatar(id, path) {
   const { error } = await supabase.from('preset_avatars').delete().eq('id', id)
   if (error) { toast(error.message); return }
   await supabase.storage.from('avatars').remove([path])
-  loadPresetAvatars()
+  presetAvatarsCache = presetAvatarsCache.filter(p => p.id !== id)
+  await renumberPresetLadder()
 }
 
 // Coins aren't a stored column - they're earned pizzas minus owned emotes,
