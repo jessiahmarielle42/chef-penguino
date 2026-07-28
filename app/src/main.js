@@ -1996,8 +1996,11 @@ async function openLevelPopup() {
     .gt('unlock_level', level)
     .order('unlock_level', { ascending: true })
     .limit(1)
-  const teaser = (data && data[0])
-    ? `<div class="lvup-next"><img class="lvup-next-art" src="${data[0].url}" alt="" /><span>New picture at <b>Level ${data[0].unlock_level}</b></span></div>`
+  // The next picture waiting to be unlocked, or null once they're all earned -
+  // drives both the teaser row and whether there's anything to preview.
+  const next2 = (data && data[0]) || null
+  const teaser = next2
+    ? `<div class="lvup-next"><img class="lvup-next-art" src="${next2.url}" alt="" /><span>New picture at <b>Level ${next2.unlock_level}</b></span></div>`
     : `<div class="lvup-next"><span>You've unlocked every picture</span></div>`
   const o = overlay(`
     <div class="lvup-kicker">Level</div>
@@ -2005,9 +2008,17 @@ async function openLevelPopup() {
     <div class="lv-bar wide"><span class="lv-bar-fill" style="width:${need ? Math.min(100, Math.max(0, (into / need) * 100)) : 0}%"></span></div>
     <p class="lvup-sub">${formatScore(into)} / ${need} pizzas to Level ${next}</p>
     ${teaser}
-    <button type="button" data-action="ok">Got it</button>
+    <div class="home-btn-col">
+      ${next2 ? '<button type="button" class="btn-secondary" data-action="preview">Preview</button>' : ''}
+      <button type="button" data-action="ok">Got it</button>
+    </div>
   `, { popupClass: 'popup-levelup' })
   o.querySelector('[data-action="ok"]').addEventListener('click', () => o.remove())
+  // Shows the reward full-size rather than as the 2rem teaser thumbnail -
+  // the point is to make the next unlock feel worth chasing.
+  o.querySelector('[data-action="preview"]')?.addEventListener('click', () => {
+    openLockedPresetPreview(next2.url, next2.unlock_level)
+  })
 }
 
 // =================================================================
