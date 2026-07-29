@@ -466,11 +466,27 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .admin-dash .group > .glab { margin:0 0 0.75rem; }
 .glist { background: var(--card); border: 1px solid var(--line); border-radius:1rem; overflow: hidden; }
 .grow { display: flex; align-items: center; gap:0.75rem; padding:0.875rem 0.9375rem; box-sizing: border-box; }
-.grow:not(#profile-row) { min-height:3.5rem; }
+/* One height for every list row. 3.5rem only cleared a title on its own, so a
+   row with a subtitle ran ~4.2rem and the credits row, whose subtitle wrapped,
+   ran ~5.2rem - three different heights down one list. This clears a title plus
+   a one-line subtitle, and .gs below is kept to a single line so nothing can
+   push past it. */
+.grow:not(#profile-row) { min-height:4.25rem; }
 .grow + .grow { border-top: 1px solid var(--line); }
 .grow .gt { font-weight: 700; color: var(--cream); font-size:0.9375rem; }
-.grow .gs { font-size:0.75rem; color: var(--muted-2); margin-top:0.125rem; }
-.grow .right { margin-left: auto; display: flex; align-items: center; gap:0.625rem; }
+/* Single line + ellipsis so a long subtitle can never wrap and make its row
+   taller than its neighbours. Full text still shows at normal widths; only a
+   very narrow screen truncates. .account-guest .gs is a paragraph, not a row
+   subtitle, so it opts back out below. */
+.grow .gs {
+  font-size:0.75rem; color: var(--muted-2); margin-top:0.125rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.grow .account-guest .gs, .account-guest .gs { white-space: normal; overflow: visible; }
+/* Without min-width:0 a flex item refuses to shrink below its content, so the
+   ellipsis above would never trigger - the row would just overflow instead. */
+.grow > div:not(.right) { min-width: 0; }
+.grow .right { margin-left: auto; display: flex; align-items: center; gap:0.625rem; flex: none; }
 .grow img.av { width:2.75rem; height:2.75rem; border-radius: 50%; object-fit: cover; border: 2px solid var(--line); }
 .linkish { color: var(--fire); font-weight: 800; font-size:0.8125rem; }
 .grow[role="button"] { cursor: pointer; }

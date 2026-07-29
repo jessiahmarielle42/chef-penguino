@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.1.3.0'
+const APP_VERSION = 'v2.2.0.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -219,14 +219,80 @@ function displayPizzas() {
   return currentProfile ? currentProfile.pizzas : state.pizzas
 }
 
-// Date of the upcoming Monday (when the weekly leaderboard resets), e.g.
-// "27 Jul". If today is Monday, the current week resets next Monday (7 days).
+// ---------------------------------------------------------------
+// Singapore-time day/week boundaries.
+//
+// Chef Penguino's users are all in Singapore, so "today" and "this week"
+// must roll over at midnight Asia/Singapore, not at midnight in whatever
+// timezone the viewer's (or admin's) device happens to be set to. Singapore
+// is a FIXED UTC+8 offset with no daylight saving, ever - so a plain +8h
+// shift is correct and much simpler/safer than Intl timezone lookups.
+//
+// Technique: shift the UTC instant by +8h so its *UTC* getters read as SGT
+// wall-clock time, do the flooring/date maths against those UTC getters
+// (which never touch the device's local timezone), then shift back by -8h
+// to recover the real UTC instant. Every helper below returns a genuine
+// Date (a UTC instant), safe to compare/store via .toISOString() against
+// sessions.completed_at (timestamptz, stored in UTC).
+//
+// Worked example: 2026-07-29T15:30:00Z -> +8h -> 2026-07-29T23:30 "SGT
+// wall-clock" (still the 29th), so sgtStartOfDay(...) floors to
+// 2026-07-29T00:00 SGT -> -8h -> 2026-07-28T16:00:00Z. (23:30 SGT on the
+// 29th really is still the 29th in Singapore, so its start-of-day is
+// midnight SGT on the 29th, i.e. 16:00 UTC the day before.)
+const SGT_OFFSET_MS = 8 * 60 * 60 * 1000
+
+// UTC instant of 00:00 Singapore time on the SGT calendar day containing
+// the instant `d`.
+function sgtStartOfDay(d = new Date()) {
+  const shifted = new Date(d.getTime() + SGT_OFFSET_MS)
+  const flooredUTC = Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate())
+  return new Date(flooredUTC - SGT_OFFSET_MS)
+}
+
+// UTC instant of 00:00 Singapore time on the Monday of the SGT week
+// containing the instant `d`.
+function sgtStartOfWeek(d = new Date()) {
+  const dayStart = sgtStartOfDay(d)
+  const shifted = new Date(dayStart.getTime() + SGT_OFFSET_MS) // back to SGT wall-clock to read the weekday
+  const dow = shifted.getUTCDay() // 0=Sun..6=Sat
+  const mondayOffset = (dow + 6) % 7 // 0=Mon..6=Sun
+  return new Date(dayStart.getTime() - mondayOffset * 86400000)
+}
+
+// { y, mo, day } of the SGT calendar date that the instant `d` falls on -
+// the building block for admin-calendar day keys / anchoring "today" in
+// Singapore time instead of the device's local date.
+function sgtDateParts(d = new Date()) {
+  const shifted = new Date(d.getTime() + SGT_OFFSET_MS)
+  return { y: shifted.getUTCFullYear(), mo: shifted.getUTCMonth(), day: shifted.getUTCDate() }
+}
+
+// UTC instant of 00:00 Singapore time for an explicit SGT calendar date (y,
+// 0-based mo, d) - used to build query-range boundaries (e.g. "1st of this
+// month, SGT" .. "1st of next month, SGT") directly from calendar numbers,
+// without ever routing through a device-local Date first.
+function sgtDateFromYMD(y, mo, d) {
+  return new Date(Date.UTC(y, mo, d) - SGT_OFFSET_MS)
+}
+
+// Start of the current SGT week (Monday 00:00 Singapore time). The weekly
+// leaderboards/scoreboards sum only sessions completed since this instant,
+// so they naturally "reset" every Monday (Singapore time) without any
+// stored state or cron - the window just moves forward and last week's
+// pizzas fall off.
+function startOfThisWeek() {
+  return sgtStartOfWeek()
+}
+
+// Date of the upcoming Monday (when the weekly leaderboard resets, in
+// Singapore time), e.g. "27 Jul". If today is Monday (SGT), the current
+// week resets next Monday (7 days out) - adding 7 days to *this* SGT week's
+// Monday always lands on the correct upcoming reset Monday either way.
 function nextMondayLabel() {
-  const now = new Date()
-  let add = (8 - now.getDay()) % 7
-  if (add === 0) add = 7
-  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + add)
-  return `${d.getDate()} ${CAL_MONTHS_SHORT[d.getMonth()]}`
+  const next = new Date(sgtStartOfWeek().getTime() + 7 * 86400000)
+  const { mo, day } = sgtDateParts(next)
+  return `${day} ${CAL_MONTHS_SHORT[mo]}`
 }
 
 const DURATIONS = [
@@ -2333,17 +2399,8 @@ function hideChefsPill() {
   bar.innerHTML = ''
 }
 
-// Start of the current week (Monday 00:00, in the viewer's local time). The
-// leaderboard sums only sessions completed since this instant, so it naturally
-// "resets" every Monday without any stored state or cron - the window just
-// moves forward and last week's pizzas fall off.
-function startOfThisWeek() {
-  const d = new Date()
-  d.setHours(0, 0, 0, 0)
-  const mondayOffset = (d.getDay() + 6) % 7 // getDay: 0=Sun..6=Sat -> 0=Mon..6=Sun
-  d.setDate(d.getDate() - mondayOffset)
-  return d
-}
+// startOfThisWeek() (Monday 00:00 Singapore time) is defined earlier, near
+// nextMondayLabel() / the other sgt* helpers, so both live together.
 
 // ---------------- Friends tab ----------------
 async function loadChefsFriendsTab() {
@@ -5020,10 +5077,12 @@ function playLoreVideo(entry) {
 // =================================================================
 //  Admin Dashboard (admin-only; see migration_admin.sql)
 // =================================================================
-// Start of the admin's local "today" - used by the KPI strip (new chefs,
-// pizzas baked today) and as the default anchor for the Pizzas Baked
-// calendar's Day view.
-function admStartOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()) }
+// Start of "today" in Singapore time - used by the KPI strip's "pizzas
+// baked today" figure and the new Today's Leaderboard. `d` must be a real
+// instant (e.g. `new Date()`), not a device-local calendar Date - this is
+// just sgtStartOfDay(), kept under its old name since it's an established
+// call site.
+function admStartOfDay(d) { return sgtStartOfDay(d) }
 
 function renderAdminDashboard() {
   if (!isAdmin()) { renderSettings(); return }
@@ -5043,10 +5102,10 @@ function renderAdminDashboard() {
           <div class="adm-kpi-val" id="kpi-chefs-val">–</div>
           <div class="adm-kpi-lab">Active chefs this week<span class="adm-kpi-sub" id="kpi-chefs-sub" hidden></span></div>
         </div>
-        <div class="adm-kpi accent" role="button" tabindex="0" data-action="open-pizzas-cal">
+        <div class="adm-kpi accent" role="button" tabindex="0" data-action="open-pizzas-leaderboard">
           <span class="adm-kpi-ic">🍕</span>
           <div class="adm-kpi-val" id="kpi-pizzas-val">–</div>
-          <div class="adm-kpi-lab">Pizzas baked today<span class="adm-kpi-drill">stats ›</span></div>
+          <div class="adm-kpi-lab">Pizzas baked today<span class="adm-kpi-drill" role="button" tabindex="0" data-action="open-pizzas-cal-detail">stats ›</span></div>
         </div>
       </div>
     </div>
@@ -5099,6 +5158,14 @@ function renderAdminDashboard() {
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
     app.querySelector('[data-action="open-pizzas-cal"]').addEventListener('click', renderAdminPizzasCal)
+    app.querySelector('[data-action="open-pizzas-leaderboard"]').addEventListener('click', renderAdminTodayLeaderboard)
+    // Inner "stats ›" affordance inside the KPI tile: keeps the pizzas
+    // calendar reachable from the tile (as it was before) without it eating
+    // the card's own tap target, which now opens the new leaderboard.
+    app.querySelector('[data-action="open-pizzas-cal-detail"]').addEventListener('click', (e) => {
+      e.stopPropagation()
+      renderAdminPizzasCal()
+    })
     app.querySelector('[data-action="open-chefs"]').addEventListener('click', renderAdminChefs)
     app.querySelector('[data-action="open-bug-reports"]').addEventListener('click', renderBugReports)
     app.querySelector('[data-action="open-moderation"]').addEventListener('click', () => renderModerationCenter())
@@ -5406,20 +5473,36 @@ async function admCalFetchDayTotals(start, endExclusive) {
   }
   const map = new Map()
   ;(data || []).forEach(r => {
-    const k = calKeyFromTs(new Date(r.completed_at).getTime())
+    // Bucket by the SGT calendar day the bake fell on, not the device's
+    // local day - two admins in different timezones must see the same
+    // per-day totals.
+    const { y, mo, day } = sgtDateParts(new Date(r.completed_at))
+    const k = calKey(y, mo, day)
     map.set(k, (map.get(k) || 0) + Number(r.pizzas))
   })
   return map
 }
 
-function admCalMonthRange() { return { start: new Date(admCalY, admCalMo, 1), end: new Date(admCalY, admCalMo + 1, 1) } }
+// Query-range boundaries below are built straight from calendar y/m/d
+// numbers via sgtDateFromYMD(), rather than from device-local Date
+// instants, so the [start, endExclusive) window always lines up with real
+// Singapore-time day boundaries regardless of the admin's device timezone.
+function admCalMonthRange() { return { start: sgtDateFromYMD(admCalY, admCalMo, 1), end: sgtDateFromYMD(admCalY, admCalMo + 1, 1) } }
 function admCalWeekRange() {
   const days = calWeekDays(admCalWeekKey)
-  return { start: admStartOfDay(days[0]), end: new Date(days[6].getFullYear(), days[6].getMonth(), days[6].getDate() + 1), days }
+  const first = days[0], last = days[6]
+  return {
+    start: sgtDateFromYMD(first.getFullYear(), first.getMonth(), first.getDate()),
+    end: sgtDateFromYMD(last.getFullYear(), last.getMonth(), last.getDate() + 1),
+    days,
+  }
 }
 function admCalDayRange() {
-  const start = calDateFromKey(admCalDayKey)
-  return { start, end: new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1) }
+  const dt = calDateFromKey(admCalDayKey)
+  return {
+    start: sgtDateFromYMD(dt.getFullYear(), dt.getMonth(), dt.getDate()),
+    end: sgtDateFromYMD(dt.getFullYear(), dt.getMonth(), dt.getDate() + 1),
+  }
 }
 
 // Only the date number - never a per-day count in the cell itself (that
@@ -5506,11 +5589,13 @@ function admCalTotalLineHtml(periodTotal, dayMap) {
 
 async function renderAdminPizzasCal() {
   if (!isAdmin()) { renderSettings(); return }
-  const today = new Date()
-  if (admCalY === null) { admCalY = today.getFullYear(); admCalMo = today.getMonth() }
-  if (admCalWeekKey === null) admCalWeekKey = calKeyFromDate(today)
-  if (admCalDayKey === null) admCalDayKey = calKeyFromDate(today)
-  const todayKey = calKeyFromDate(today)
+  // "Today" anchors on the SGT calendar date, not the device's local date -
+  // see the sgt* helpers near nextMondayLabel().
+  const { y: todayY, mo: todayMo, day: todayDay } = sgtDateParts(new Date())
+  const todayKey = calKey(todayY, todayMo, todayDay)
+  if (admCalY === null) { admCalY = todayY; admCalMo = todayMo }
+  if (admCalWeekKey === null) admCalWeekKey = todayKey
+  if (admCalDayKey === null) admCalDayKey = todayKey
 
   const range = admCalView === 'month' ? admCalMonthRange() : admCalView === 'week' ? admCalWeekRange() : admCalDayRange()
   const dayMap = await admCalFetchDayTotals(range.start, range.end)
@@ -5603,6 +5688,86 @@ function admWireCal() {
       renderAdminPizzasCal()
     })
   })
+}
+
+// =================================================================
+//  Admin: Today's Leaderboard (opened from the "Pizzas baked today" tile)
+// =================================================================
+// Every chef, ranked by pizzas baked today (SGT day) - modeled closely on
+// the Chefs-page Weekly Leaderboard (chefsMemberRowHtml/.frow et al) so it
+// feels native, but scoped to all chefs rather than just friends/a group,
+// and with a name search since the full roster can be long.
+let admLbCache = [] // [{ id, display_name, avatar_url, pizzasToday }]
+
+function renderAdminTodayLeaderboard() {
+  if (!isAdmin()) { renderSettings(); return }
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
+    <div class="section-h" style="margin-top:2px"><h2>Today's Leaderboard</h2><span class="meta">🍕 baked today · all chefs</span></div>
+    <div class="admin-dash">
+      <div class="group" style="margin-top:0">
+        <div class="adm-search-card">
+          <span class="adm-search-ic" aria-hidden="true">🔍</span>
+          <input id="adm-lb-search" type="text" placeholder="Search chefs" autocomplete="off" />
+        </div>
+        <div id="adm-lb-list"><p class="log-empty">Loading&hellip;</p></div>
+      </div>
+    </div>
+    <div style="height:8px"></div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
+    app.querySelector('#adm-lb-search').addEventListener('input', (e) => renderAdminTodayLeaderboardList(e.target.value))
+    loadAdminTodayLeaderboard()
+  }, { key: 'admin-today-leaderboard' })
+}
+
+async function loadAdminTodayLeaderboard() {
+  const listEl = app.querySelector('#adm-lb-list')
+  if (listEl) listEl.innerHTML = '<p class="log-empty">Loading&hellip;</p>'
+  const start = sgtStartOfDay(new Date())
+  const [profRes, sessRes] = await Promise.all([
+    supabase.from('profiles').select('id, display_name, avatar_url').order('display_name', { ascending: true }).limit(1000),
+    // Needs "admin can view all sessions" (see migration_admin_sessions.sql) -
+    // until that's run, RLS quietly limits this to the admin's own (+
+    // friends') sessions, so totals under-count rather than erroring.
+    supabase.from('sessions').select('user_id, pizzas').gte('completed_at', start.toISOString()),
+  ])
+  if (profRes.error) {
+    if (listEl) listEl.innerHTML = `<p class="log-empty">${escapeHtml(profRes.error.message)}</p>`
+    return
+  }
+  const todayByUser = new Map()
+  ;(sessRes.data || []).forEach(r => todayByUser.set(r.user_id, (todayByUser.get(r.user_id) || 0) + Number(r.pizzas)))
+  admLbCache = (profRes.data || []).map(p => ({ ...p, pizzasToday: todayByUser.get(p.id) || 0 }))
+  renderAdminTodayLeaderboardList(app.querySelector('#adm-lb-search')?.value || '')
+}
+
+function renderAdminTodayLeaderboardList(filter) {
+  const listEl = app.querySelector('#adm-lb-list')
+  if (!listEl) return
+  const q = (filter || '').trim().toLowerCase()
+  const list = q ? admLbCache.filter(p => (p.display_name || '').toLowerCase().includes(q)) : admLbCache
+  if (!admLbCache.length) { listEl.innerHTML = '<p class="log-empty">No chefs yet.</p>'; return }
+  if (!list.length) { listEl.innerHTML = '<p class="log-empty">No chefs match that search.</p>'; return }
+  // Non-zero bakers first (ranked highest-to-lowest), then everyone else
+  // alphabetically - so a 0-pizza search hit is still findable, but the
+  // ranked list up top isn't diluted with a wall of zeroes.
+  const ranked = [...list].sort((a, b) => (b.pizzasToday - a.pizzasToday) || (a.display_name || '').localeCompare(b.display_name || ''))
+  listEl.innerHTML = ranked.map((p, i) => adminTodayLeaderboardRowHtml(p, i)).join('')
+}
+
+function adminTodayLeaderboardRowHtml(p, i) {
+  const rank = (p.pizzasToday > 0 && i < 3) ? `<div class="medal">${['🥇', '🥈', '🥉'][i]}</div>` : `<div class="rank">${i + 1}</div>`
+  return `
+    <div class="frow" style="cursor:default">
+      ${rank}
+      <img src="${p.avatar_url || DEFAULT_AVATAR}" alt="" />
+      <div class="finfo">
+        <div class="chefs-fn-row"><span class="fn">${escapeHtml(chefName(p.display_name))}</span></div>
+        <div class="chefs-meta-row"><span class="chefs-score">🍕 ${formatScore(p.pizzasToday)}</span></div>
+      </div>
+    </div>`
 }
 
 // The dashboard's one-line "Reports and Blocks" summary AND the Moderation
