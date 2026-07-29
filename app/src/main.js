@@ -105,6 +105,7 @@ async function handleSignedIn(user) {
   await flushPendingSessions()
   await refreshProfile()
   await ensureStarterAvatar()
+  await ensureAvatarWithinLevel()
   subscribeToSocial()
 }
 
@@ -127,6 +128,31 @@ async function ensureStarterAvatar() {
     .update({ avatar_url: starter.url })
     .eq('id', currentUser.id)
   if (!error) currentProfile.avatar_url = starter.url
+}
+
+// Moves a chef out of a picture that's above their level and into the best one
+// they've actually earned. Reachable whenever a picture's unlock_level is
+// raised after someone equipped it - the DB trigger only validates avatar_url
+// on change, so an already-equipped picture is never revoked server-side.
+// Without this the picker showed one more unlocked picture than was earned.
+async function ensureAvatarWithinLevel() {
+  if (!currentUser || !currentProfile || !currentProfile.avatar_url) return
+  const level = myLevel()
+  if (level == null) return
+  const { data } = await supabase.from('preset_avatars').select('url, unlock_level')
+  if (!data || !data.length) return
+  const mine = data.find(p => p.url === currentProfile.avatar_url)
+  // Not a preset (custom upload / legacy value), or already within level.
+  if (!mine || (mine.unlock_level || 1) <= level) return
+  const best = data
+    .filter(p => (p.unlock_level || 1) <= level)
+    .sort((a, b) => (b.unlock_level || 1) - (a.unlock_level || 1))[0]
+  if (!best) return
+  const { error } = await supabase
+    .from('profiles')
+    .update({ avatar_url: best.url })
+    .eq('id', currentUser.id)
+  if (!error) currentProfile.avatar_url = best.url
 }
 
 // Live push (Supabase Realtime) for incoming Noots and coin gifts, so they
@@ -3908,20 +3934,24 @@ function openEditPicturePopup() {
 async function loadEditPicPresets(editPopupEl) {
   const grid = app.querySelector('#editpic-presets')
   if (!grid) return
-  const { data, error } = await supabase.from('preset_avatars').select('id, url, unlock_level').order('created_at', { ascending: false })
+  // Ordered by the ladder the admin arranged, not upload order.
+  const { data, error } = await supabase.from('preset_avatars').select('id, url, unlock_level').order('unlock_level', { ascending: true })
   if (error) { grid.innerHTML = `<p class="editpic-empty">${escapeHtml(error.message)}</p>`; return }
   if (!data || !data.length) { grid.innerHTML = '<p class="editpic-empty">No presets available yet.</p>'; return }
   const current = myAvatar()
   const level = myLevel() // null for guests; not reachable here but guarded anyway
-  // A preset already equipped is always shown as selected/unlocked-looking
-  // even if it's above the user's current level (grandfathering) - never
-  // strip a picture the server already has equipped.
-  const isLocked = (p) => p.url !== current && (level == null ? (p.unlock_level || 1) > 1 : (p.unlock_level || 1) > level)
+  // No grandfathering exception: a picture above your level reads as locked
+  // even while you're wearing it. Exempting the equipped one meant a chef who
+  // ended up in an above-level picture saw one more unlocked than they'd
+  // actually earned. ensureAvatarWithinLevel() moves anyone in that position
+  // back down, so this shouldn't be reachable - it's the honest display either way.
+  const isLocked = (p) => (level == null ? (p.unlock_level || 1) > 1 : (p.unlock_level || 1) > level)
+  // Unlocked first, then locked - each group in ladder order, so the grid
+  // reads level 1 upward and the next picture to earn is the first locked one.
   const sorted = [...data].sort((a, b) => {
     const aLocked = isLocked(a), bLocked = isLocked(b)
     if (aLocked !== bLocked) return aLocked ? 1 : -1
-    if (aLocked) return (a.unlock_level || 1) - (b.unlock_level || 1)
-    return 0
+    return (a.unlock_level || 1) - (b.unlock_level || 1)
   })
   grid.innerHTML = sorted.map(p => {
     const locked = isLocked(p)
