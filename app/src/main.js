@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.2.2.0'
+const APP_VERSION = 'v2.3.0.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -1453,10 +1453,18 @@ const CAL_HPX_REM = 2.875 // week-view hour row height (46px at the app's 390px 
 function calPad2(n) { return String(n).padStart(2, '0') }
 function calKey(y, mo, d) { return `${y}-${calPad2(mo + 1)}-${calPad2(d)}` }
 function calKeyFromDate(dt) { return calKey(dt.getFullYear(), dt.getMonth(), dt.getDate()) }
-function calKeyFromTs(ts) { return calKeyFromDate(new Date(ts)) }
+// Bucket by the SGT calendar day the session fell on, not the device's local
+// day, so a chef's own history agrees with the admin totals (which already
+// bucket the same way - see admCalFetchDayTotals). calKey/calDateFromKey/
+// calWeekDays themselves stay device-timezone-agnostic pure calendar-number
+// arithmetic (like the admin calendar's identical helpers) - only the
+// timestamp -> calendar-day resolution needs the SGT conversion.
+function calKeyFromTs(ts) { const { y, mo, day } = sgtDateParts(new Date(ts)); return calKey(y, mo, day) }
 function calDateFromKey(key) { const [y, mo, d] = key.split('-').map(Number); return new Date(y, mo - 1, d) }
 function calOrdinal(n) { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]) }
-function calFmtTime(ts) { return new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) }
+// Pinned to Singapore time for the same reason the day buckets are: a session
+// listed under an SGT day should show the SGT clock time it happened at.
+function calFmtTime(ts) { return new Date(ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Singapore' }) }
 function calFmtDur(mn) { return formatDuration(mn) }
 // Root font-size in px, so the week view's ~6am auto-scroll lands correctly
 // under the app's viewport-scaled rem sizing (html{font-size:calc(...)}).
@@ -1575,10 +1583,14 @@ function calIntensity(pz) {
 
 async function renderHistory() {
   afterLogChange = renderHistory
-  const today = new Date()
-  if (calY === null) { calY = today.getFullYear(); calMo = today.getMonth() }
-  if (calSelKey === null) calSelKey = calKeyFromDate(today)
-  const todayKey = calKeyFromDate(today)
+  // "Today" anchors on the SGT calendar date, not the device's local date -
+  // see the sgt* helpers near nextMondayLabel() - so a chef's own history
+  // agrees with the admin dashboard's totals regardless of the chef's device
+  // timezone.
+  const { y: todayY, mo: todayMo, day: todayDay } = sgtDateParts(new Date())
+  const todayKey = calKey(todayY, todayMo, todayDay)
+  if (calY === null) { calY = todayY; calMo = todayMo }
+  if (calSelKey === null) calSelKey = todayKey
 
   const log = await fetchLog(currentUser?.id)
   const dayMap = calGroupByDay(log)
@@ -1668,8 +1680,8 @@ function calWireHistory(dayMap, todayKey) {
 
   app.querySelector('[data-action="cal-back"]').addEventListener('click', renderHome)
   app.querySelector('[data-action="cal-today"]').addEventListener('click', () => {
-    const today = new Date()
-    calY = today.getFullYear(); calMo = today.getMonth(); calSelKey = calKeyFromDate(today)
+    const { y, mo, day } = sgtDateParts(new Date())
+    calY = y; calMo = mo; calSelKey = calKey(y, mo, day)
     renderHistory()
   })
   app.querySelectorAll('.cal-seg button').forEach(b => {
@@ -1865,8 +1877,11 @@ function calRenderWeekBody(dayMap, todayKey) {
     const arr = dayMap.get(key) || []
     let blocks = ''
     arr.forEach(e => {
-      const d = new Date(e.completedAt)
-      const start = d.getHours() + d.getMinutes() / 60
+      // SGT hours, not the device's: the day columns bucket by SGT, so reading
+      // the clock locally would place a session in the right column at the
+      // wrong height for anyone whose phone isn't on Singapore time.
+      const d = new Date(new Date(e.completedAt).getTime() + SGT_OFFSET_MS)
+      const start = d.getUTCHours() + d.getUTCMinutes() / 60
       const top = start * CAL_HPX_REM
       const ht = Math.max((e.minutes / 60) * CAL_HPX_REM, 1.375)
       const low = e.pizzas < 3 ? ' cal-low' : ''
@@ -4615,7 +4630,7 @@ function ensureBugFab() {
     bugFabEl = document.createElement('button')
     bugFabEl.id = 'bug-fab'
     bugFabEl.type = 'button'
-    bugFabEl.setAttribute('aria-label', 'Report a bug')
+    bugFabEl.setAttribute('aria-label', 'Report a bug or suggestion')
     bugFabEl.textContent = '!'
     bugFabEl.addEventListener('click', openBugReport)
     document.body.appendChild(bugFabEl)
@@ -4648,11 +4663,11 @@ async function openBugReport() {
 
   const o = overlay(`
     <button class="popup-close" data-action="close" aria-label="Close">✕</button>
-    <h3>Report Bugs</h3>
+    <h3>Report Bugs/Suggestions</h3>
     <div class="bug-shot" id="bug-shot"><div class="bug-shot-badge">📷</div></div>
     <div class="bug-shot-cap">${shotCanvas ? 'Screenshot of this screen attached' : 'Screenshot unavailable — describe what you saw'}</div>
     <label class="field-label">Description</label>
-    <textarea class="rename-input report-details bug-field-gap" id="bug-desc" maxlength="300" placeholder="What went wrong? (min 10 characters)"></textarea>
+    <textarea class="rename-input report-details bug-field-gap" id="bug-desc" maxlength="300" placeholder="What went wrong, or what would you like to see? (min 10 characters)"></textarea>
     <div class="home-btn-col">
       <button type="button" id="bug-submit-btn" disabled>Submit</button>
       <button type="button" class="btn-secondary" data-action="close">Cancel</button>
@@ -5086,11 +5101,15 @@ function playLoreVideo(entry) {
 // =================================================================
 //  Admin Dashboard (admin-only; see migration_admin.sql)
 // =================================================================
-// Start of "today" in Singapore time - used by the KPI strip's "pizzas
-// baked today" figure and the new Today's Leaderboard. `d` must be a real
-// instant (e.g. `new Date()`), not a device-local calendar Date - this is
-// just sgtStartOfDay(), kept under its old name since it's an established
-// call site.
+// Start of "today" in Singapore time - used ONLY by the KPI strip's "pizzas
+// baked today" figure. `d` must be a real instant (e.g. `new Date()`), not a
+// device-local calendar Date - this is just sgtStartOfDay(), kept under its
+// old name since it's an established call site.
+//
+// NOTE (deliberate mismatch): the KPI tile stays a TODAY number, but the
+// leaderboard it opens (renderAdminWeeklyLeaderboard) is scoped to the
+// current SGT week via sgtStartOfWeek(), matching the Chefs-page Weekly
+// Leaderboard. Don't "fix" that difference - it's intentional.
 function admStartOfDay(d) { return sgtStartOfDay(d) }
 
 function renderAdminDashboard() {
@@ -5167,7 +5186,7 @@ function renderAdminDashboard() {
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
     app.querySelector('[data-action="open-pizzas-cal"]').addEventListener('click', renderAdminPizzasCal)
-    app.querySelector('[data-action="open-pizzas-leaderboard"]').addEventListener('click', renderAdminTodayLeaderboard)
+    app.querySelector('[data-action="open-pizzas-leaderboard"]').addEventListener('click', renderAdminWeeklyLeaderboard)
     // Inner "stats ›" affordance inside the KPI tile: keeps the pizzas
     // calendar reachable from the tile (as it was before) without it eating
     // the card's own tap target, which now opens the new leaderboard.
@@ -5700,19 +5719,24 @@ function admWireCal() {
 }
 
 // =================================================================
-//  Admin: Today's Leaderboard (opened from the "Pizzas baked today" tile)
+//  Admin: Weekly Leaderboard (opened from the "Pizzas baked today" tile)
 // =================================================================
-// Every chef, ranked by pizzas baked today (SGT day) - modeled closely on
-// the Chefs-page Weekly Leaderboard (chefsMemberRowHtml/.frow et al) so it
-// feels native, but scoped to all chefs rather than just friends/a group,
-// and with a name search since the full roster can be long.
-let admLbCache = [] // [{ id, display_name, avatar_url, pizzasToday }]
+// Every chef, ranked by pizzas baked THIS SGT WEEK - modeled closely on the
+// Chefs-page Weekly Leaderboard (chefsMemberRowHtml/.frow et al) so it feels
+// native, but scoped to all chefs rather than just friends/a group, and with
+// a name search since the full roster can be long.
+//
+// Deliberate mismatch: the KPI tile it's opened from still shows "Pizzas
+// baked today" (a real today number, see admStartOfDay/loadAdminDashboardStats)
+// - only this leaderboard's own window is weekly. Don't "fix" that gap; the
+// heading/subtitle below exist precisely so admins aren't confused by it.
+let admLbCache = [] // [{ id, display_name, avatar_url, pizzasWeek }]
 
-function renderAdminTodayLeaderboard() {
+function renderAdminWeeklyLeaderboard() {
   if (!isAdmin()) { renderSettings(); return }
   const content = `
     <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
-    <div class="section-h" style="margin-top:2px"><h2>Today's Leaderboard</h2><span class="meta">🍕 baked today · all chefs</span></div>
+    <div class="section-h" style="margin-top:2px"><h2>Weekly Leaderboard</h2><span class="meta">Resets&nbsp;${nextMondayLabel()}</span></div>
     <div class="admin-dash">
       <div class="group" style="margin-top:0">
         <div class="adm-search-card">
@@ -5726,15 +5750,15 @@ function renderAdminTodayLeaderboard() {
   `
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
-    app.querySelector('#adm-lb-search').addEventListener('input', (e) => renderAdminTodayLeaderboardList(e.target.value))
-    loadAdminTodayLeaderboard()
-  }, { key: 'admin-today-leaderboard' })
+    app.querySelector('#adm-lb-search').addEventListener('input', (e) => renderAdminWeeklyLeaderboardList(e.target.value))
+    loadAdminWeeklyLeaderboard()
+  }, { key: 'admin-weekly-leaderboard' })
 }
 
-async function loadAdminTodayLeaderboard() {
+async function loadAdminWeeklyLeaderboard() {
   const listEl = app.querySelector('#adm-lb-list')
   if (listEl) listEl.innerHTML = '<p class="log-empty">Loading&hellip;</p>'
-  const start = sgtStartOfDay(new Date())
+  const start = sgtStartOfWeek(new Date())
   const [profRes, sessRes] = await Promise.all([
     supabase.from('profiles').select('id, display_name, avatar_url').order('display_name', { ascending: true }).limit(1000),
     // Needs "admin can view all sessions" (see migration_admin_sessions.sql) -
@@ -5746,13 +5770,13 @@ async function loadAdminTodayLeaderboard() {
     if (listEl) listEl.innerHTML = `<p class="log-empty">${escapeHtml(profRes.error.message)}</p>`
     return
   }
-  const todayByUser = new Map()
-  ;(sessRes.data || []).forEach(r => todayByUser.set(r.user_id, (todayByUser.get(r.user_id) || 0) + Number(r.pizzas)))
-  admLbCache = (profRes.data || []).map(p => ({ ...p, pizzasToday: todayByUser.get(p.id) || 0 }))
-  renderAdminTodayLeaderboardList(app.querySelector('#adm-lb-search')?.value || '')
+  const weekByUser = new Map()
+  ;(sessRes.data || []).forEach(r => weekByUser.set(r.user_id, (weekByUser.get(r.user_id) || 0) + Number(r.pizzas)))
+  admLbCache = (profRes.data || []).map(p => ({ ...p, pizzasWeek: weekByUser.get(p.id) || 0 }))
+  renderAdminWeeklyLeaderboardList(app.querySelector('#adm-lb-search')?.value || '')
 }
 
-function renderAdminTodayLeaderboardList(filter) {
+function renderAdminWeeklyLeaderboardList(filter) {
   const listEl = app.querySelector('#adm-lb-list')
   if (!listEl) return
   const q = (filter || '').trim().toLowerCase()
@@ -5762,19 +5786,19 @@ function renderAdminTodayLeaderboardList(filter) {
   // Non-zero bakers first (ranked highest-to-lowest), then everyone else
   // alphabetically - so a 0-pizza search hit is still findable, but the
   // ranked list up top isn't diluted with a wall of zeroes.
-  const ranked = [...list].sort((a, b) => (b.pizzasToday - a.pizzasToday) || (a.display_name || '').localeCompare(b.display_name || ''))
-  listEl.innerHTML = ranked.map((p, i) => adminTodayLeaderboardRowHtml(p, i)).join('')
+  const ranked = [...list].sort((a, b) => (b.pizzasWeek - a.pizzasWeek) || (a.display_name || '').localeCompare(b.display_name || ''))
+  listEl.innerHTML = ranked.map((p, i) => adminWeeklyLeaderboardRowHtml(p, i)).join('')
 }
 
-function adminTodayLeaderboardRowHtml(p, i) {
-  const rank = (p.pizzasToday > 0 && i < 3) ? `<div class="medal">${['🥇', '🥈', '🥉'][i]}</div>` : `<div class="rank">${i + 1}</div>`
+function adminWeeklyLeaderboardRowHtml(p, i) {
+  const rank = (p.pizzasWeek > 0 && i < 3) ? `<div class="medal">${['🥇', '🥈', '🥉'][i]}</div>` : `<div class="rank">${i + 1}</div>`
   return `
     <div class="frow" style="cursor:default">
       ${rank}
       <img src="${p.avatar_url || DEFAULT_AVATAR}" alt="" />
       <div class="finfo">
         <div class="chefs-fn-row"><span class="fn">${escapeHtml(chefName(p.display_name))}</span></div>
-        <div class="chefs-meta-row"><span class="chefs-score">🍕 ${formatScore(p.pizzasToday)}</span></div>
+        <div class="chefs-meta-row"><span class="chefs-score">🍕 ${formatScore(p.pizzasWeek)}</span></div>
       </div>
     </div>`
 }
