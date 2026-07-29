@@ -17,20 +17,31 @@
 -- Run this once in the Supabase SQL Editor. Idempotent - running it again is a
 -- no-op once every profile is within level.
 
+-- A correlated scalar subquery in SET, not UPDATE ... FROM LATERAL: the update
+-- target isn't visible to the FROM clause, so a lateral join referencing p
+-- fails with 42P10 ("invalid reference to FROM-clause entry for table p").
+--
+-- The second exists() is load-bearing. Without it, a profile with no picture
+-- at or below its level would match the first exists(), the subquery would
+-- return no row, and avatar_url would be set to NULL - wiping the picture
+-- instead of skipping the profile.
 update public.profiles p
-set avatar_url = best.url
-from lateral (
+set avatar_url = (
   select pa.url
   from public.preset_avatars pa
   where pa.unlock_level <= public.level_for_pizzas(p.pizzas)
   order by pa.unlock_level desc
   limit 1
-) as best
+)
 where p.avatar_url is not null
   and exists (
     select 1 from public.preset_avatars cur
     where cur.url = p.avatar_url
       and cur.unlock_level > public.level_for_pizzas(p.pizzas)
+  )
+  and exists (
+    select 1 from public.preset_avatars ok
+    where ok.unlock_level <= public.level_for_pizzas(p.pizzas)
   );
 
 -- Check afterwards - should return zero rows:
