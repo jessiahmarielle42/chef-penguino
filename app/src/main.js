@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.2.0.0'
+const APP_VERSION = 'v2.2.1.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -14,7 +14,7 @@ const STORAGE_KEY = 'chef-penguino-save'
 // barrel-explosion clip (see playDeleteClip()). Action-based, not
 // person-based, and deliberately excludes account deletion, admin-only
 // confirms, and step 1 of the two-step group deletion.
-const DELETE_CLIP_ACTIONS = ['remove-friend', 'leave-group', 'delete-group']
+const DELETE_CLIP_ACTIONS = ['remove-friend', 'leave-group', 'delete-group', 'delete-account']
 
 // Client-side hiding of the Admin Dashboard entry point only - real
 // enforcement lives in Supabase RLS (see migration_admin.sql), which checks
@@ -3382,12 +3382,14 @@ function confirmDeleteAccount() {
 function confirmDeleteAccountFinal() {
   const o = overlay(`
     <h3>Are you absolutely sure? ⚠️</h3>
+    <img class="delete-illus" src="${BASE}assets/delete-barrel-poster.jpg" alt="" />
     <p>Last chance &mdash; this will permanently delete everything and you will be signed out. This cannot be undone.</p>
     <div class="home-btn-col">
       <button type="button" class="btn-danger" data-action="yes">Yes, delete forever</button>
       <button type="button" class="btn-secondary" data-action="no">Keep my account</button>
     </div>
   `)
+  warmDeleteClip()
   o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
     const btn = o.querySelector('[data-action="yes"]')
@@ -3395,11 +3397,16 @@ function confirmDeleteAccountFinal() {
     btn.textContent = 'Deleting…'
     const { error } = await supabase.rpc('delete_own_account')
     if (error) { btn.disabled = false; btn.textContent = 'Yes, delete forever'; toast(error.message); return }
+    // Unlike the other deletes this can't run the clip alongside the RPC: this
+    // popup stays up to surface an RPC error, and the sign-out below re-renders
+    // the app, which would tear the clip layer off mid-play. So the clip runs
+    // after a confirmed delete and before the sign-out.
+    o.remove()
+    await playDeleteClipFor('delete-account')
     await supabase.auth.signOut()
     currentUser = null
     currentProfile = null
     clearNotifBadges()
-    o.remove()
     renderHome()
     toast('Your account has been deleted.')
   })
