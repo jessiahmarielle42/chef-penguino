@@ -2875,6 +2875,12 @@ img.shop-image {
 .chefs-grp-btn { flex: 1; padding:0.75rem 0; border-radius:0.9rem; font-weight: 800; font-size:0.83rem; cursor: pointer; text-align: center; border: none; font-family: var(--font-body); }
 .chefs-grp-btn.primary { background: linear-gradient(180deg, var(--gold), var(--gold-deep)); color:#3a2708; box-shadow: 0 0.125rem 0 #b56e00; }
 .chefs-grp-btn.secondary { border: 1px solid var(--line); background: var(--soft-fill); color: var(--cream); box-shadow: none; }
+/* Leave group is destructive, so it gets the same solid red as Delete group
+   rather than the neutral secondary treatment it shares with normal actions. */
+.chefs-grp-btn.danger {
+  border: none; color: #fff; box-shadow: 0 0.125rem 0 rgba(0,0,0,0.25);
+  background: linear-gradient(180deg, #E4571C, var(--ember));
+}
 .chefs-grp-btn:active { transform: translateY(1px); }
 
 /* group detail header */
@@ -2920,7 +2926,13 @@ img.shop-image {
   background: var(--soft-fill); color: var(--cream); font-family: var(--font-body); font-weight: 800; font-size:0.85rem; cursor: pointer;
 }
 .chefs-wide-btn:active { background: var(--soft-fill-2); }
-.chefs-wide-btn.danger { color:#ff8f7a; border-color: rgba(255,107,107,0.35); background: rgba(255,107,107,0.1); }
+/* Solid red fill, matching .popup button.btn-danger - a destructive action
+   shouldn't read as a faint outline when the confirm it opens is solid red. */
+.chefs-wide-btn.danger {
+  color: #fff; border-color: transparent;
+  background: linear-gradient(180deg, #E4571C, var(--ember));
+}
+.chefs-wide-btn.danger:active { background: linear-gradient(180deg, var(--ember), #E4571C); }
 
 /* Native select styled to match .rename-input, with a custom chevron since
    the default arrow is unstyleable and looks foreign on the dark popup. */

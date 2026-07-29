@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.2.1.0'
+const APP_VERSION = 'v2.2.2.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -2857,7 +2857,7 @@ async function loadChefsGroupDetail(groupId) {
         // owner's real exit is Delete group, in the gear settings.
         ? `<button type="button" class="chefs-grp-btn primary" data-action="invite-friends">Invite friends</button>
            <button type="button" class="chefs-grp-btn secondary" data-action="share-code">Share join code</button>`
-        : `<button type="button" class="chefs-grp-btn secondary" data-action="leave">Leave group</button>`}
+        : `<button type="button" class="chefs-grp-btn danger" data-action="leave">Leave group</button>`}
     </div>
   `
   bodyEl.querySelector('[data-action="group-settings"]')?.addEventListener('click', () => openChefsGroupSettings(groupId))
@@ -3131,6 +3131,7 @@ function confirmRemoveGroupMember(groupId, targetId, name) {
 function confirmDeleteGroupStep1(groupId, name) {
   const o = overlay(`
     <h3>Delete ${escapeHtml(name)}? ⚠️</h3>
+    <img class="delete-illus" src="${BASE}assets/delete-barrel-poster.jpg" alt="" />
     <p>This permanently deletes the group, its leaderboard and all membership. This can't be undone.</p>
     <div class="home-btn-col">
       <button type="button" class="btn-danger" data-action="yes">Delete group</button>
@@ -3367,6 +3368,7 @@ async function renderBlockedList(o) {
 function confirmDeleteAccount() {
   const o = overlay(`
     <h3>Delete account? ⚠️</h3>
+    <img class="delete-illus" src="${BASE}assets/delete-barrel-poster.jpg" alt="" />
     <p>This permanently erases your account, progress, friends and coins. This can't be undone.</p>
     <div class="home-btn-col">
       <button type="button" class="btn-danger" data-action="yes">Delete my account</button>
