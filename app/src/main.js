@@ -10,6 +10,12 @@ const APP_VERSION = 'v2.1.3.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
+// Single source of truth for which destructive confirms play the
+// barrel-explosion clip (see playDeleteClip()). Action-based, not
+// person-based, and deliberately excludes account deletion, admin-only
+// confirms, and step 1 of the two-step group deletion.
+const DELETE_CLIP_ACTIONS = ['remove-friend', 'leave-group', 'delete-group']
+
 // Client-side hiding of the Admin Dashboard entry point only - real
 // enforcement lives in Supabase RLS (see migration_admin.sql), which checks
 // auth.email() server-side and can't be spoofed from here.
@@ -291,7 +297,7 @@ function load() {
     pizzas: 0, muted: false, volume: 0.5, lastVolume: 0.5, darkenLevel: 1, autoDarken: true,
     timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null,
     pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', lastSeenCoins: null,
-    lightMode: false, taskTypeLabels: {},
+    lightMode: false, taskTypeLabels: {}, deleteAnimations: true,
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -822,6 +828,20 @@ function parkVideo(v) {
   v.id = ''; v.className = ''
   v.style.cssText = 'position:fixed;left:-9999px;width:1px;height:1px'
   document.body.appendChild(v)
+}
+
+// Parked, preloaded barrel-explosion clip used by playDeleteClip() below -
+// same "hidden parked <video>, nudge with .load() once" trick as the emotes.
+const deleteClipVideo = document.createElement('video')
+deleteClipVideo.src = `${BASE}assets/delete-barrel.mp4`
+deleteClipVideo.poster = `${BASE}assets/delete-barrel-poster.jpg`
+deleteClipVideo.preload = 'auto'; deleteClipVideo.playsInline = true
+parkVideo(deleteClipVideo)
+let deleteClipWarmed = false
+function warmDeleteClip() {
+  if (deleteClipWarmed) return
+  deleteClipWarmed = true
+  deleteClipVideo.load()
 }
 
 // iOS in particular often defers the actual network fetch for a
@@ -2893,20 +2913,26 @@ async function openGroupInvitePopup(groupId, groupName, memberIds) {
 function confirmLeaveGroup(groupId, name) {
   const o = overlay(`
     <h3>Leave ${escapeHtml(name)}?</h3>
+    <img class="delete-illus" src="${BASE}assets/delete-barrel-poster.jpg" alt="" />
     <p>You'll lose access to this group's leaderboard. You can rejoin anytime with an invite or the join code.</p>
     <div class="home-btn-col">
       <button type="button" class="btn-danger" data-action="yes">Yes, leave</button>
       <button type="button" class="btn-secondary" data-action="no">Cancel</button>
     </div>
   `)
+  warmDeleteClip()
   o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
-  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
-    const { error } = await supabase.rpc('leave_group', { group_id: groupId })
-    if (error) { toast(error.message || 'Could not leave group.'); return }
+  o.querySelector('[data-action="yes"]').addEventListener('click', () => {
     o.remove()
-    toast(`Left ${name}`)
-    chefsTab = 'groups'
-    renderChefsScreen()
+    const clipPromise = playDeleteClipFor('leave-group')
+    const rpcPromise = supabase.rpc('leave_group', { group_id: groupId })
+    Promise.allSettled([rpcPromise, clipPromise]).then(([rpcResult]) => {
+      const { error } = rpcResult.value || {}
+      if (error) { toast(error.message || 'Could not leave group.'); return }
+      toast(`Left ${name}`)
+      chefsTab = 'groups'
+      renderChefsScreen()
+    })
   })
 }
 
@@ -3060,23 +3086,26 @@ function confirmDeleteGroupStep1(groupId, name) {
 function confirmDeleteGroupStep2(groupId, name) {
   const o = overlay(`
     <h3>Are you absolutely sure? ⚠️</h3>
+    <img class="delete-illus" src="${BASE}assets/delete-barrel-poster.jpg" alt="" />
     <p>Last chance — <b>${escapeHtml(name)}</b> and everything in it will be permanently deleted. This cannot be undone.</p>
     <div class="home-btn-col">
       <button type="button" class="btn-danger" data-action="yes">Yes, delete forever</button>
       <button type="button" class="btn-secondary" data-action="no">Keep the group</button>
     </div>
   `)
+  warmDeleteClip()
   o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
-  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
-    const btn = o.querySelector('[data-action="yes"]')
-    btn.disabled = true
-    btn.textContent = 'Deleting…'
-    const { error } = await supabase.rpc('delete_group', { group_id: groupId })
-    if (error) { btn.disabled = false; btn.textContent = 'Yes, delete forever'; toast(error.message || 'Could not delete group.'); return }
+  o.querySelector('[data-action="yes"]').addEventListener('click', () => {
     o.remove()
-    toast(`${name} deleted.`)
-    chefsTab = 'groups'
-    renderChefsScreen()
+    const clipPromise = playDeleteClipFor('delete-group')
+    const rpcPromise = supabase.rpc('delete_group', { group_id: groupId })
+    Promise.allSettled([rpcPromise, clipPromise]).then(([rpcResult]) => {
+      const { error } = rpcResult.value || {}
+      if (error) { toast(error.message || 'Could not delete group.'); return }
+      toast(`${name} deleted.`)
+      chefsTab = 'groups'
+      renderChefsScreen()
+    })
   })
 }
 
@@ -3550,19 +3579,25 @@ function renderFriendHome(friend) {
 function confirmRemoveFriend(friendId, name) {
   const o = overlay(`
     <h3>Do you want to remove ${escapeHtml(name)} as friend?</h3>
+    <img class="delete-illus" src="${BASE}assets/delete-barrel-poster.jpg" alt="" />
     <p>You can add them back anytime with their friend code.</p>
     <div class="home-btn-col">
       <button type="button" class="btn-danger" data-action="yes">Yes, remove</button>
       <button type="button" class="btn-secondary" data-action="no">Cancel</button>
     </div>
   `)
+  warmDeleteClip()
   o.querySelector('[data-action="no"]').addEventListener('click', () => o.remove())
-  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+  o.querySelector('[data-action="yes"]').addEventListener('click', () => {
     o.remove()
-    const { error } = await supabase.rpc('remove_friend', { target_id: friendId })
-    if (error) { toast(error.message); return }
-    toast(`Removed ${name}`)
-    loadFriendsList()
+    const clipPromise = playDeleteClipFor('remove-friend')
+    const rpcPromise = supabase.rpc('remove_friend', { target_id: friendId })
+    Promise.allSettled([rpcPromise, clipPromise]).then(([rpcResult]) => {
+      const { error } = rpcResult.value || {}
+      if (error) { toast(error.message); return }
+      toast(`Removed ${name}`)
+      loadFriendsList()
+    })
   })
 }
 
@@ -4198,6 +4233,10 @@ function renderSettings(highlightProfile) {
           <div><div class="gt">Dark mode</div></div>
           <div class="right"><div class="switch ${state.lightMode ? 'off' : ''}" role="button" tabindex="0" data-action="toggle-theme"></div></div>
         </div>
+        <div class="grow">
+          <div><div class="gt">Delete animations</div><div class="gs">Play a short clip when you delete something</div></div>
+          <div class="right"><div class="switch ${state.deleteAnimations ? '' : 'off'}" role="button" tabindex="0" data-action="toggle-delete-animations"></div></div>
+        </div>
       </div>
     </div>
     <div class="group">
@@ -4222,7 +4261,7 @@ function renderSettings(highlightProfile) {
           <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
         </div>
         <div class="grow" role="button" tabindex="0" data-action="steam">
-          <div><div class="gt">Check out the game!</div><div class="gs">Characters are taken from "The Greatest Penguin Heist of All Time", by That Other Fish</div></div>
+          <div><div class="gt">Credits for characters</div><div class="gs">Characters are taken from "The Greatest Penguin Heist of All Time", by That Other Fish</div></div>
           <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
         </div>
         <div class="grow" role="button" tabindex="0" data-action="legal">
@@ -4270,6 +4309,9 @@ function renderSettings(highlightProfile) {
     })
     app.querySelector('[data-action="toggle-theme"]').addEventListener('click', (e) => {
       state.lightMode = !state.lightMode; save(); applyTheme(); e.currentTarget.classList.toggle('off', state.lightMode)
+    })
+    app.querySelector('[data-action="toggle-delete-animations"]').addEventListener('click', (e) => {
+      state.deleteAnimations = !state.deleteAnimations; save(); e.currentTarget.classList.toggle('off', !state.deleteAnimations)
     })
     wireSignInButtons(app)
     app.querySelector('[data-action="sign-out"]')?.addEventListener('click', signOut)
@@ -4843,6 +4885,81 @@ function renderLegal() {
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
   }, { key: 'legal' })
+}
+
+// Plays the short barrel-explosion clip (with its own audio) for the three
+// destructive confirms in DELETE_CLIP_ACTIONS. Mirrors renderIntro()'s inline
+// portrait-video pattern (~6580, .intro/.intro-video/.intro-skip in
+// style.css) rather than the lore player's fullscreen dance (playLoreVideo
+// above, never called here) or a document.body overlay - it's appended as an
+// absolutely-positioned layer OVER the current screen (inside #app, which is
+// already `position:relative`) and removed on cleanup, so whatever screen the
+// user was on (Friends, Groups, ...) is still there underneath and untouched.
+// Resolves (never rejects) once the clip ends, is skipped, the backdrop is
+// tapped, autoplay is blocked, or the safety timeout fires - callers can
+// always proceed.
+function playDeleteClip() {
+  if (!state.deleteAnimations || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    return Promise.resolve()
+  }
+
+  const wasMusicPlaying = !bgMusic.paused
+  // Must be set BEFORE bgMusic.pause(): this same click event is still
+  // bubbling up to document's global click listener, which calls
+  // syncMusic() and would otherwise immediately call bgMusic.play() again
+  // (see the comment on that listener) before this function even returns.
+  musicSuspendedByOther = true
+  bgMusic.pause()
+
+  const wrap = document.createElement('div')
+  wrap.className = 'delete-clip'
+  wrap.innerHTML = `
+    <video class="delete-clip-video" src="${BASE}assets/delete-barrel.mp4" poster="${BASE}assets/delete-barrel-poster.jpg" playsinline></video>
+    <button class="delete-clip-skip intro-skip" type="button">Skip</button>
+  `
+  app.appendChild(wrap)
+  const video = wrap.querySelector('video')
+  video.muted = state.muted
+
+  return new Promise((resolve) => {
+    let cleaned = false
+    let safetyTimer
+    const cleanup = () => {
+      if (cleaned) return
+      cleaned = true
+      clearTimeout(safetyTimer)
+      video.removeEventListener('ended', onEnded)
+      video.pause()
+      wrap.remove()
+      musicSuspendedByOther = false
+      if (wasMusicPlaying && !state.muted) bgMusic.play().catch(() => {})
+      resolve()
+    }
+    const onEnded = () => cleanup()
+    const onAutoplayBlocked = () => cleanup()
+
+    video.addEventListener('ended', onEnded)
+    wrap.querySelector('.delete-clip-skip').addEventListener('click', cleanup)
+    wrap.addEventListener('click', (e) => { if (e.target === wrap) cleanup() })
+
+    // Safety net in case `ended` never fires (stalled network, odd codec
+    // support, etc.) - never let a caller hang on this promise.
+    safetyTimer = setTimeout(cleanup, 6000)
+
+    // Called synchronously from within the confirm click handler so the
+    // user gesture still counts for autoplay policy; if it rejects
+    // (autoplay blocked), resolve immediately rather than hang - same
+    // treatment renderIntro() gives its own autoplay-blocked case.
+    video.play().catch(onAutoplayBlocked)
+  })
+}
+
+// Gate for the three call sites below - keeps DELETE_CLIP_ACTIONS as the
+// single real switch. Removing an action from that array turns this into a
+// no-op at its call site without touching the confirm function itself.
+function playDeleteClipFor(action) {
+  if (!DELETE_CLIP_ACTIONS.includes(action)) return Promise.resolve()
+  return playDeleteClip()
 }
 
 // Plays a lore video fullscreen with sound, ducking the bg music for the
