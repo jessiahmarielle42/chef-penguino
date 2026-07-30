@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.3.0.0'
+const APP_VERSION = 'v2.3.1.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -5719,24 +5719,31 @@ function admWireCal() {
 }
 
 // =================================================================
-//  Admin: Weekly Leaderboard (opened from the "Pizzas baked today" tile)
+//  Admin: Weekly/Daily Leaderboard (opened from the "Pizzas baked today" tile)
 // =================================================================
-// Every chef, ranked by pizzas baked THIS SGT WEEK - modeled closely on the
-// Chefs-page Weekly Leaderboard (chefsMemberRowHtml/.frow et al) so it feels
-// native, but scoped to all chefs rather than just friends/a group, and with
-// a name search since the full roster can be long.
+// Every chef, ranked by pizzas baked - modeled closely on the Chefs-page
+// Weekly Leaderboard (chefsMemberRowHtml/.frow et al) so it feels native,
+// but scoped to all chefs rather than just friends/a group, with a name
+// search since the full roster can be long, and two tabs (Weekly/Daily)
+// sharing that same search + row treatment. Defaults to the Weekly tab on
+// open, matching the screen's original (pre-tabs) behavior.
 //
-// Deliberate mismatch: the KPI tile it's opened from still shows "Pizzas
-// baked today" (a real today number, see admStartOfDay/loadAdminDashboardStats)
-// - only this leaderboard's own window is weekly. Don't "fix" that gap; the
-// heading/subtitle below exist precisely so admins aren't confused by it.
-let admLbCache = [] // [{ id, display_name, avatar_url, pizzasWeek }]
+// The KPI tile that opens this screen still shows "Pizzas baked today" (a
+// real today number, see admStartOfDay/loadAdminDashboardStats) regardless
+// of which tab is active here - that's intentional, not a bug.
+let admLbCache = { week: [], day: [] } // { week: [{ id, display_name, avatar_url, pizzas }], day: [...] }
+let admLbTab = 'week' // 'week' | 'day' - which tab is active; defaults to Weekly on open (matches prior behavior)
 
 function renderAdminWeeklyLeaderboard() {
   if (!isAdmin()) { renderSettings(); return }
+  admLbTab = 'week'
   const content = `
     <div class="back-link" role="button" tabindex="0" data-action="back-to-admin">‹ Admin Dashboard</div>
-    <div class="section-h" style="margin-top:2px"><h2>Weekly Leaderboard</h2><span class="meta">Resets&nbsp;${nextMondayLabel()}</span></div>
+    <div class="section-h" style="margin-top:2px"><h2>Leaderboard</h2><span class="meta" id="adm-lb-meta">Resets&nbsp;${nextMondayLabel()}</span></div>
+    <div class="cal-seg cal-seg-2" id="adm-lb-seg">
+      <button type="button" class="on" data-v="week">Weekly</button>
+      <button type="button" data-v="day">Daily</button>
+    </div>
     <div class="admin-dash">
       <div class="group" style="margin-top:0">
         <div class="adm-search-card">
@@ -5751,6 +5758,16 @@ function renderAdminWeeklyLeaderboard() {
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="back-to-admin"]').addEventListener('click', renderAdminDashboard)
     app.querySelector('#adm-lb-search').addEventListener('input', (e) => renderAdminWeeklyLeaderboardList(e.target.value))
+    app.querySelectorAll('#adm-lb-seg button').forEach(b => {
+      b.addEventListener('click', () => {
+        if (b.dataset.v === admLbTab) return
+        admLbTab = b.dataset.v
+        app.querySelectorAll('#adm-lb-seg button').forEach(x => x.classList.toggle('on', x === b))
+        const meta = app.querySelector('#adm-lb-meta')
+        if (meta) meta.textContent = admLbTab === 'week' ? `Resets ${nextMondayLabel()}` : 'Today so far'
+        renderAdminWeeklyLeaderboardList(app.querySelector('#adm-lb-search')?.value || '')
+      })
+    })
     loadAdminWeeklyLeaderboard()
   }, { key: 'admin-weekly-leaderboard' })
 }
@@ -5758,47 +5775,59 @@ function renderAdminWeeklyLeaderboard() {
 async function loadAdminWeeklyLeaderboard() {
   const listEl = app.querySelector('#adm-lb-list')
   if (listEl) listEl.innerHTML = '<p class="log-empty">Loading&hellip;</p>'
-  const start = sgtStartOfWeek(new Date())
-  const [profRes, sessRes] = await Promise.all([
+  const weekStart = sgtStartOfWeek(new Date())
+  const dayStart = sgtStartOfDay(new Date())
+  const [profRes, weekSessRes, daySessRes] = await Promise.all([
     supabase.from('profiles').select('id, display_name, avatar_url').order('display_name', { ascending: true }).limit(1000),
     // Needs "admin can view all sessions" (see migration_admin_sessions.sql) -
     // until that's run, RLS quietly limits this to the admin's own (+
     // friends') sessions, so totals under-count rather than erroring.
-    supabase.from('sessions').select('user_id, pizzas').gte('completed_at', start.toISOString()),
+    supabase.from('sessions').select('user_id, pizzas').gte('completed_at', weekStart.toISOString()),
+    supabase.from('sessions').select('user_id, pizzas').gte('completed_at', dayStart.toISOString()),
   ])
   if (profRes.error) {
     if (listEl) listEl.innerHTML = `<p class="log-empty">${escapeHtml(profRes.error.message)}</p>`
     return
   }
-  const weekByUser = new Map()
-  ;(sessRes.data || []).forEach(r => weekByUser.set(r.user_id, (weekByUser.get(r.user_id) || 0) + Number(r.pizzas)))
-  admLbCache = (profRes.data || []).map(p => ({ ...p, pizzasWeek: weekByUser.get(p.id) || 0 }))
+  const sumByUser = (rows) => {
+    const m = new Map()
+    ;(rows || []).forEach(r => m.set(r.user_id, (m.get(r.user_id) || 0) + Number(r.pizzas)))
+    return m
+  }
+  const weekByUser = sumByUser(weekSessRes.data)
+  const dayByUser = sumByUser(daySessRes.data)
+  const profiles = profRes.data || []
+  admLbCache = {
+    week: profiles.map(p => ({ ...p, pizzas: weekByUser.get(p.id) || 0 })),
+    day: profiles.map(p => ({ ...p, pizzas: dayByUser.get(p.id) || 0 })),
+  }
   renderAdminWeeklyLeaderboardList(app.querySelector('#adm-lb-search')?.value || '')
 }
 
 function renderAdminWeeklyLeaderboardList(filter) {
   const listEl = app.querySelector('#adm-lb-list')
   if (!listEl) return
+  const cache = admLbCache[admLbTab] || []
   const q = (filter || '').trim().toLowerCase()
-  const list = q ? admLbCache.filter(p => (p.display_name || '').toLowerCase().includes(q)) : admLbCache
-  if (!admLbCache.length) { listEl.innerHTML = '<p class="log-empty">No chefs yet.</p>'; return }
+  const list = q ? cache.filter(p => (p.display_name || '').toLowerCase().includes(q)) : cache
+  if (!cache.length) { listEl.innerHTML = '<p class="log-empty">No chefs yet.</p>'; return }
   if (!list.length) { listEl.innerHTML = '<p class="log-empty">No chefs match that search.</p>'; return }
   // Non-zero bakers first (ranked highest-to-lowest), then everyone else
   // alphabetically - so a 0-pizza search hit is still findable, but the
   // ranked list up top isn't diluted with a wall of zeroes.
-  const ranked = [...list].sort((a, b) => (b.pizzasWeek - a.pizzasWeek) || (a.display_name || '').localeCompare(b.display_name || ''))
+  const ranked = [...list].sort((a, b) => (b.pizzas - a.pizzas) || (a.display_name || '').localeCompare(b.display_name || ''))
   listEl.innerHTML = ranked.map((p, i) => adminWeeklyLeaderboardRowHtml(p, i)).join('')
 }
 
 function adminWeeklyLeaderboardRowHtml(p, i) {
-  const rank = (p.pizzasWeek > 0 && i < 3) ? `<div class="medal">${['🥇', '🥈', '🥉'][i]}</div>` : `<div class="rank">${i + 1}</div>`
+  const rank = (p.pizzas > 0 && i < 3) ? `<div class="medal">${['🥇', '🥈', '🥉'][i]}</div>` : `<div class="rank">${i + 1}</div>`
   return `
     <div class="frow" style="cursor:default">
       ${rank}
       <img src="${p.avatar_url || DEFAULT_AVATAR}" alt="" />
       <div class="finfo">
         <div class="chefs-fn-row"><span class="fn">${escapeHtml(chefName(p.display_name))}</span></div>
-        <div class="chefs-meta-row"><span class="chefs-score">🍕 ${formatScore(p.pizzasWeek)}</span></div>
+        <div class="chefs-meta-row"><span class="chefs-score">🍕 ${formatScore(p.pizzas)}</span></div>
       </div>
     </div>`
 }
