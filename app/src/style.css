@@ -2694,9 +2694,20 @@ img.shop-image {
 .adm-cal-total {
   display: flex; align-items: baseline; justify-content: center; gap:0.5rem; background: var(--card);
   border: 1px solid var(--line); border-radius:1.1rem; padding:0.875rem; box-shadow: var(--shadow); margin:0.625rem 0;
+  position: relative; cursor: pointer;
 }
+.adm-cal-total:active { transform: scale(0.985); }
 .adm-cal-total .v { font-family: var(--font-display); font-weight: 800; font-size:1.625rem; color: var(--fire); font-variant-numeric: tabular-nums; }
 .adm-cal-total .k { font-size:0.78125rem; color: var(--muted); font-weight: 700; }
+/* Same tappable-affordance chevron used elsewhere in the app (chevron
+   nav rows) - signals the total card opens the per-chef leaderboard sheet. */
+.adm-cal-total-chev { position: absolute; right:0.875rem; top:50%; transform: translateY(-50%); color: var(--muted-2); font-size:1.125rem; font-weight: 700; }
+
+/* ---------- Pizzas Baked calendar's per-chef leaderboard sheet - a named
+   sibling of .cal-sheet/.cal-scrim (History's day-detail sheet), reusing
+   that exact slide-up mechanism/CSS rather than inventing new chrome. ---- */
+.adm-lb-sheet .cal-sheet-hd { cursor: grab; }
+.adm-lb-sheet .cal-sheet-list { padding-bottom:0.5rem; }
 .adm-cal-note { text-align: center; font-size:0.75rem; color: var(--muted-2); margin:1rem 0.5rem 0; line-height: 1.5; }
 
 .adm-wk-panel { background: var(--card); border: 1px solid var(--panel-line); border-radius:1.1rem; overflow: hidden; box-shadow: var(--shadow); }
