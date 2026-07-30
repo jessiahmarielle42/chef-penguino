@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.3.1.0'
+const APP_VERSION = 'v2.3.2.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -4268,6 +4268,22 @@ function renderSettings(highlightProfile) {
     </div>
   ` : ''
 
+  const tutorialsGroup = `
+    <div class="group">
+      <p class="glab">Tutorials</p>
+      <div class="glist">
+        <div class="grow" role="button" tabindex="0" data-action="add-to-homescreen">
+          <div><div class="gt">Add to Homescreen</div><div class="gs">Tutorial: How to add this webapp to your phone's homescreen</div></div>
+          <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
+        </div>
+        <div class="grow" role="button" tabindex="0" data-action="replay-tutorial">
+          <div><div class="gt">Replay Tutorial</div><div class="gs">See the app basics again</div></div>
+          <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
+        </div>
+      </div>
+    </div>
+  `
+
   const accountGroup = `
     <div class="group">
       <p class="glab">Account</p>
@@ -4333,6 +4349,7 @@ function renderSettings(highlightProfile) {
         </div>
       </div>
     </div>
+    ${tutorialsGroup}
     ${accountGroup}
     <div class="group">
       <p class="glab">About</p>
@@ -5483,6 +5500,14 @@ let admCalFilter = 'all'      // 'all' or a TASK_TYPES key - persists across Mon
 let admCalSelectedDay = null  // day key currently "pinned" in the top total line, or null = whole period
 let admCalTypeColOk = true    // false once a `type`-column query fails (pre-migration_task_types.sql) - disables the filter rather than crashing
 
+// Snapshot of the currently-rendered period, refreshed on every
+// renderAdminPizzasCal() call - the per-chef leaderboard sheet (opened by
+// tapping the total card) reads these instead of recomputing its own
+// range/label, so the sheet always matches exactly what's on screen
+// (including a pinned single day within Month/Week view).
+let admCalLbRange = null   // { start, end } Date instants for whichever period the total card is currently showing
+let admCalLbTitle = ''     // heading text, reusing the calendar's own period/label formatting
+
 // Sessions in [start, endExclusive) across every chef, summed per day and
 // filtered by admCalFilter. Falls back to a type-less query (and disables
 // the filter) if the `type` column doesn't exist yet, so the calendar still
@@ -5612,7 +5637,7 @@ function admCalTotalLineHtml(periodTotal, dayMap) {
     label = `on ${CAL_DOW[(dt.getDay() + 6) % 7]} ${dt.getDate()} ${CAL_MONTHS_SHORT[dt.getMonth()]}`
   }
   const filterSuffix = admCalFilter !== 'all' ? ` · ${escapeHtml(taskTypeLabel(admCalFilter)?.title || '')}` : ''
-  return `<div class="adm-cal-total"><span class="v">${formatScore(val)}</span><span class="k">🍕 pizzas ${label}${filterSuffix}</span></div>`
+  return `<div class="adm-cal-total" role="button" tabindex="0" data-action="adm-cal-open-lb"><span class="v">${formatScore(val)}</span><span class="k">🍕 pizzas ${label}${filterSuffix}</span><span class="adm-cal-total-chev" aria-hidden="true">›</span></div>`
 }
 
 async function renderAdminPizzasCal() {
@@ -5650,6 +5675,26 @@ async function renderAdminPizzasCal() {
     navLabel = `${CAL_DOW[(dt.getDay() + 6) % 7]} ${dt.getDate()} ${CAL_MONTHS[dt.getMonth()]}`
     periodTotal = dayMap.get(admCalDayKey) || 0
     bodyHtml = admCalDayBodyHtml(periodTotal)
+  }
+
+  // Mirrors admCalTotalLineHtml()'s own val/label logic exactly, so the
+  // leaderboard sheet (triggered by tapping that same total card) always
+  // ranks chefs over precisely the range the card is displaying - including
+  // a pinned single day within Month/Week view.
+  if (admCalSelectedDay && admCalView !== 'day') {
+    const dt = calDateFromKey(admCalSelectedDay)
+    admCalLbRange = { start: sgtDateFromYMD(dt.getFullYear(), dt.getMonth(), dt.getDate()), end: sgtDateFromYMD(dt.getFullYear(), dt.getMonth(), dt.getDate() + 1) }
+    admCalLbTitle = `${CAL_DOW[(dt.getDay() + 6) % 7]} ${dt.getDate()} ${CAL_MONTHS[dt.getMonth()]}`
+  } else if (admCalView === 'month') {
+    admCalLbRange = { start: range.start, end: range.end }
+    admCalLbTitle = navLabel
+  } else if (admCalView === 'week') {
+    const first = range.days[0]
+    admCalLbRange = { start: range.start, end: range.end }
+    admCalLbTitle = `Week of ${first.getDate()} ${CAL_MONTHS_SHORT[first.getMonth()]}`
+  } else {
+    admCalLbRange = { start: range.start, end: range.end }
+    admCalLbTitle = navLabel
   }
 
   const content = `
@@ -5716,6 +5761,99 @@ function admWireCal() {
       renderAdminPizzasCal()
     })
   })
+  const openLb = app.querySelector('[data-action="adm-cal-open-lb"]')
+  openLb?.addEventListener('click', admOpenCalLbSheet)
+  openLb?.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); admOpenCalLbSheet() } })
+}
+
+// =================================================================
+//  Admin: per-chef leaderboard sheet, opened by tapping the Pizzas Baked
+//  calendar's total card. Ranks every chef over exactly the range the total
+//  card is currently showing (admCalLbRange/admCalLbTitle, set fresh by
+//  renderAdminPizzasCal() on every render) - see admFetchPerChefTotals(),
+//  the generalized {start,end}-range version of loadAdminWeeklyLeaderboard's
+//  profiles+sessions join.
+function admOpenCalLbSheet() {
+  shellEl()?.insertAdjacentHTML('beforeend', `
+    <div class="cal-scrim adm-lb-scrim" id="adm-lb-scrim"></div>
+    <div class="cal-sheet adm-lb-sheet" id="adm-lb-sheet">
+      <div class="cal-grab" id="adm-lb-grab"></div>
+      <div class="cal-sheet-hd"><h3 id="adm-lb-sheet-title">${escapeHtml(admCalLbTitle)}</h3></div>
+      <div class="adm-search-card" style="margin:0 1.25rem 0.75rem">
+        <span class="adm-search-ic" aria-hidden="true">🔍</span>
+        <input id="adm-cal-lb-search" type="text" placeholder="Search chefs" autocomplete="off" />
+      </div>
+      <div class="cal-sheet-list" id="adm-cal-lb-list"><p class="log-empty">Loading&hellip;</p></div>
+    </div>
+  `)
+  const scrim = app.querySelector('#adm-lb-scrim')
+  const sheet = app.querySelector('#adm-lb-sheet')
+  requestAnimationFrame(() => { scrim.classList.add('show'); sheet.classList.add('show') })
+  scrim.addEventListener('click', admCloseCalLbSheet)
+  admWireCalLbSheetDrag(sheet)
+  app.querySelector('#adm-cal-lb-search').addEventListener('input', (e) => admRenderCalLbList(e.target.value))
+  admLoadCalLbSheet()
+}
+
+function admCloseCalLbSheet() {
+  app.querySelector('#adm-lb-scrim')?.classList.remove('show')
+  app.querySelector('#adm-lb-sheet')?.classList.remove('show')
+  setTimeout(() => {
+    app.querySelector('#adm-lb-scrim')?.remove()
+    app.querySelector('#adm-lb-sheet')?.remove()
+  }, 260)
+}
+
+// Drag-to-dismiss, identical mechanics to calWireSheetDrag() above.
+function admWireCalLbSheetDrag(sheet) {
+  if (!sheet) return
+  const wire = (handle) => {
+    if (!handle) return
+    handle.style.touchAction = 'none'
+    let startY = 0, dy = 0, dragging = false
+    handle.addEventListener('pointerdown', (e) => {
+      dragging = true; startY = e.clientY; dy = 0
+      sheet.style.transition = 'none'
+      try { handle.setPointerCapture(e.pointerId) } catch {}
+    })
+    handle.addEventListener('pointermove', (e) => {
+      if (!dragging) return
+      dy = Math.max(0, e.clientY - startY)
+      sheet.style.transform = `translateY(${dy}px)`
+    })
+    const end = () => {
+      if (!dragging) return
+      dragging = false
+      sheet.style.transition = ''
+      sheet.style.transform = ''
+      if (dy > Math.min(120, (sheet.offsetHeight || 400) * 0.25)) admCloseCalLbSheet()
+    }
+    handle.addEventListener('pointerup', end)
+    handle.addEventListener('pointercancel', end)
+  }
+  wire(app.querySelector('#adm-lb-grab'))
+  wire(app.querySelector('.adm-lb-sheet .cal-sheet-hd'))
+}
+
+let admCalLbCache = [] // [{ id, display_name, avatar_url, pizzas }] for the currently-open sheet's range+filter
+
+async function admLoadCalLbSheet() {
+  const listEl = app.querySelector('#adm-cal-lb-list')
+  if (!admCalLbRange) { if (listEl) listEl.innerHTML = '<p class="log-empty">Nothing to show.</p>'; return }
+  admCalLbCache = await admFetchPerChefTotals(admCalLbRange.start, admCalLbRange.end, admCalFilter === 'all' ? null : admCalFilter)
+  admRenderCalLbList(app.querySelector('#adm-cal-lb-search')?.value || '')
+}
+
+function admRenderCalLbList(filter) {
+  const listEl = app.querySelector('#adm-cal-lb-list')
+  if (!listEl) return
+  const q = (filter || '').trim().toLowerCase()
+  const list = q ? admCalLbCache.filter(p => (p.display_name || '').toLowerCase().includes(q)) : admCalLbCache
+  if (!admCalLbCache.length) { listEl.innerHTML = '<p class="log-empty">No chefs yet.</p>'; return }
+  if (!list.length) { listEl.innerHTML = '<p class="log-empty">No chefs match that search.</p>'; return }
+  // Same non-zero-first ranking rule as the Chefs-page/dashboard leaderboard.
+  const ranked = [...list].sort((a, b) => (b.pizzas - a.pizzas) || (a.display_name || '').localeCompare(b.display_name || ''))
+  listEl.innerHTML = ranked.map((p, i) => adminWeeklyLeaderboardRowHtml(p, i)).join('')
 }
 
 // =================================================================
@@ -5772,35 +5910,50 @@ function renderAdminWeeklyLeaderboard() {
   }, { key: 'admin-weekly-leaderboard' })
 }
 
+// Every chef's summed pizzas over an arbitrary [start, endExclusive) range
+// (optionally narrowed to one task-type), joined against `profiles` -
+// generalizes the week-start/day-start-only query this function used to run
+// inline so it also covers a full calendar MONTH (see admOpenCalLbSheet /
+// admLoadCalLbSheet, the Pizzas Baked calendar's per-chef leaderboard sheet).
+// Falls back to a type-less query (like admCalFetchDayTotals) if the `type`
+// column doesn't exist yet.
+async function admFetchPerChefTotals(start, endExclusive, typeFilter = null) {
+  const [profRes, sessRes] = await Promise.all([
+    supabase.from('profiles').select('id, display_name, avatar_url').order('display_name', { ascending: true }).limit(1000),
+    (async () => {
+      // Needs "admin can view all sessions" (see migration_admin_sessions.sql) -
+      // until that's run, RLS quietly limits this to the admin's own (+
+      // friends') sessions, so totals under-count rather than erroring.
+      const range = (q) => q.gte('completed_at', start.toISOString()).lt('completed_at', endExclusive.toISOString())
+      if (typeFilter && admCalTypeColOk) {
+        const r = await range(supabase.from('sessions').select('user_id, pizzas, type')).eq('type', typeFilter)
+        if (!r.error) return r
+        admCalTypeColOk = false
+      }
+      return range(supabase.from('sessions').select('user_id, pizzas'))
+    })(),
+  ])
+  if (profRes.error) return []
+  const sumByUser = new Map()
+  ;(sessRes.data || []).forEach(r => sumByUser.set(r.user_id, (sumByUser.get(r.user_id) || 0) + Number(r.pizzas)))
+  return (profRes.data || []).map(p => ({ ...p, pizzas: sumByUser.get(p.id) || 0 }))
+}
+
 async function loadAdminWeeklyLeaderboard() {
   const listEl = app.querySelector('#adm-lb-list')
   if (listEl) listEl.innerHTML = '<p class="log-empty">Loading&hellip;</p>'
   const weekStart = sgtStartOfWeek(new Date())
   const dayStart = sgtStartOfDay(new Date())
-  const [profRes, weekSessRes, daySessRes] = await Promise.all([
-    supabase.from('profiles').select('id, display_name, avatar_url').order('display_name', { ascending: true }).limit(1000),
-    // Needs "admin can view all sessions" (see migration_admin_sessions.sql) -
-    // until that's run, RLS quietly limits this to the admin's own (+
-    // friends') sessions, so totals under-count rather than erroring.
-    supabase.from('sessions').select('user_id, pizzas').gte('completed_at', weekStart.toISOString()),
-    supabase.from('sessions').select('user_id, pizzas').gte('completed_at', dayStart.toISOString()),
+  const farFuture = new Date(Date.now() + 100 * 365 * 86400000)
+  const [week, day] = await Promise.all([
+    admFetchPerChefTotals(weekStart, farFuture),
+    admFetchPerChefTotals(dayStart, farFuture),
   ])
-  if (profRes.error) {
-    if (listEl) listEl.innerHTML = `<p class="log-empty">${escapeHtml(profRes.error.message)}</p>`
+  if (!week.length && !day.length) {
+    if (listEl) listEl.innerHTML = '<p class="log-empty">No chefs yet.</p>'
     return
   }
-  const sumByUser = (rows) => {
-    const m = new Map()
-    ;(rows || []).forEach(r => m.set(r.user_id, (m.get(r.user_id) || 0) + Number(r.pizzas)))
-    return m
-  }
-  const weekByUser = sumByUser(weekSessRes.data)
-  const dayByUser = sumByUser(daySessRes.data)
-  const profiles = profRes.data || []
-  admLbCache = {
-    week: profiles.map(p => ({ ...p, pizzas: weekByUser.get(p.id) || 0 })),
-    day: profiles.map(p => ({ ...p, pizzas: dayByUser.get(p.id) || 0 })),
-  }
+  admLbCache = { week, day }
   renderAdminWeeklyLeaderboardList(app.querySelector('#adm-lb-search')?.value || '')
 }
 
