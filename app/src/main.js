@@ -75,7 +75,7 @@ async function refreshProfile() {
   // loads and the app doesn't break for signed-in users before the migration.
   let { data } = await supabase
     .from('profiles')
-    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels, level_seen')
+    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels, level_seen, waving_free, onboarding_done, onboarding_coin_claimed')
     .eq('id', currentUser.id)
     .single()
   if (!data) {
@@ -860,6 +860,21 @@ function levelProgress() {
   return { level, next, into, need, pct }
 }
 
+// Same ownership rules as equippedEmote()/isOwned()/wavingFreeForCurrentUser(),
+// but generalized to any profile row (e.g. a friend's, from a friends-list
+// select) instead of always reading currentProfile/state. Returns the
+// equipped emote id if owned, else 'waving' if waving is free to that
+// profile, else null (owns nothing - e.g. a new signup who hasn't bought
+// an emote yet).
+function effectiveEmoteFor(profileRow) {
+  const owned = profileRow?.owned_emotes || []
+  const wavingFree = profileRow?.waving_free !== false
+  const e = profileRow?.equipped_emote || 'waving'
+  const isOwnedByRow = (id) => (id === 'waving' ? (wavingFree || owned.includes(id)) : owned.includes(id))
+  if (isOwnedByRow(e)) return e
+  return wavingFree ? 'waving' : null
+}
+
 // Returns the equipped emote id if owned, else 'waving' if waving is free to
 // this user, else null (user owns nothing - e.g. a new signup who hasn't
 // bought an emote yet).
@@ -1359,12 +1374,11 @@ async function renderHome() {
     ? groups.map(g => renderDateGroup(g, true)).join('')
     : '<p class="log-empty">No sessions yet. Start cooking!</p>'
 
-  // Owns nothing (new signup who hasn't bought waving yet) - nudge to the
-  // Shop instead of offering a tap-to-emote that has no clip to play.
+  // Owns nothing (new signup who hasn't bought waving yet) - button still
+  // reads "Tap to emote", but tapping just toasts a nudge to the Shop
+  // instead of navigating (no clip to play).
   const myEmote = equippedEmote()
-  const heroTapHtml = myEmote
-    ? `<button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>`
-    : `<button class="hero-tap" type="button" data-action="shop">🛍 Get an emote</button>`
+  const heroTapHtml = `<button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>`
 
   const content = `
     <div class="hero-card" id="hero-card" role="button" tabindex="0">
@@ -1406,10 +1420,11 @@ async function renderHome() {
     app.querySelector('[data-action="emote-info"]')?.addEventListener('click', (e) => { e.stopPropagation(); openEmoteInfo() })
 
     // Tap the shopfront to play the equipped emote, then revert to the still.
-    // If the chef owns no emote yet, tapping goes to the Shop instead.
+    // If the chef owns no emote yet, tapping just nudges toward the Shop via
+    // toast - no navigation, no clip to play.
     const attachEmoteTap = (btnHost) => {
       btnHost.addEventListener('click', () => {
-        if (!myEmote) { renderShop(); return }
+        if (!myEmote) { toast('Equip emotes in shop'); return }
         const img = app.querySelector('#hero-card .hero-still')
         if (img && img.tagName === 'IMG') {
           playEmoteInto(img, myEmote, heroSrc)
@@ -2561,14 +2576,14 @@ async function loadFriendsList() {
 // unfiltered pre-migration query - which only ever contained accepted rows
 // anyway - so the board still loads if that migration hasn't been run yet.
 async function fetchAcceptedFriends() {
-  const sel = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote, baking_since)'
+  const sel = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote, owned_emotes, waving_free, baking_since)'
   let { data, error } = await supabase.from('friends').select(sel).eq('status', 'accepted')
   // Fall back twice: once without the status filter (pre-friend-requests DB),
   // then without baking_since (pre-migration_baking_now DB), so the board
   // still loads on an older schema instead of coming back empty.
   if (error) ({ data, error } = await supabase.from('friends').select(sel))
   if (error) {
-    const legacy = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote)'
+    const legacy = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote, owned_emotes)'
     ;({ data } = await supabase.from('friends').select(legacy))
   }
   return data || []
@@ -3646,6 +3661,10 @@ function renderFriendHome(friend) {
   const toNext = 12 - stash
   const pct = Math.round((stash / 12) * 100)
   const heroSrc = pizzaImagePath(stash)
+  // Only play/offer an emote on a friend's page if THEY actually own one -
+  // never assume the raw equipped_emote DB field is playable, since a new
+  // signup who hasn't bought anything yet still has it defaulted to 'waving'.
+  const friendEmote = effectiveEmoteFor(friend)
 
   const content = `
     <div class="viewing-banner" id="viewing-banner" role="button" tabindex="0" aria-label="Back to Chefs">
@@ -3655,7 +3674,7 @@ function renderFriendHome(friend) {
     <div class="hero-card" id="hero-card" role="button" tabindex="0">
       <img class="hero-still" src="${heroSrc}" alt="" />
       <div class="glow"></div>
-      <button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>
+      ${friendEmote ? `<button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>` : ''}
     </div>
 
     <div class="tiles">
@@ -3686,11 +3705,13 @@ function renderFriendHome(friend) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); renderFriends() }
     })
     app.querySelector('#hero-card')?.addEventListener('click', () => {
+      if (!friendEmote) return
       const img = app.querySelector('#hero-card .hero-still')
-      if (img && img.tagName === 'IMG') playEmoteInto(img, friend.equipped_emote || 'waving', heroSrc)
+      if (img && img.tagName === 'IMG') playEmoteInto(img, friendEmote, heroSrc)
     })
-    // Same welcome on a friend's Pizzeria: preload, then play once.
-    autoplayEmoteWhenReady(app.querySelector('#hero-card .hero-still'), friend.equipped_emote || 'waving', heroSrc)
+    // Same welcome on a friend's Pizzeria: preload, then play once. Skip
+    // entirely if the friend owns no emote - nothing to preload or play.
+    if (friendEmote) autoplayEmoteWhenReady(app.querySelector('#hero-card .hero-still'), friendEmote, heroSrc)
   }, { hideStatusBar: true, key: 'friend-home' })
 }
 
