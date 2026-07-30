@@ -794,7 +794,19 @@ const LORE_VIDEOS = [
 function ownedEmotes() {
   return (currentProfile ? currentProfile.owned_emotes : state.ownedEmotes) || []
 }
-function isOwned(id) { return id === 'waving' || ownedEmotes().includes(id) }
+// Waving is free (without ever being added to owned_emotes - see coinBalance
+// comment above) for: guests (not signed in yet, so not a "new signup"), and
+// signed-in users grandfathered via profiles.waving_free. Guard the column
+// read with `?.` and treat undefined as free: pre-migration the column
+// doesn't exist yet, and the safe default is "everyone keeps waving free"
+// until the migration lands, so nothing breaks in the interim.
+function wavingFreeForCurrentUser() {
+  return !isSignedIn() || currentProfile?.waving_free !== false
+}
+function isOwned(id) {
+  if (id === 'waving') return wavingFreeForCurrentUser() || ownedEmotes().includes(id)
+  return ownedEmotes().includes(id)
+}
 function coinsEarned() { return Math.floor(Math.floor(displayPizzas()) / 12) }
 // coin_adjustment is the net of coins gifted away (-) and received (+); it
 // only exists for signed-in profiles. Guests can't gift, so it's 0 for them.
@@ -848,9 +860,13 @@ function levelProgress() {
   return { level, next, into, need, pct }
 }
 
+// Returns the equipped emote id if owned, else 'waving' if waving is free to
+// this user, else null (user owns nothing - e.g. a new signup who hasn't
+// bought an emote yet).
 function equippedEmote() {
   const e = (currentProfile ? currentProfile.equipped_emote : state.equippedEmote) || 'waving'
-  return isOwned(e) ? e : 'waving'
+  if (isOwned(e)) return e
+  return wavingFreeForCurrentUser() ? 'waving' : null
 }
 
 async function buyEmote(id) {
@@ -1343,12 +1359,19 @@ async function renderHome() {
     ? groups.map(g => renderDateGroup(g, true)).join('')
     : '<p class="log-empty">No sessions yet. Start cooking!</p>'
 
+  // Owns nothing (new signup who hasn't bought waving yet) - nudge to the
+  // Shop instead of offering a tap-to-emote that has no clip to play.
+  const myEmote = equippedEmote()
+  const heroTapHtml = myEmote
+    ? `<button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>`
+    : `<button class="hero-tap" type="button" data-action="shop">🛍 Get an emote</button>`
+
   const content = `
     <div class="hero-card" id="hero-card" role="button" tabindex="0">
       <img class="hero-still" src="${heroSrc}" alt="" />
       <div class="glow"></div>
       <button class="hero-info" type="button" data-action="emote-info" aria-label="About emotes">i</button>
-      <button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>
+      ${heroTapHtml}
     </div>
 
     <div class="tiles">
@@ -1383,18 +1406,21 @@ async function renderHome() {
     app.querySelector('[data-action="emote-info"]')?.addEventListener('click', (e) => { e.stopPropagation(); openEmoteInfo() })
 
     // Tap the shopfront to play the equipped emote, then revert to the still.
+    // If the chef owns no emote yet, tapping goes to the Shop instead.
     const attachEmoteTap = (btnHost) => {
       btnHost.addEventListener('click', () => {
+        if (!myEmote) { renderShop(); return }
         const img = app.querySelector('#hero-card .hero-still')
         if (img && img.tagName === 'IMG') {
-          playEmoteInto(img, equippedEmote(), heroSrc)
+          playEmoteInto(img, myEmote, heroSrc)
         }
       })
     }
     attachEmoteTap(app.querySelector('#hero-card'))
     // Greet the chef with their equipped emote on arrival - buffered first so
-    // it plays smoothly rather than stuttering into life.
-    autoplayEmoteWhenReady(app.querySelector('#hero-card .hero-still'), equippedEmote(), heroSrc)
+    // it plays smoothly rather than stuttering into life. No clip to preload
+    // when the chef owns nothing yet.
+    if (myEmote) autoplayEmoteWhenReady(app.querySelector('#hero-card .hero-still'), myEmote, heroSrc)
 
     // Log content is already in the DOM (built above) — just wire the swipes.
     wireLogSwipe(app.querySelector('#home-log'))
@@ -4284,7 +4310,7 @@ function renderSettings(highlightProfile) {
       <p class="glab">Tutorials</p>
       <div class="glist">
         <div class="grow" role="button" tabindex="0" data-action="add-to-homescreen">
-          <div><div class="gt">Add to Homescreen</div><div class="gs">Tutorial: How to add this webapp to your phone's homescreen</div></div>
+          <div><div class="gt">Add to Homescreen</div><div class="gs">How to add this webapp to phone's homescreen</div></div>
           <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
         </div>
         <div class="grow" role="button" tabindex="0" data-action="replay-tutorial">
