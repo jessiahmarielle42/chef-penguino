@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.3.2.0'
+const APP_VERSION = 'v2.3.3.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -4381,6 +4381,12 @@ function renderSettings(highlightProfile) {
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="task-types"]')?.addEventListener('click', renderTaskTypesEditor)
     app.querySelector('[data-action="lore"]')?.addEventListener('click', renderLore)
+    app.querySelector('[data-action="add-to-homescreen"]')?.addEventListener('click', renderAddToHomescreenGuide)
+    app.querySelector('[data-action="replay-tutorial"]')?.addEventListener('click', () => {
+      // PLACEHOLDER: the onboarding/spotlight tour engine doesn't exist yet.
+      // Once it's built, replace this with a call to startOnboardingTour().
+      toast('Tutorial coming soon!')
+    })
     app.querySelector('[data-action="steam"]')?.addEventListener('click', () => {
       window.open('https://store.steampowered.com/app/1451480/The_Greatest_Penguin_Heist_of_All_Time/', '_blank', 'noopener')
     })
@@ -4961,6 +4967,37 @@ function renderLore() {
       card.addEventListener('click', () => playLoreVideo(LORE_VIDEOS[Number(card.dataset.lore)]))
     })
   }, { key: 'lore' })
+}
+
+let addToHomescreenTab = 'ios' // 'ios' | 'android' - defaults to iOS on open
+
+function renderAddToHomescreenGuide() {
+  addToHomescreenTab = 'ios'
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-settings">‹ Settings</div>
+    <div class="section-h" style="margin-top:2px"><h2>Add to Homescreen</h2></div>
+    <div class="cal-seg cal-seg-2" id="a2hs-seg">
+      <button type="button" class="on" data-v="ios">iOS</button>
+      <button type="button" data-v="android">Android</button>
+    </div>
+    <div class="a2hs-panel" data-panel="ios">
+      <p class="editpic-empty">Screenshots coming soon</p>
+    </div>
+    <div class="a2hs-panel" data-panel="android" hidden>
+      <p class="editpic-empty">Screenshots coming soon</p>
+    </div>
+  `
+  mountScreen('settings', content, () => {
+    app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
+    app.querySelectorAll('#a2hs-seg button').forEach(b => {
+      b.addEventListener('click', () => {
+        if (b.dataset.v === addToHomescreenTab) return
+        addToHomescreenTab = b.dataset.v
+        app.querySelectorAll('#a2hs-seg button').forEach(x => x.classList.toggle('on', x === b))
+        app.querySelectorAll('.a2hs-panel').forEach(p => { p.hidden = p.dataset.panel !== addToHomescreenTab })
+      })
+    })
+  }, { key: 'add-to-homescreen' })
 }
 
 function renderLegal() {

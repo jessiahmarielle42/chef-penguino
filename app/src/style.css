@@ -700,6 +700,9 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .editpic-preset img { width:100%; height:100%; object-fit:cover; display:block; }
 .popup .editpic-preset.selected { border-color:var(--fire); box-shadow:0 0 0 2px rgba(251,122,46,0.35); }
 .editpic-empty { color:var(--muted); font-size:0.8125rem; grid-column:1/-1; text-align:left; }
+.a2hs-panel { margin-top:0.75rem; }
+.a2hs-panel[hidden] { display:none; }
+.a2hs-panel .editpic-empty { border:1px dashed var(--line); border-radius:0.75rem; padding:2rem 1rem; text-align:center; }
 .editpic-preview { width:9rem; height:9rem; border-radius:50%; object-fit:cover; border:3px solid var(--line); display:block; margin:0.75rem auto 1.25rem; }
 /* Square-cornered variant of .editpic-preview for the destructive-confirm
    illustration (delete-barrel poster) - box-shadow only, never
