@@ -985,6 +985,15 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast-coin { width:0.9375rem; height:0.9375rem; }
+/* A near-black toast reads as a strong alert against the light theme, but on
+   the dark theme it sinks into the background it's meant to interrupt. Inverted
+   here so the toast is always the opposite of whatever it sits on: cream fill
+   with dark text in dark mode, and the original dark fill in light mode. */
+:root[data-theme="dark"] .toast {
+  background: rgba(247,237,223,0.96);
+  border-color: rgba(16,10,7,0.14);
+  color: #17100c;
+}
 
 /* ============================================================
    LEVELS
