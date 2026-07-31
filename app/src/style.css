@@ -2979,3 +2979,63 @@ img.shop-image {
 }
 .name-status.ok  { color: var(--owned); }
 .name-status.bad { color: #ff8f7a; }
+
+/* =================================================================
+   Onboarding tour (spotlight coach-marks)
+   z-index 90: above every screen/popup/sheet it may point at (.overlay 70,
+   #bug-fab 65, .cal-sheet 60, .cal-scrim 50, .pause-overlay 4,
+   .darken-overlay 5, .tabbar 3) but below .lore-player (999).
+   ================================================================= */
+.tour-root { position: fixed; inset: 0; z-index: 90; pointer-events: none; }
+.tour-block { position: fixed; background: rgba(8,5,3,0.72); pointer-events: auto; }
+.tour-block[hidden] { display: none; }
+.tour-ring {
+  position: fixed; border-radius: 1rem; border: 3px solid var(--gold); pointer-events: none;
+  box-shadow: 0 0 0 4px rgba(246,198,75,0.25), 0 0 22px rgba(246,198,75,0.55);
+  animation: tourPulse 1.6s ease-in-out infinite;
+}
+.tour-ring[hidden] { display: none; }
+@keyframes tourPulse {
+  0%,100% { box-shadow: 0 0 0 4px rgba(246,198,75,0.25), 0 0 22px rgba(246,198,75,0.55); }
+  50%     { box-shadow: 0 0 0 8px rgba(246,198,75,0.12), 0 0 32px rgba(246,198,75,0.85); }
+}
+.tour-arrow {
+  position: fixed; font-size: 1.75rem; pointer-events: none; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+  animation: tourBounce 1.1s ease-in-out infinite;
+}
+.tour-arrow[hidden] { display: none; }
+@keyframes tourBounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) {
+  .tour-ring { animation: none; }
+  .tour-arrow { animation: none; }
+}
+/* Reuses .popup's card look (gold halo, radii, fonts) via the shared class -
+   this block only overrides positioning/sizing, never the shared visuals. */
+.tour-card.popup {
+  position: fixed; margin: 0; max-width: none; padding: 1rem 1.125rem;
+  text-align: left; pointer-events: none; animation: none;
+}
+.tour-card.popup p { margin: 0; font-size: 0.875rem; line-height: 1.45; color: var(--cream); }
+.tour-card[hidden] { display: none; }
+.tour-card-center.popup {
+  left: 50%; right: auto; bottom: 7.5rem; top: auto; transform: translateX(-50%);
+  text-align: center; max-width: 21rem; width: calc(100% - 2.5rem);
+}
+.tour-topright {
+  position: fixed; top: calc(env(safe-area-inset-top, 0px) + 0.875rem); right: 0.875rem;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 0.25rem; pointer-events: auto;
+}
+.tour-skip-btn {
+  border: 1px solid rgba(246,198,75,0.4); background: linear-gradient(180deg, #FFD873, var(--gold) 60%, var(--gold-deep));
+  color: #4d360a; font-family: var(--font-display); font-weight: 800; font-size: 0.75rem;
+  padding: 0.5rem 0.875rem; border-radius: 999px; cursor: pointer; box-shadow: var(--shadow);
+}
+.tour-pro-btn {
+  border: none; background: none; color: var(--cream); opacity: 0.75;
+  font-size: 0.6875rem; font-weight: 700; padding: 0.125rem 0.25rem; cursor: pointer;
+}
+.tour-hint {
+  position: fixed; left: 0; right: 0; bottom: 6rem; text-align: center;
+  color: var(--cream); opacity: 0.85; font-size: 0.75rem; font-weight: 700; pointer-events: none;
+}
+.tour-hint[hidden] { display: none; }

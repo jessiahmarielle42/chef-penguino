@@ -363,7 +363,7 @@ function load() {
     pizzas: 0, muted: false, volume: 0.5, lastVolume: 0.5, darkenLevel: 1, autoDarken: true,
     timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null,
     pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', lastSeenCoins: null,
-    lightMode: false, taskTypeLabels: {}, deleteAnimations: true,
+    lightMode: false, taskTypeLabels: {}, deleteAnimations: true, onboardingDone: false,
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -635,6 +635,11 @@ async function boot() {
     }
   } else {
     renderHome()
+    // Auto-start the tour only on a fresh Home landing (never mid-session) -
+    // see maybeAutoStartOnboardingTour(). The welcome step needs no DOM, and
+    // later steps pick up the Home markup via the tour's own MutationObserver
+    // once renderHome()'s async fetch finishes mounting it.
+    maybeAutoStartOnboardingTour()
   }
   ensureBugFab()
   checkPendingNoots()
@@ -4441,9 +4446,7 @@ function renderSettings(highlightProfile) {
     app.querySelector('[data-action="lore"]')?.addEventListener('click', renderLore)
     app.querySelector('[data-action="add-to-homescreen"]')?.addEventListener('click', renderAddToHomescreenGuide)
     app.querySelector('[data-action="replay-tutorial"]')?.addEventListener('click', () => {
-      // PLACEHOLDER: the onboarding/spotlight tour engine doesn't exist yet.
-      // Once it's built, replace this with a call to startOnboardingTour().
-      toast('Tutorial coming soon!')
+      startOnboardingTour()
     })
     app.querySelector('[data-action="steam"]')?.addEventListener('click', () => {
       window.open('https://store.steampowered.com/app/1451480/The_Greatest_Penguin_Heist_of_All_Time/', '_blank', 'noopener')
@@ -7927,4 +7930,457 @@ function renderTimerLoop(justStarted) {
   } else {
     startTicking()
   }
+}
+
+// =================================================================
+//  Onboarding tour engine (spotlight coach-marks) — steps 1-6, the
+//  "cooking half". Steps 7+ (coin claim, forced waving purchase, equip,
+//  tap-to-emote demo, Add to Homescreen) are a separate later task - see the
+//  TODO at the bottom of buildOnboardingSteps().
+//
+//  The whole overlay lives outside #app, appended straight to <body>, so it
+//  survives every app.innerHTML swap the tour walks through (home -> intro
+//  video -> pickers -> timer -> results -> history -> day sheet) instead of
+//  getting wiped by mountScreen()/renderIntro()/etc.
+//
+//  z-index 90: above every ordinary screen and popup/sheet it may need to
+//  sit over or point at (.overlay 70, #bug-fab 65, .cal-sheet 60,
+//  .cal-scrim 50, .pause-overlay 4, .darken-overlay 5, .tabbar 3), but below
+//  .lore-player (999), which must never be covered.
+//
+//  Two step kinds:
+//    - explain: a description card only, no target. A document-level click
+//      listener (bubble phase, never preventDefault/stopPropagation'd)
+//      advances the tour on ANY tap - it never swallows the tap, so if that
+//      tap also lands on a real control (e.g. a duration button) that
+//      control's own handler still runs normally and the real screen still
+//      advances too.
+//    - action: the user must perform the REAL action on a real target. Four
+//      fixed "blocker" rectangles surround the target's bounding rect - an
+//      actual gap in the DOM with nothing overlaid on it, not just a
+//      transparent hit-test hole - so the target is genuinely the only
+//      clickable thing on screen; taps elsewhere hit an opaque blocker and
+//      go nowhere. The tour advances only when the real target itself is
+//      clicked (or, for the swipe-to-reveal step, when it detects the row's
+//      own "open" class actually appears).
+// =================================================================
+
+let tour = null // non-null while active: { steps, index, entered, timers, savedAutoDarken, cleanupStep, obs }
+
+// ---- eligibility: single source of truth (step 7's coin-claim reuses this) ----
+// Mirrors supabase/migration_onboarding.sql's claim_onboarding_coin() refusal
+// conditions exactly, so the client never promises a coin the server would
+// then refuse to grant. Guests are never eligible - the coin is a signed-in
+// profile column. Every profile column read is optional-chained so this
+// stays safe pre-migration (refreshProfile() already falls back to a
+// pre-migration column set when these columns don't exist yet).
+function isEligibleForOnboardingCoin() {
+  if (!isSignedIn()) return false
+  if (currentProfile?.onboarding_coin_claimed) return false
+  if (coinsEarned() >= 1) return false
+  if (coinAdjustment() !== 0) return false
+  if (isOwned('waving')) return false
+  return true
+}
+
+function onboardingDoneForCurrentUser() {
+  return isSignedIn() ? currentProfile?.onboarding_done === true : !!state.onboardingDone
+}
+
+// Fire-and-forget for signed-in users (mirrors setBakingNow()'s pattern) -
+// never blocks ending the tour on a slow/failed network write.
+function markOnboardingDone() {
+  if (isSignedIn() && currentUser) {
+    if (currentProfile) currentProfile.onboarding_done = true
+    supabase.from('profiles').update({ onboarding_done: true }).eq('id', currentUser.id).then(() => {}, () => {})
+  } else {
+    state.onboardingDone = true
+    save()
+  }
+}
+
+// Called once at boot, only on a fresh Home landing (never mid-session, and
+// never more than once, since onboardingDoneForCurrentUser() flips true the
+// moment a tour finishes or is skipped).
+function maybeAutoStartOnboardingTour() {
+  if (tour) return
+  if (onboardingDoneForCurrentUser()) return
+  // Only brand-new chefs get pulled into the tour unasked. Both flags default
+  // to false, so without this every existing user would be auto-started into a
+  // tutorial for an app they already know - the migration grandfathers signed-in
+  // profiles, and this covers guests, whose flag lives in localStorage and so
+  // can't be backfilled. Anyone with pizzas or a session behind them has
+  // clearly used the app before; they can still replay it from Settings.
+  if (displayPizzas() > 0 || (state.log && state.log.length > 0)) {
+    markOnboardingDone()
+    return
+  }
+  startOnboardingTour()
+}
+
+function startOnboardingTour() {
+  if (tour) return
+  tour = {
+    steps: buildOnboardingSteps(),
+    index: 0,
+    entered: -1,
+    timers: [],
+    cleanupStep: null,
+    savedAutoDarken: state.autoDarken,
+    obs: null,
+  }
+  // Suppressed for the whole tour, not just the timer steps - simplest way
+  // to guarantee the screen never auto-darkens mid-instruction. Restored to
+  // the user's real setting (not hardcoded true) the moment the tour ends.
+  state.autoDarken = false
+  save()
+  document.addEventListener('visibilitychange', onTourVisibilityChange)
+  tourMount()
+  tourSync()
+}
+
+// Navigating away from the app entirely (backgrounding, switching tabs) ends
+// the tour silently rather than trying to resume it later.
+function onTourVisibilityChange() {
+  if (document.hidden && tour) endOnboardingTour(true)
+}
+
+function tourClearTimers() {
+  if (!tour) return
+  tour.timers.forEach(clearTimeout)
+  tour.timers = []
+}
+
+function endOnboardingTour(markDone) {
+  if (!tour) return
+  tourClearTimers()
+  if (tour.cleanupStep) { try { tour.cleanupStep() } catch {} }
+  if (tour.obs) tour.obs.disconnect()
+  document.removeEventListener('visibilitychange', onTourVisibilityChange)
+  document.removeEventListener('click', tourExplainClickHandler)
+  window.removeEventListener('resize', tourReposition)
+  window.removeEventListener('scroll', tourReposition, true)
+  state.autoDarken = tour.savedAutoDarken
+  save()
+  document.getElementById('tour-root')?.remove()
+  tour = null
+  if (markDone) markOnboardingDone()
+}
+
+// Advancing NEVER ends the tour early except off the very last step - only
+// Skip Tutorial / "I'm a pro." end it before that.
+function tourAdvance() {
+  if (!tour) return
+  if (tour.index >= tour.steps.length - 1) { endOnboardingTour(true); return }
+  tour.index += 1
+  tour.entered = -1
+  tourSync()
+}
+
+function tourExplainClickHandler() { tourAdvance() }
+function tourReposition() { tourSync() }
+
+function tourMount() {
+  const root = document.createElement('div')
+  root.id = 'tour-root'
+  root.className = 'tour-root'
+  root.innerHTML = `
+    <div class="tour-block tour-block-t" hidden></div>
+    <div class="tour-block tour-block-b" hidden></div>
+    <div class="tour-block tour-block-l" hidden></div>
+    <div class="tour-block tour-block-r" hidden></div>
+    <div class="tour-ring" id="tour-ring" hidden></div>
+    <div class="tour-arrow" id="tour-arrow" hidden>👇</div>
+    <div class="popup tour-card" id="tour-card" hidden><p></p></div>
+    <div class="tour-topright">
+      <button class="tour-skip-btn" type="button" id="tour-skip">Skip Tutorial</button>
+      <button class="tour-pro-btn" type="button" id="tour-pro">I'm a pro.</button>
+    </div>
+    <p class="tour-hint" id="tour-hint" hidden>Tap anywhere to continue</p>
+  `
+  document.body.appendChild(root)
+  root.querySelector('#tour-skip').addEventListener('click', (e) => { e.stopPropagation(); endOnboardingTour(true) })
+  root.querySelector('#tour-pro').addEventListener('click', (e) => { e.stopPropagation(); endOnboardingTour(true) })
+  window.addEventListener('resize', tourReposition)
+  window.addEventListener('scroll', tourReposition, true)
+  // Re-syncs on every real screen change (new picker, timer, results,
+  // history, day sheet…) without the tour needing to know each screen's
+  // internals. Mutations caused by the tour's own DOM (repositioning the
+  // ring/card each sync) are filtered out below so this can't feedback-loop
+  // on itself.
+  tour.obs = new MutationObserver((records) => {
+    const tourRoot = document.getElementById('tour-root')
+    const external = records.some(r => !tourRoot || !tourRoot.contains(r.target))
+    if (external) tourSync()
+  })
+  tour.obs.observe(document.body, { childList: true, subtree: true })
+}
+
+function tourSetVisible(show) {
+  const root = document.getElementById('tour-root')
+  if (!root) return
+  root.querySelectorAll('.tour-card, .tour-ring, .tour-arrow, .tour-hint').forEach(el => { el.hidden = !show })
+  if (!show) tourClearBlockers()
+}
+
+function tourSync() {
+  if (!tour) return
+  const step = tour.steps[tour.index]
+  if (!step) { endOnboardingTour(true); return }
+  const ready = step.ready ? step.ready() : true
+  if (!ready) {
+    tourSetVisible(false)
+    if (tour.cleanupStep) { try { tour.cleanupStep() } catch {}; tour.cleanupStep = null }
+    document.removeEventListener('click', tourExplainClickHandler)
+    tour.entered = -1
+    return
+  }
+  tourSetVisible(true)
+  if (tour.entered !== tour.index) {
+    tour.entered = tour.index
+    tourClearTimers()
+    if (tour.cleanupStep) { try { tour.cleanupStep() } catch {}; tour.cleanupStep = null }
+    document.removeEventListener('click', tourExplainClickHandler)
+    if (step.kind === 'explain') document.addEventListener('click', tourExplainClickHandler)
+    tour.cleanupStep = step.enter ? step.enter() : null
+  }
+  tourPositionForStep(step)
+}
+
+function tourApplyBlockers(rect, pad) {
+  const vw = window.innerWidth, vh = window.innerHeight
+  const top = document.querySelector('.tour-block-t')
+  const bottom = document.querySelector('.tour-block-b')
+  const left = document.querySelector('.tour-block-l')
+  const right = document.querySelector('.tour-block-r')
+  const x0 = Math.max(0, rect.left - pad), x1 = Math.min(vw, rect.right + pad)
+  const y0 = Math.max(0, rect.top - pad), y1 = Math.min(vh, rect.bottom + pad)
+  top.hidden = false; bottom.hidden = false; left.hidden = false; right.hidden = false
+  top.style.cssText = `left:0; top:0; width:${vw}px; height:${Math.max(0, y0)}px;`
+  bottom.style.cssText = `left:0; top:${y1}px; width:${vw}px; height:${Math.max(0, vh - y1)}px;`
+  left.style.cssText = `left:0; top:${y0}px; width:${Math.max(0, x0)}px; height:${Math.max(0, y1 - y0)}px;`
+  right.style.cssText = `left:${x1}px; top:${y0}px; width:${Math.max(0, vw - x1)}px; height:${Math.max(0, y1 - y0)}px;`
+}
+
+function tourClearBlockers() {
+  document.querySelectorAll('.tour-block').forEach(b => { b.hidden = true; b.style.cssText = '' })
+}
+
+// No target (explain steps only): a single full-viewport, non-blocking dim -
+// still "dims the screen" for consistency, but never intercepts a tap since
+// explain steps must let the real underlying control still receive it.
+function tourDimFull() {
+  const top = document.querySelector('.tour-block-t')
+  document.querySelector('.tour-block-b').hidden = true
+  document.querySelector('.tour-block-l').hidden = true
+  document.querySelector('.tour-block-r').hidden = true
+  top.hidden = false
+  top.style.cssText = 'left:0; top:0; width:100%; height:100%; pointer-events:none; background:rgba(8,5,3,0.5);'
+}
+
+function tourPositionCard(card, rect) {
+  const vw = window.innerWidth, vh = window.innerHeight
+  const cardW = Math.min(320, vw - 32)
+  const estH = card.offsetHeight || 120
+  let top = rect.bottom + 16
+  if (top + estH > vh - 104) top = Math.max(64, rect.top - estH - 16)
+  const left = Math.min(Math.max(16, rect.left + rect.width / 2 - cardW / 2), vw - cardW - 16)
+  card.style.cssText = `left:${left}px; top:${top}px; width:${cardW}px;`
+}
+
+function tourPositionForStep(step) {
+  const card = document.getElementById('tour-card')
+  const ring = document.getElementById('tour-ring')
+  const arrow = document.getElementById('tour-arrow')
+  if (!card || !ring || !arrow) return
+  card.querySelector('p').innerHTML = step.text
+  const target = step.getTarget ? step.getTarget() : null
+  if (!target) {
+    ring.hidden = true
+    arrow.hidden = true
+    tourDimFull()
+    card.classList.add('tour-card-center')
+    card.style.cssText = ''
+    return
+  }
+  card.classList.remove('tour-card-center')
+  const rect = target.getBoundingClientRect()
+  const pad = 8
+  ring.hidden = false
+  ring.style.cssText = `left:${rect.left - pad}px; top:${rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad * 2}px;`
+  if (step.kind === 'action') tourApplyBlockers(rect, pad)
+  else tourClearBlockers()
+  if (step.arrow) {
+    arrow.hidden = false
+    arrow.style.cssText = `left:${rect.left + rect.width / 2 - 14}px; top:${Math.max(4, rect.top - 46)}px;`
+  } else {
+    arrow.hidden = true
+  }
+  tourPositionCard(card, rect)
+}
+
+// Wires a click on `selector` (queried fresh, since the real screen may have
+// just (re)mounted) to advance the tour, WITHOUT touching the real handler
+// already wired elsewhere for that element - both simply fire. Returns a
+// cleanup function, or null if the element isn't there (ready() should have
+// already guaranteed it is, but this stays defensive).
+function tourAdvanceOnRealClick(selector) {
+  const el = document.querySelector(selector)
+  if (!el) return null
+  const onClick = () => tourAdvance()
+  el.addEventListener('click', onClick)
+  return () => el.removeEventListener('click', onClick)
+}
+
+function buildOnboardingSteps() {
+  const eligible = isEligibleForOnboardingCoin()
+  // Closure-scoped (fresh per tour run) so a replayed tour re-arms its own
+  // 2-second "let the session actually run" delay from scratch.
+  let pauseArmedAt = null
+
+  const steps = [
+    // ---------- 1. Welcome ----------
+    {
+      id: 'welcome',
+      kind: 'explain',
+      getTarget: () => null,
+      text: eligible
+        ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes real pizzas - one hour of focus makes one pizza. Finish this quick tour and earn a <b>FREE Penguino Coin</b>!`
+        : `<b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes real pizzas - one hour of focus makes one pizza. Let's take a quick look around.`,
+    },
+    // ---------- 2. Point at the Cook button ----------
+    {
+      id: 'tap-cook',
+      kind: 'action',
+      ready: () => !!document.querySelector('.tab-fab[data-action="cook"]'),
+      getTarget: () => document.querySelector('.tab-fab[data-action="cook"]'),
+      text: `Tap <b>Cook</b> to start a focus session.`,
+      enter: () => tourAdvanceOnRealClick('.tab-fab[data-action="cook"]'),
+    },
+    // ---------- 3. Through the pickers (brief, explain) ----------
+    {
+      id: 'duration',
+      kind: 'explain',
+      ready: () => !!document.querySelector('.picker-grid'),
+      getTarget: () => null,
+      text: `Pick how long you want to focus for.`,
+    },
+    {
+      id: 'task-name',
+      kind: 'explain',
+      ready: () => !!document.querySelector('.task-input'),
+      getTarget: () => null,
+      text: `Give the session a short name.`,
+    },
+    {
+      id: 'task-type',
+      kind: 'explain',
+      ready: () => !!document.querySelector('.tt-type-list'),
+      getTarget: () => null,
+      text: `Pick a category, then start cooking!`,
+    },
+    // ---------- 4. On the timer (two-part action) ----------
+    {
+      id: 'pause-timer',
+      kind: 'action',
+      // Waits until the real timer has actually been running for ~2s before
+      // the spotlight appears, so it never fights the "Start Cooking!"
+      // splash or shows up before there's anything worth pausing.
+      ready: () => {
+        const el = document.querySelector('.timer-value')
+        if (!el) { pauseArmedAt = null; return false }
+        if (pauseArmedAt == null) {
+          pauseArmedAt = Date.now()
+          const id = setTimeout(tourSync, 2100)
+          if (tour) tour.timers.push(id)
+          return false
+        }
+        return Date.now() - pauseArmedAt >= 2000
+      },
+      getTarget: () => document.querySelector('.timer-value'),
+      arrow: true,
+      text: `Tap the timer to pause your session.`,
+      enter: () => tourAdvanceOnRealClick('.timer-value'),
+    },
+    {
+      id: 'end-early',
+      kind: 'action',
+      ready: () => !!document.querySelector('.pause-overlay .home-btn-col [data-action="end"]'),
+      getTarget: () => document.querySelector('.pause-overlay .home-btn-col [data-action="end"]'),
+      text: `Tap <b>End Early</b> to finish this practice session.`,
+      enter: () => tourAdvanceOnRealClick('.pause-overlay .home-btn-col [data-action="end"]'),
+    },
+    {
+      id: 'confirm-end',
+      kind: 'action',
+      ready: () => !!document.querySelector('.pause-overlay [data-action="confirm-end"]'),
+      getTarget: () => document.querySelector('.pause-overlay [data-action="confirm-end"]'),
+      text: `Tap <b>Yes, End Session</b> to see your results.`,
+      enter: () => tourAdvanceOnRealClick('.pause-overlay [data-action="confirm-end"]'),
+    },
+    // ---------- 5. Results ----------
+    {
+      id: 'results',
+      kind: 'explain',
+      ready: () => !!document.querySelector('.intro-start button'),
+      getTarget: () => null,
+      text: `You just baked your first (tiny) pizza! Every session you focus adds up.`,
+    },
+    // ---------- 6. History + swipe-to-delete ----------
+    {
+      id: 'see-all',
+      kind: 'action',
+      ready: () => !!document.querySelector('.cal-seeall-btn[data-action="see-all-sessions"]'),
+      getTarget: () => document.querySelector('.cal-seeall-btn[data-action="see-all-sessions"]'),
+      text: `Tap <b>See All Sessions</b> to view your history.`,
+      enter: () => tourAdvanceOnRealClick('.cal-seeall-btn[data-action="see-all-sessions"]'),
+    },
+    {
+      id: 'open-day',
+      kind: 'action',
+      ready: () => !!document.querySelector(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
+      getTarget: () => document.querySelector(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
+      text: `Tap today's date to see your session.`,
+      enter: () => tourAdvanceOnRealClick(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
+    },
+    {
+      id: 'swipe-row',
+      kind: 'action',
+      ready: () => !!document.querySelector('.cal-sheet-list .log-row-wrap[data-log-id] .log-row'),
+      getTarget: () => document.querySelector('.cal-sheet-list .log-row-wrap[data-log-id]'),
+      text: `Swipe the session left to reveal Edit and Delete.`,
+      enter: () => {
+        const row = document.querySelector('.cal-sheet-list .log-row-wrap[data-log-id] .log-row')
+        if (!row) return null
+        const obs = new MutationObserver(() => { if (row.classList.contains('open')) tourAdvance() })
+        obs.observe(row, { attributes: true, attributeFilter: ['class'] })
+        return () => obs.disconnect()
+      },
+    },
+    {
+      id: 'tap-delete',
+      kind: 'action',
+      ready: () => !!document.querySelector('.cal-sheet-list [data-action="delete-log"]'),
+      getTarget: () => document.querySelector('.cal-sheet-list [data-action="delete-log"]'),
+      text: `Tap <b>Delete</b> to remove this practice session - it doesn't count for anything.`,
+      enter: () => tourAdvanceOnRealClick('.cal-sheet-list [data-action="delete-log"]'),
+    },
+    {
+      id: 'confirm-delete',
+      kind: 'action',
+      ready: () => !!document.querySelector('.overlay.show [data-action="yes"]'),
+      getTarget: () => document.querySelector('.overlay.show [data-action="yes"]'),
+      text: `Tap <b>Yes, delete</b> to finish up.`,
+      enter: () => tourAdvanceOnRealClick('.overlay.show [data-action="yes"]'),
+    },
+    // TODO: steps 7+ (coin claim, forced waving-emote purchase, equip,
+    // tap-to-emote demo, Add to Homescreen) attach here - append their step
+    // definitions to this array. `eligible` (computed above via
+    // isEligibleForOnboardingCoin()) is already available for the coin-claim
+    // step to reuse. tourAdvance() past the last step already calls
+    // endOnboardingTour(true), so extending this array is the only change
+    // needed to grow the tour - no engine changes required.
+  ]
+
+  return steps
 }

@@ -11,6 +11,16 @@
 alter table public.profiles add column if not exists onboarding_done boolean not null default false;
 alter table public.profiles add column if not exists onboarding_coin_claimed boolean not null default false;
 
+-- Existing chefs are treated as already onboarded. Both columns default to
+-- false, so without this every current user would be auto-started into a
+-- tutorial for an app they already know the next time they opened it. They can
+-- still replay it from Settings whenever they want.
+-- Same cutoff reasoning as waving_free below: run this promptly after deploying.
+update public.profiles
+set onboarding_done = true
+where onboarding_done = false
+  and created_at <= now();
+
 -- ---------- 2. grandfathering the waving emote ----------
 -- The waving emote used to be free for everyone, hardcoded client-side and
 -- deliberately NOT stored in owned_emotes. New signups must now buy it, but
