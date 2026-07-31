@@ -2603,7 +2603,13 @@ img.shop-image {
 /* ---------- Bug report FAB ---------- */
 #bug-fab {
   position: fixed;
-  left: 0.9rem; bottom: 6.2rem; z-index: 65;
+  left: 0.9rem;
+  /* Clears the tab bar on every device. A fixed 6.2rem was fine while
+     env(safe-area-inset-bottom) still resolved to 0, but once viewport-fit=cover
+     made the inset real the tab bar grew by the home-indicator height and this
+     button ended up sitting on top of it. Tracks the inset like .tabbar does. */
+  bottom: calc(7.1rem + env(safe-area-inset-bottom, 0px));
+  z-index: 65;
   width: 2.6rem; height: 2.6rem; border-radius: 50%;
   background: linear-gradient(180deg, #FFB25E, var(--fire) 55%, var(--fire-deep));
   border: none; color: #fff; font-family: var(--font-display); font-weight: 800; font-size: 1.25rem;
