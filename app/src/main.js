@@ -8437,13 +8437,18 @@ function tourDimFull() {
   top.style.cssText = 'left:0; top:0; width:100%; height:100%; pointer-events:none; background:rgba(8,5,3,0.5);'
 }
 
-function tourPositionCard(card, rect) {
+function tourPositionCard(card, rect, arrowBelow) {
   const vw = window.innerWidth, vh = window.innerHeight
   const cardW = Math.min(320, vw - 32)
   const estH = card.offsetHeight || 120
-  // Vertical placement is unchanged: below the target, flipping above when
-  // it would run off the bottom of the viewport.
-  let top = rect.bottom + 16
+  // Vertical placement: below the target, flipping above when it would run
+  // off the bottom of the viewport. When the directional arrow itself has
+  // been flipped below the target (no room above it - see
+  // tourPositionForStep), the card's usual rect.bottom + 16 start would
+  // stack directly on top of the arrow (which occupies roughly
+  // rect.bottom+8..rect.bottom+42), rendering it invisible underneath the
+  // card - start lower to clear it instead.
+  let top = arrowBelow ? rect.bottom + 50 : rect.bottom + 16
   if (top + estH > vh - 104) top = Math.max(64, rect.top - estH - 16)
   // Horizontal placement is unconditionally centered on the VIEWPORT
   // (never anchored to the target's horizontal center) - anchoring to an
@@ -8514,6 +8519,7 @@ function tourPositionForStep(step) {
   ring.style.cssText = `left:${rect.left - pad}px; top:${rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad * 2}px;`
   if (step.kind === 'action') tourApplyBlockers(rect, pad)
   else tourClearBlockers()
+  let arrowBelow = false
   if (step.arrow) {
     arrow.hidden = false
     const fitsAbove = rect.top - 46 >= 4
@@ -8524,13 +8530,14 @@ function tourPositionForStep(step) {
       // No room above the target (e.g. pause-timer's chip sits right at the
       // top of the screen) - flip the arrow below the target instead of
       // clamping it on top, covering the thing it's meant to point at.
+      arrowBelow = true
       arrow.textContent = '👆'
       arrow.style.cssText = `left:${rect.left + rect.width / 2 - 14}px; top:${rect.bottom + 8}px;`
     }
   } else {
     arrow.hidden = true
   }
-  tourPositionCard(card, rect)
+  tourPositionCard(card, rect, arrowBelow)
   if (hint) {
     hint.hidden = !showHint
     if (showHint) {
