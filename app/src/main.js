@@ -364,6 +364,7 @@ function load() {
     timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null,
     pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', lastSeenCoins: null,
     lightMode: false, taskTypeLabels: {}, deleteAnimations: true, onboardingDone: false,
+    onboardingResumeStep: null,
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -599,6 +600,7 @@ async function boot() {
   if (data.session?.user) {
     await handleSignedIn(data.session.user)
     checkLevelUp()
+    maybeResumeOnboardingTour()
   }
 
   supabase.auth.onAuthStateChange((event, session) => {
@@ -610,6 +612,7 @@ async function boot() {
         checkPendingCoinGifts()
         checkPendingWarnings()
         ensureBugFab()
+        maybeResumeOnboardingTour()
       })
     } else if (event === 'SIGNED_OUT') {
       unsubscribeFromSocial()
@@ -8018,11 +8021,27 @@ function maybeAutoStartOnboardingTour() {
   startOnboardingTour()
 }
 
-function startOnboardingTour() {
+// `resumeAfterId`, when passed, starts the tour at that step's index instead
+// of the beginning - used to resume at the coin-claim steps after a Google
+// OAuth round trip (see maybeResumeOnboardingTour()). Falls back through a
+// short candidate list if that exact step isn't in this run's array (e.g. the
+// chef became ineligible for the coin between opening the sign-in prompt and
+// finishing sign-in), so it always lands somewhere sane instead of restarting
+// the whole tour from Welcome.
+function startOnboardingTour(resumeAfterId) {
   if (tour) return
+  const steps = buildOnboardingSteps()
+  let startIndex = 0
+  if (resumeAfterId) {
+    const candidates = [resumeAfterId, 'tap-emote-demo', 'add-to-homescreen']
+    for (const id of candidates) {
+      const idx = steps.findIndex(s => s.id === id)
+      if (idx >= 0) { startIndex = idx; break }
+    }
+  }
   tour = {
-    steps: buildOnboardingSteps(),
-    index: 0,
+    steps,
+    index: startIndex,
     entered: -1,
     timers: [],
     cleanupStep: null,
@@ -8037,6 +8056,20 @@ function startOnboardingTour() {
   document.addEventListener('visibilitychange', onTourVisibilityChange)
   tourMount()
   tourSync()
+}
+
+// Consumes the OAuth-resume marker at most once (cleared immediately on
+// read, before it's acted on) so a stale/bad marker can never trap the chef
+// in a resume loop. Called from both boot() paths (initial getSession() and
+// the SIGNED_IN auth-state-change branch) since either can be the one that
+// observes the post-redirect session first.
+function maybeResumeOnboardingTour() {
+  const resumeId = state.onboardingResumeStep
+  if (!resumeId) return
+  state.onboardingResumeStep = null
+  save()
+  if (!isSignedIn() || tour) return
+  startOnboardingTour(resumeId)
 }
 
 // Navigating away from the app entirely (backgrounding, switching tabs) ends
@@ -8061,6 +8094,9 @@ function endOnboardingTour(markDone) {
   window.removeEventListener('resize', tourReposition)
   window.removeEventListener('scroll', tourReposition, true)
   state.autoDarken = tour.savedAutoDarken
+  // Defensive: any tour end clears a pending OAuth-resume marker too, so one
+  // can never survive to trap a later tour run in a loop.
+  state.onboardingResumeStep = null
   save()
   document.getElementById('tour-root')?.remove()
   tour = null
@@ -8141,10 +8177,18 @@ function tourSync() {
     tourClearTimers()
     if (tour.cleanupStep) { try { tour.cleanupStep() } catch {}; tour.cleanupStep = null }
     document.removeEventListener('click', tourExplainClickHandler)
-    if (step.kind === 'explain') document.addEventListener('click', tourExplainClickHandler)
+    // Silent steps (a real popup/screen elsewhere is doing the talking - e.g.
+    // the reused coin-info popup, or a background coin-claim RPC with nothing
+    // to show at all) drive their own advance from enter(); the generic
+    // tap-anywhere handler would just be a second, redundant way to dismiss.
+    if (step.kind === 'explain' && !step.silent) document.addEventListener('click', tourExplainClickHandler)
     tour.cleanupStep = step.enter ? step.enter() : null
   }
   tourPositionForStep(step)
+  // Runs on every sync (not just on entering the step), so a step can watch
+  // for a real state change - e.g. a purchase completing elsewhere on
+  // screen - and advance itself without needing its own click handler.
+  if (step.watch) { try { step.watch() } catch {} }
 }
 
 function tourApplyBlockers(rect, pad) {
@@ -8192,7 +8236,21 @@ function tourPositionForStep(step) {
   const card = document.getElementById('tour-card')
   const ring = document.getElementById('tour-ring')
   const arrow = document.getElementById('tour-arrow')
+  const hint = document.getElementById('tour-hint')
   if (!card || !ring || !arrow) return
+  // A silent step reuses a REAL popup/screen to explain itself (e.g. the
+  // existing coin-info popup) rather than drawing the tour's own card over
+  // it, so hide every bit of tour chrome (it'd otherwise sit at a higher
+  // z-index than that real popup and visually stack on top of it).
+  if (step.silent) {
+    card.hidden = true
+    ring.hidden = true
+    arrow.hidden = true
+    if (hint) hint.hidden = true
+    tourClearBlockers()
+    document.querySelectorAll('.tour-block').forEach(b => { b.hidden = true })
+    return
+  }
   card.querySelector('p').innerHTML = step.text
   const target = step.getTarget ? step.getTarget() : null
   if (!target) {
