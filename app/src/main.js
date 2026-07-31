@@ -1360,7 +1360,14 @@ function wireTabBar() {
 }
 
 function startCookingFlow() {
-  if (currentUser) renderIntro(renderDurationPicker, false)
+  if (currentUser) {
+    // Skip the intro video during the tour - on iOS it can't autoplay, so
+    // the chef lands on renderTapToContinue()'s "Tap to Continue" screen,
+    // an unguided dead screen the tutorial never explains. Normal (non-tour)
+    // cooking sessions are unaffected.
+    if (tour) renderDurationPicker()
+    else renderIntro(renderDurationPicker, false)
+  }
   else showNotSignedInWarning()
 }
 
@@ -7647,7 +7654,7 @@ function showNotSignedInWarning() {
   // mentions, and it duplicates the tour's own dedicated sign-in moment
   // (guest-coin-prompt, later in the flow) - skip straight to what "I'll
   // risk it" does instead of showing it.
-  if (tour) { renderIntro(renderDurationPicker, false); return }
+  if (tour) { renderDurationPicker(); return }
   const o = overlay(`
     <h3>Not signed in</h3>
     <p>Your progress may not be saved since you're not signed in.</p>
@@ -8406,8 +8413,13 @@ function tourSyncEnter(step) {
   if (step.watch) { try { step.watch() } catch {} }
 }
 
-function tourApplyBlockers(rect, pad) {
-  const vw = window.innerWidth, vh = window.innerHeight
+function tourApplyBlockers(rect, pad, vp) {
+  // rect and vw/vh are all in visual-viewport-relative space (see
+  // tourTargetRect/tourViewport); convert back to layout-viewport
+  // coordinates (add the offset back) only at the point of painting, since
+  // position:fixed elements are painted relative to the layout viewport.
+  const vw = vp.width, vh = vp.height
+  const ox = vp.offsetLeft, oy = vp.offsetTop
   const top = document.querySelector('.tour-block-t')
   const bottom = document.querySelector('.tour-block-b')
   const left = document.querySelector('.tour-block-l')
@@ -8415,10 +8427,10 @@ function tourApplyBlockers(rect, pad) {
   const x0 = Math.max(0, rect.left - pad), x1 = Math.min(vw, rect.right + pad)
   const y0 = Math.max(0, rect.top - pad), y1 = Math.min(vh, rect.bottom + pad)
   top.hidden = false; bottom.hidden = false; left.hidden = false; right.hidden = false
-  top.style.cssText = `left:0; top:0; width:${vw}px; height:${Math.max(0, y0)}px;`
-  bottom.style.cssText = `left:0; top:${y1}px; width:${vw}px; height:${Math.max(0, vh - y1)}px;`
-  left.style.cssText = `left:0; top:${y0}px; width:${Math.max(0, x0)}px; height:${Math.max(0, y1 - y0)}px;`
-  right.style.cssText = `left:${x1}px; top:${y0}px; width:${Math.max(0, vw - x1)}px; height:${Math.max(0, y1 - y0)}px;`
+  top.style.cssText = `left:${ox}px; top:${oy}px; width:${vw}px; height:${Math.max(0, y0)}px;`
+  bottom.style.cssText = `left:${ox}px; top:${oy + y1}px; width:${vw}px; height:${Math.max(0, vh - y1)}px;`
+  left.style.cssText = `left:${ox}px; top:${oy + y0}px; width:${Math.max(0, x0)}px; height:${Math.max(0, y1 - y0)}px;`
+  right.style.cssText = `left:${ox + x1}px; top:${oy + y0}px; width:${Math.max(0, vw - x1)}px; height:${Math.max(0, y1 - y0)}px;`
 }
 
 function tourClearBlockers() {
@@ -8437,8 +8449,8 @@ function tourDimFull() {
   top.style.cssText = 'left:0; top:0; width:100%; height:100%; pointer-events:none; background:rgba(8,5,3,0.5);'
 }
 
-function tourPositionCard(card, rect, arrowBelow) {
-  const vw = window.innerWidth, vh = window.innerHeight
+function tourPositionCard(card, rect, arrowBelow, vp) {
+  const vw = vp.width, vh = vp.height
   const cardW = Math.min(320, vw - 32)
   const estH = card.offsetHeight || 120
   // Vertical placement: below the target, flipping above when it would run
@@ -8455,27 +8467,60 @@ function tourPositionCard(card, rect, arrowBelow) {
   // off-center target's position made the card look misaligned rather than
   // deliberate.
   const left = (vw - cardW) / 2
-  card.style.cssText = `left:${left}px; top:${top}px; width:${cardW}px;`
+  card.style.cssText = `left:${vp.offsetLeft + left}px; top:${vp.offsetTop + top}px; width:${cardW}px;`
 }
 
 // Positions .tour-hint immediately below the tour card, horizontally
 // centered on the card, clamped to stay on-screen and never overlap the
 // spotlight ring/target. Only called for steps where the hint is visible
 // (kind 'explain' && !step.silent - see tourPositionForStep).
-function tourPositionHint(hint, card, ringRect) {
-  const vw = window.innerWidth, vh = window.innerHeight
+function tourPositionHint(hint, card, ringRect, vp) {
+  const vw = vp.width, vh = vp.height
   const cardRect = card.getBoundingClientRect()
   const hintH = hint.offsetHeight || 20
-  let top = cardRect.bottom + 8
+  let top = cardRect.bottom + 8 - vp.offsetTop
   // Keep clear of the spotlight ring if it would otherwise overlap.
   if (ringRect && top < ringRect.bottom + 8 && top + hintH > ringRect.top - 8) {
     top = ringRect.bottom + 8
   }
   top = Math.min(top, vh - hintH - 8)
-  const cardCenter = cardRect.left + cardRect.width / 2
+  const cardCenter = cardRect.left - vp.offsetLeft + cardRect.width / 2
   const hintW = Math.min(280, vw - 32)
   const left = Math.min(Math.max(16, cardCenter - hintW / 2), vw - hintW - 16)
-  hint.style.cssText = `left:${left}px; top:${top}px; width:${hintW}px;`
+  hint.style.cssText = `left:${vp.offsetLeft + left}px; top:${vp.offsetTop + top}px; width:${hintW}px;`
+}
+
+// Single source of truth for all tour positioning math. iOS's on-screen
+// keyboard shrinks the VISUAL viewport (window.visualViewport) and offsets
+// it from the layout viewport's origin (offsetLeft/offsetTop) without
+// changing window.innerWidth/innerHeight - every clamp below must use the
+// visual viewport's size, or chrome gets clamped against space the keyboard
+// has actually covered. Falls back to window.innerWidth/innerHeight when
+// visualViewport isn't supported.
+function tourViewport() {
+  const vv = window.visualViewport
+  if (vv) return { width: vv.width, height: vv.height, offsetLeft: vv.offsetLeft, offsetTop: vv.offsetTop }
+  return { width: window.innerWidth, height: window.innerHeight, offsetLeft: 0, offsetTop: 0 }
+}
+
+// getBoundingClientRect() is relative to the LAYOUT viewport's origin.
+// Every positioning calculation below works in visual-viewport-relative
+// space (0,0 = the visual viewport's top-left), so subtract the offset here
+// once, up front - callers add it back only at the moment they paint fixed-
+// position tour chrome (position:fixed is painted relative to the layout
+// viewport, not the visual one, so the two conversions cancel out and the
+// chrome lines up with the real target regardless of what the keyboard has
+// scrolled/shrunk).
+function tourTargetRect(target, vp) {
+  const r = target.getBoundingClientRect()
+  return {
+    top: r.top - vp.offsetTop,
+    bottom: r.bottom - vp.offsetTop,
+    left: r.left - vp.offsetLeft,
+    right: r.right - vp.offsetLeft,
+    width: r.width,
+    height: r.height,
+  }
 }
 
 function tourPositionForStep(step) {
@@ -8508,16 +8553,36 @@ function tourPositionForStep(step) {
     card.style.cssText = ''
     if (hint) {
       hint.hidden = !showHint
-      if (showHint) tourPositionHint(hint, card, null)
+      if (showHint) tourPositionHint(hint, card, null, tourViewport())
     }
     return
   }
   card.classList.remove('tour-card-center')
-  const rect = target.getBoundingClientRect()
+  const vp = tourViewport()
+  let rect = tourTargetRect(target, vp)
+  // If the target is wholly or partly outside the visible (visual) viewport
+  // - e.g. "See All Sessions" sitting below the fold on a real phone -
+  // scroll it into view before positioning, otherwise the ring/card render
+  // off-screen and the tour looks dead. Guarded to only fire when the
+  // target is actually out of view, so it never fights the chef's own
+  // scrolling on every sync.
+  const outOfView = rect.top < 0 || rect.bottom > vp.height || rect.left < 0 || rect.right > vp.width
+  if (outOfView) {
+    target.scrollIntoView({ block: 'center', behavior: 'auto' })
+    rect = tourTargetRect(target, vp)
+  }
   const pad = 8
+  const bottomPad = pad + 4 // extra clearance for pill buttons' raised bottom lip (box-shadow), which getBoundingClientRect() excludes
   ring.hidden = false
-  ring.style.cssText = `left:${rect.left - pad}px; top:${rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad * 2}px;`
-  if (step.kind === 'action') tourApplyBlockers(rect, pad)
+  const cs = getComputedStyle(target)
+  const parsedRadius = parseFloat(cs.borderRadius) || 0
+  // Pill-shaped buttons report a huge (browser-clamped) border-radius -
+  // snap those to a full 999px pill so the ring's corners don't visibly
+  // undershoot the button's actual rounding.
+  const isPill = parsedRadius >= Math.min(rect.width, rect.height) / 2 - 1
+  const ringRadius = isPill ? '999px' : `${parsedRadius + pad}px`
+  ring.style.cssText = `left:${vp.offsetLeft + rect.left - pad}px; top:${vp.offsetTop + rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad + bottomPad}px; border-radius:${ringRadius};`
+  if (step.kind === 'action') tourApplyBlockers(rect, pad, vp)
   else tourClearBlockers()
   let arrowBelow = false
   if (step.arrow) {
@@ -8525,24 +8590,24 @@ function tourPositionForStep(step) {
     const fitsAbove = rect.top - 46 >= 4
     if (fitsAbove) {
       arrow.textContent = '👇'
-      arrow.style.cssText = `left:${rect.left + rect.width / 2 - 14}px; top:${rect.top - 46}px;`
+      arrow.style.cssText = `left:${vp.offsetLeft + rect.left + rect.width / 2 - 14}px; top:${vp.offsetTop + rect.top - 46}px;`
     } else {
       // No room above the target (e.g. pause-timer's chip sits right at the
       // top of the screen) - flip the arrow below the target instead of
       // clamping it on top, covering the thing it's meant to point at.
       arrowBelow = true
       arrow.textContent = '👆'
-      arrow.style.cssText = `left:${rect.left + rect.width / 2 - 14}px; top:${rect.bottom + 8}px;`
+      arrow.style.cssText = `left:${vp.offsetLeft + rect.left + rect.width / 2 - 14}px; top:${vp.offsetTop + rect.bottom + 8}px;`
     }
   } else {
     arrow.hidden = true
   }
-  tourPositionCard(card, rect, arrowBelow)
+  tourPositionCard(card, rect, arrowBelow, vp)
   if (hint) {
     hint.hidden = !showHint
     if (showHint) {
-      const ringRect = { top: rect.top - pad, bottom: rect.bottom + pad }
-      tourPositionHint(hint, card, ringRect)
+      const ringRect = { top: rect.top - pad, bottom: rect.bottom + bottomPad }
+      tourPositionHint(hint, card, ringRect, vp)
     }
   }
 }
@@ -8621,6 +8686,12 @@ function buildOnboardingSteps() {
         if (!el) return null
         const onInput = () => { if (el.value.trim().length > 0) tourAdvance() }
         el.addEventListener('input', onInput)
+        // The input is already focused by renderTaskPrompt(), which on iOS
+        // triggers the soft keyboard - scroll it into view so the card has
+        // room, then re-sync once the keyboard/visualViewport has settled.
+        el.scrollIntoView({ block: 'center' })
+        const id = setTimeout(tourSync, 350)
+        if (tour) tour.timers.push(id)
         return () => el.removeEventListener('input', onInput)
       },
     },
@@ -8675,6 +8746,12 @@ function buildOnboardingSteps() {
         }
         return Date.now() - pauseArmedAt >= 2000
       },
+      // Pure - only decides which step the forward self-heal scan lands on,
+      // never when the spotlight appears (that's still gated by ready()'s
+      // 2s arming above). Without this the scan had no probe anywhere
+      // between start-cook (dies the instant the timer mounts) and the
+      // history steps, so straying near the timer stranded the tour.
+      probe: () => !!document.querySelector('.timer-value'),
       getTarget: () => document.querySelector('.timer-value'),
       arrow: true,
       text: `Tap the timer to pause your session.`,
@@ -8695,7 +8772,7 @@ function buildOnboardingSteps() {
       ready: () => !!document.querySelector('.pause-overlay [data-action="confirm-end"]'),
       probe: () => !!document.querySelector('.pause-overlay [data-action="confirm-end"]'),
       getTarget: () => document.querySelector('.pause-overlay [data-action="confirm-end"]'),
-      text: `Tap <b>Yes, End Session</b> to see your results.`,
+      text: `Tap <b>Yes, End Session</b> to see your results. Unlike most focus timer apps, your time will not be discarded!`,
       enter: () => tourAdvanceOnRealClick('.pause-overlay [data-action="confirm-end"]'),
     },
     // ---------- 5. Results ----------
@@ -8725,6 +8802,7 @@ function buildOnboardingSteps() {
       id: 'open-day',
       kind: 'action',
       ready: () => !!document.querySelector(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
+      probe: () => !!document.querySelector(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
       getTarget: () => document.querySelector(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
       text: `Tap today's date to see your session.`,
       enter: () => tourAdvanceOnRealClick(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
@@ -8733,6 +8811,7 @@ function buildOnboardingSteps() {
       id: 'swipe-row',
       kind: 'action',
       ready: () => !!document.querySelector('.cal-sheet-list .log-row-wrap[data-log-id] .log-row'),
+      probe: () => !!document.querySelector('.cal-sheet-list .log-row-wrap[data-log-id] .log-row'),
       getTarget: () => document.querySelector('.cal-sheet-list .log-row-wrap[data-log-id]'),
       text: `Swipe the session left to reveal Edit and Delete.`,
       enter: () => {
@@ -8747,6 +8826,7 @@ function buildOnboardingSteps() {
       id: 'tap-delete',
       kind: 'action',
       ready: () => !!document.querySelector('.cal-sheet-list [data-action="delete-log"]'),
+      probe: () => !!document.querySelector('.cal-sheet-list [data-action="delete-log"]'),
       getTarget: () => document.querySelector('.cal-sheet-list [data-action="delete-log"]'),
       text: `Tap <b>Delete</b> to remove this practice session - it doesn't count for anything.`,
       enter: () => tourAdvanceOnRealClick('.cal-sheet-list [data-action="delete-log"]'),
@@ -8755,6 +8835,7 @@ function buildOnboardingSteps() {
       id: 'confirm-delete',
       kind: 'action',
       ready: () => !!document.querySelector('.overlay.show [data-action="yes"]'),
+      probe: () => !!document.querySelector('.overlay.show [data-action="yes"]'),
       getTarget: () => document.querySelector('.overlay.show [data-action="yes"]'),
       text: `Tap <b>Yes, delete</b> to finish up.`,
       enter: () => tourAdvanceOnRealClick('.overlay.show [data-action="yes"]'),
