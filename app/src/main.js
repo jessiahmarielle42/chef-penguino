@@ -7698,7 +7698,7 @@ function renderTapToContinue(onContinue, isAlarm, sessionSummary) {
     ? `Worked for ${formatWorkedDuration(sessionSummary.minutes)}, ${formatScoreFixed2(sessionSummary.pizzas)} pizzas made`
     : ''
   app.innerHTML = `
-    <div class="intro-start">
+    <div class="intro-start" data-intro-stage="${isAlarm ? 'results' : 'intro'}">
       <img src="${BASE}assets/penguin-icon.png" alt="Chef Penguino" />
       <h1>${isAlarm ? resultText : 'Chef Penguino'}</h1>
       <button type="button">${isAlarm ? 'Tap for Results' : 'Tap to Continue'}</button>
@@ -7713,12 +7713,13 @@ function renderDurationPicker() {
     title: 'How long do you want to work?',
     onPick: (minutes) => renderTaskPrompt(minutes),
     onBack: renderHome,
+    stage: 'duration',
   })
 }
 
-function renderTimePickerUI({ title, onPick, onBack }) {
+function renderTimePickerUI({ title, onPick, onBack, stage }) {
   app.innerHTML = `
-    <div class="picker">
+    <div class="picker"${stage ? ` data-picker-stage="${stage}"` : ''}>
       <img class="home-bg" src="${BASE}assets/home-bg.jpg" alt="" />
       ${onBack ? '<button class="back-arrow-btn back-arrow-fixed" type="button" aria-label="Back">&larr;</button>' : ''}
       <div class="picker-content">
@@ -8041,6 +8042,7 @@ function renderTimerLoop(justStarted) {
           renderTimerLoop(false)
         },
         onBack: () => renderTimerLoop(false),
+        stage: 'edit',
       })
     })
 
@@ -8580,11 +8582,16 @@ function buildOnboardingSteps() {
     {
       id: 'duration',
       kind: 'action',
-      ready: () => !!document.querySelector('.picker-grid [data-minutes="15"]'),
-      probe: () => !!document.querySelector('.picker-grid [data-minutes="15"]'),
-      getTarget: () => document.querySelector('.picker-grid [data-minutes="15"]'),
+      // Scoped to .picker[data-picker-stage="duration"] - renderTimePickerUI
+      // is reused verbatim by the pause-overlay's "Set new remaining time"
+      // Edit action, which renders the same .picker-grid [data-minutes="15"]
+      // markup; the unscoped selector let the mid-session edit picker match
+      // this step's probe and yank the tour backwards.
+      ready: () => !!document.querySelector('.picker[data-picker-stage="duration"] .picker-grid [data-minutes="15"]'),
+      probe: () => !!document.querySelector('.picker[data-picker-stage="duration"] .picker-grid [data-minutes="15"]'),
+      getTarget: () => document.querySelector('.picker[data-picker-stage="duration"] .picker-grid [data-minutes="15"]'),
       text: `Let's run a test session. You won't have to go through the whole thing - we'll end it early. Tap <b>15 min</b>.`,
-      enter: () => tourAdvanceOnRealClick('.picker-grid [data-minutes="15"]'),
+      enter: () => tourAdvanceOnRealClick('.picker[data-picker-stage="duration"] .picker-grid [data-minutes="15"]'),
     },
     {
       id: 'task-name',
@@ -8679,8 +8686,12 @@ function buildOnboardingSteps() {
     {
       id: 'results',
       kind: 'explain',
-      ready: () => !!document.querySelector('.intro-start button'),
-      probe: () => !!document.querySelector('.intro-start button'),
+      // Scoped to data-intro-stage="results" - renderTapToContinue() renders
+      // the SAME .intro-start markup for the pre-session intro screen too
+      // (isAlarm false); the unscoped selector matched that intro screen and
+      // let the probe scan teleport the tour there before any session ran.
+      ready: () => !!document.querySelector('.intro-start[data-intro-stage="results"] button'),
+      probe: () => !!document.querySelector('.intro-start[data-intro-stage="results"] button'),
       getTarget: () => null,
       text: `You just baked your first (tiny) pizza! Every session you focus adds up.`,
     },
