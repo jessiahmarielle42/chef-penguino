@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.1.4'
+const APP_VERSION = 'v2.4.2.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -8191,6 +8191,8 @@ function startOnboardingTour(resumeAfterId) {
     cleanupStep: null,
     savedAutoDarken: state.autoDarken,
     obs: null,
+    notReadyCount: 0,
+    syncing: false,
   }
   // Suppressed for the whole tour, not just the timer steps - simplest way
   // to guarantee the screen never auto-darkens mid-instruction. Restored to
@@ -8237,6 +8239,10 @@ function endOnboardingTour(markDone) {
   document.removeEventListener('click', tourExplainClickHandler)
   window.removeEventListener('resize', tourReposition)
   window.removeEventListener('scroll', tourReposition, true)
+  if (window.visualViewport) {
+    window.visualViewport.removeEventListener('resize', tourReposition)
+    window.visualViewport.removeEventListener('scroll', tourReposition)
+  }
   state.autoDarken = tour.savedAutoDarken
   // Defensive: any tour end clears a pending OAuth-resume marker too, so one
   // can never survive to trap a later tour run in a loop.
@@ -8283,6 +8289,12 @@ function tourMount() {
   root.querySelector('#tour-pro').addEventListener('click', (e) => { e.stopPropagation(); endOnboardingTour(true) })
   window.addEventListener('resize', tourReposition)
   window.addEventListener('scroll', tourReposition, true)
+  // On-screen keyboard resizes the viewport (not window) on most mobile
+  // browsers - keep the ring/card following the target through that too.
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', tourReposition)
+    window.visualViewport.addEventListener('scroll', tourReposition)
+  }
   // Re-syncs on every real screen change (new picker, timer, results,
   // history, day sheet…) without the tour needing to know each screen's
   // internals. Mutations caused by the tour's own DOM (repositioning the
@@ -8299,22 +8311,58 @@ function tourMount() {
 function tourSetVisible(show) {
   const root = document.getElementById('tour-root')
   if (!root) return
-  root.querySelectorAll('.tour-card, .tour-ring, .tour-arrow, .tour-hint').forEach(el => { el.hidden = !show })
+  // .tour-hint is handled separately in tourPositionForStep (only shown for
+  // explain, non-silent steps) - don't force it visible here.
+  root.querySelectorAll('.tour-card, .tour-ring, .tour-arrow').forEach(el => { el.hidden = !show })
+  const hint = root.querySelector('.tour-hint')
+  if (hint && !show) hint.hidden = true
   if (!show) tourClearBlockers()
 }
 
 function tourSync() {
   if (!tour) return
+  if (tour.syncing) return
   const step = tour.steps[tour.index]
   if (!step) { endOnboardingTour(true); return }
   const ready = step.ready ? step.ready() : true
   if (!ready) {
+    tour.notReadyCount = (tour.notReadyCount || 0) + 1
+    // Self-healing: if the real screen has moved on faster than the tour
+    // card was tapped, the current step's ready() can go permanently false
+    // (e.g. mid-tour the chef already advanced past this screen). Scan
+    // FORWARD ONLY for the first later step that IS ready and jump to it,
+    // rather than stranding the tour hidden forever. Only after two
+    // consecutive not-ready syncs, so a step's ready() that's merely
+    // momentarily false (e.g. pause-timer's 2s arming window) isn't
+    // mistaken for "the chef skipped ahead" and doesn't trip a later step's
+    // side-effecting ready() (shopKicked/homeKicked/settingsKicked kickers,
+    // pause-timer's arming timer) prematurely.
+    if (tour.notReadyCount >= 2) {
+      tour.syncing = true
+      try {
+        for (let i = tour.index + 1; i < tour.steps.length; i++) {
+          const candidate = tour.steps[i]
+          const candidateReady = candidate.ready ? candidate.ready() : true
+          if (candidateReady) {
+            tour.index = i
+            tour.entered = -1
+            tour.notReadyCount = 0
+            tour.syncing = false
+            tourSync()
+            return
+          }
+        }
+      } finally {
+        tour.syncing = false
+      }
+    }
     tourSetVisible(false)
     if (tour.cleanupStep) { try { tour.cleanupStep() } catch {}; tour.cleanupStep = null }
     document.removeEventListener('click', tourExplainClickHandler)
     tour.entered = -1
     return
   }
+  tour.notReadyCount = 0
   tourSetVisible(true)
   if (tour.entered !== tour.index) {
     tour.entered = tour.index
@@ -8372,8 +8420,35 @@ function tourPositionCard(card, rect) {
   const estH = card.offsetHeight || 120
   let top = rect.bottom + 16
   if (top + estH > vh - 104) top = Math.max(64, rect.top - estH - 16)
-  const left = Math.min(Math.max(16, rect.left + rect.width / 2 - cardW / 2), vw - cardW - 16)
+  const targetCenter = rect.left + rect.width / 2
+  const viewportCenter = vw / 2
+  let left
+  if (Math.abs(targetCenter - viewportCenter) <= 24) {
+    left = (vw - cardW) / 2
+  } else {
+    left = Math.min(Math.max(16, targetCenter - cardW / 2), vw - cardW - 16)
+  }
   card.style.cssText = `left:${left}px; top:${top}px; width:${cardW}px;`
+}
+
+// Positions .tour-hint immediately below the tour card, horizontally
+// centered on the card, clamped to stay on-screen and never overlap the
+// spotlight ring/target. Only called for steps where the hint is visible
+// (kind 'explain' && !step.silent - see tourPositionForStep).
+function tourPositionHint(hint, card, ringRect) {
+  const vw = window.innerWidth, vh = window.innerHeight
+  const cardRect = card.getBoundingClientRect()
+  const hintH = hint.offsetHeight || 20
+  let top = cardRect.bottom + 8
+  // Keep clear of the spotlight ring if it would otherwise overlap.
+  if (ringRect && top < ringRect.bottom + 8 && top + hintH > ringRect.top - 8) {
+    top = ringRect.bottom + 8
+  }
+  top = Math.min(top, vh - hintH - 8)
+  const cardCenter = cardRect.left + cardRect.width / 2
+  const hintW = Math.min(280, vw - 32)
+  const left = Math.min(Math.max(16, cardCenter - hintW / 2), vw - hintW - 16)
+  hint.style.cssText = `left:${left}px; top:${top}px; width:${hintW}px;`
 }
 
 function tourPositionForStep(step) {
@@ -8396,6 +8471,7 @@ function tourPositionForStep(step) {
     return
   }
   card.querySelector('p').innerHTML = step.text
+  const showHint = step.kind === 'explain' && !step.silent
   const target = step.getTarget ? step.getTarget() : null
   if (!target) {
     ring.hidden = true
@@ -8403,6 +8479,10 @@ function tourPositionForStep(step) {
     tourDimFull()
     card.classList.add('tour-card-center')
     card.style.cssText = ''
+    if (hint) {
+      hint.hidden = !showHint
+      if (showHint) tourPositionHint(hint, card, null)
+    }
     return
   }
   card.classList.remove('tour-card-center')
@@ -8419,6 +8499,13 @@ function tourPositionForStep(step) {
     arrow.hidden = true
   }
   tourPositionCard(card, rect)
+  if (hint) {
+    hint.hidden = !showHint
+    if (showHint) {
+      const ringRect = { top: rect.top - pad, bottom: rect.bottom + pad }
+      tourPositionHint(hint, card, ringRect)
+    }
+  }
 }
 
 // Wires a click on `selector` (queried fresh, since the real screen may have
@@ -8439,6 +8526,11 @@ function buildOnboardingSteps() {
   // Closure-scoped (fresh per tour run) so a replayed tour re-arms its own
   // 2-second "let the session actually run" delay from scratch.
   let pauseArmedAt = null
+  // Same pattern as shopKicked/homeKicked/settingsKicked below - a one-shot
+  // guard so replaying the tour from Settings -> Tutorials -> Replay Tutorial
+  // (background screen is Settings, not Home) navigates to Home once before
+  // the Cook FAB step waits for its target.
+  let cookHomeKicked = false
 
   const steps = [
     // ---------- 1. Welcome ----------
@@ -8454,32 +8546,67 @@ function buildOnboardingSteps() {
     {
       id: 'tap-cook',
       kind: 'action',
-      ready: () => !!document.querySelector('.tab-fab[data-action="cook"]'),
+      ready: () => {
+        const btn = document.querySelector('.tab-fab[data-action="cook"]')
+        if (!btn) { if (!cookHomeKicked) { cookHomeKicked = true; renderHome() }; return false }
+        return true
+      },
       getTarget: () => document.querySelector('.tab-fab[data-action="cook"]'),
       text: `Tap <b>Cook</b> to start a focus session.`,
       enter: () => tourAdvanceOnRealClick('.tab-fab[data-action="cook"]'),
     },
-    // ---------- 3. Through the pickers (brief, explain) ----------
+    // ---------- 3. Through the pickers (real actions) ----------
     {
       id: 'duration',
-      kind: 'explain',
-      ready: () => !!document.querySelector('.picker-grid'),
-      getTarget: () => null,
-      text: `Pick how long you want to focus for.`,
+      kind: 'action',
+      ready: () => !!document.querySelector('.picker-grid [data-minutes="15"]'),
+      getTarget: () => document.querySelector('.picker-grid [data-minutes="15"]'),
+      text: `Let's run a test session. You won't have to go through the whole thing - we'll end it early. Tap <b>15 min</b>.`,
+      enter: () => tourAdvanceOnRealClick('.picker-grid [data-minutes="15"]'),
     },
     {
       id: 'task-name',
-      kind: 'explain',
+      kind: 'action',
       ready: () => !!document.querySelector('.task-input'),
-      getTarget: () => null,
-      text: `Give the session a short name.`,
+      getTarget: () => document.querySelector('.task-input'),
+      text: `Type anything - it's just a label for this session.`,
+      enter: () => {
+        const el = document.querySelector('.task-input')
+        if (!el) return null
+        const onInput = () => { if (el.value.trim().length > 0) tourAdvance() }
+        el.addEventListener('input', onInput)
+        return () => el.removeEventListener('input', onInput)
+      },
+    },
+    {
+      id: 'task-done',
+      kind: 'action',
+      ready: () => !!document.querySelector('.picker [data-done]'),
+      getTarget: () => document.querySelector('.picker [data-done]'),
+      text: `Tap <b>Done</b>.`,
+      enter: () => tourAdvanceOnRealClick('.picker [data-done]'),
     },
     {
       id: 'task-type',
-      kind: 'explain',
-      ready: () => !!document.querySelector('.tt-type-list'),
-      getTarget: () => null,
-      text: `Pick a category, then start cooking!`,
+      kind: 'action',
+      ready: () => !!document.querySelector('.picker .tt-type-list .tt-type-row'),
+      getTarget: () => document.querySelector('.picker .tt-type-list'),
+      text: `Pick any category.`,
+      enter: () => {
+        const list = document.querySelector('.picker .tt-type-list')
+        if (!list) return null
+        const onClick = (e) => { if (e.target.closest('.tt-type-row')) tourAdvance() }
+        list.addEventListener('click', onClick)
+        return () => list.removeEventListener('click', onClick)
+      },
+    },
+    {
+      id: 'start-cook',
+      kind: 'action',
+      ready: () => !!document.querySelector('.picker [data-start]'),
+      getTarget: () => document.querySelector('.picker [data-start]'),
+      text: `Tap <b>Start cooking</b>.`,
+      enter: () => tourAdvanceOnRealClick('.picker [data-start]'),
     },
     // ---------- 4. On the timer (two-part action) ----------
     {

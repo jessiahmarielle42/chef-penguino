@@ -3065,7 +3065,7 @@ img.shop-image {
   position: fixed; margin: 0; max-width: none; padding: 1rem 1.125rem;
   text-align: left; pointer-events: none; animation: none;
 }
-.tour-card.popup p { margin: 0; font-size: 0.875rem; line-height: 1.45; color: var(--cream); }
+.tour-card.popup p { margin: 0; font-size: 0.875rem; line-height: 1.45; color: var(--cream); text-align: center; }
 .tour-card[hidden] { display: none; }
 .tour-card-center.popup {
   left: 50%; right: auto; bottom: 7.5rem; top: auto; transform: translateX(-50%);
@@ -3085,7 +3085,7 @@ img.shop-image {
   font-size: 0.6875rem; font-weight: 700; padding: 0.125rem 0.25rem; cursor: pointer;
 }
 .tour-hint {
-  position: fixed; left: 0; right: 0; bottom: 6rem; text-align: center;
+  position: fixed; text-align: center;
   color: var(--cream); opacity: 0.85; font-size: 0.75rem; font-weight: 700; pointer-events: none;
 }
 .tour-hint[hidden] { display: none; }
