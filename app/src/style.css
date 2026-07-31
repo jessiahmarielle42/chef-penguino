@@ -731,6 +731,10 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   box-shadow: var(--shadow);
 }
 .a2hs-caption { font-size:0.875rem; line-height:1.45; color: var(--cream); max-width:17rem; }
+/* The Android captures are landscape crops, not full portrait screenshots, so
+   the 15.5rem cap sized for a tall phone shot would shrink them to the point
+   the highlighted menu item is unreadable. Wider cap, same radius and border. */
+.a2hs-panel[data-panel="android"] .a2hs-shot { max-width:20rem; }
 .a2hs-num {
   display:inline-flex; align-items:center; justify-content:center;
   width:1.25rem; height:1.25rem; margin-right:0.4375rem;

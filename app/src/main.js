@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.1.0'
+const APP_VERSION = 'v2.4.1.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -5143,6 +5143,12 @@ const IOS_A2HS_STEPS = [
   { img: 'ios-5.jpg', caption: `The icon's now on your homescreen, ready to cook!` },
 ]
 
+const ANDROID_A2HS_STEPS = [
+  { img: 'android-1.png', caption: `Tap the <b>⋮</b> menu in Chrome` },
+  { img: 'android-2.png', caption: `Tap <b>Add to Home screen</b>` },
+  { img: 'android-3.png', caption: `Tap <b>Add</b> - the icon's now on your homescreen, ready to cook!` },
+]
+
 function renderAddToHomescreenGuide() {
   addToHomescreenTab = 'ios'
   const content = `
@@ -5168,7 +5174,15 @@ function renderAddToHomescreenGuide() {
             <p>Your browser can install Chef Penguino directly - no bookmarking needed.</p>
             <button type="button" class="a2hs-install-btn" data-action="native-install">Install</button>
           </div>`
-        : `<p class="editpic-empty">Screenshots coming soon</p>`}
+        : ''}
+      <div class="a2hs-steps">
+        ${ANDROID_A2HS_STEPS.map((s, i) => `
+          <div class="a2hs-step">
+            <img class="a2hs-shot" src="${BASE}assets/homescreen/${s.img}" alt="Step ${i + 1}" loading="lazy" />
+            <p class="a2hs-caption"><span class="a2hs-num">${i + 1}</span>${s.caption}</p>
+          </div>
+        `).join('')}
+      </div>
     </div>
   `
   mountScreen('settings', content, () => {
