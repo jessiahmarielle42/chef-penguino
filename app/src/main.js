@@ -8778,15 +8778,21 @@ function buildOnboardingSteps() {
     // ---------- 5. Results ----------
     {
       id: 'results',
-      kind: 'explain',
+      kind: 'action',
       // Scoped to data-intro-stage="results" - renderTapToContinue() renders
       // the SAME .intro-start markup for the pre-session intro screen too
       // (isAlarm false); the unscoped selector matched that intro screen and
       // let the probe scan teleport the tour there before any session ran.
+      // Anchored to the real button (action, not explain) rather than
+      // relying on the document-level tap-anywhere handler - that handler
+      // gets torn down during the not-ready window while the results video
+      // is playing (tourSync's not-ready branch removes it and resets
+      // tour.entered), which silently ate the step and it never rendered.
       ready: () => !!document.querySelector('.intro-start[data-intro-stage="results"] button'),
       probe: () => !!document.querySelector('.intro-start[data-intro-stage="results"] button'),
-      getTarget: () => null,
-      text: `You just baked your first (tiny) pizza! Every session you focus adds up.`,
+      getTarget: () => document.querySelector('.intro-start[data-intro-stage="results"] button'),
+      text: `You just baked your first (tiny) pizza! Every session you focus adds up. Tap <b>Tap for Results</b>.`,
+      enter: () => tourAdvanceOnRealClick('.intro-start[data-intro-stage="results"] button'),
     },
     // ---------- 6. History + swipe-to-delete ----------
     {
