@@ -8,7 +8,14 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/assets/favicon-16.png" />
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
-    <meta name="theme-color" content="#f6c64b" />
+    <!-- Dark-theme page background, since dark is the default. applyTheme()
+         rewrites this on load and on every theme toggle - see PAGE_BG in main.js,
+         which must stay in step with --page-bg in style.css. -->
+    <meta name="theme-color" content="#120c09" />
+    <!-- Without this the installed app renders iOS's `default` status bar: a
+         white strip with dark text, regardless of the app's own theme. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <!-- viewport-fit=cover is required for env(safe-area-inset-*) to report real
          values on iOS; without it they resolve to 0, which is why the header
          padded with a hardcoded guess and the tab bar's bottom inset never

@@ -380,8 +380,19 @@ function save() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
 }
 
+// The status bar area behind an installed web app is painted with theme-color,
+// so it has to track the theme or the notch strip ends up a different colour
+// from the app under it - it was pinned to the brand gold, which iOS rendered
+// as a pale strip above a dark app.
+// Deliberately NOT apple-mobile-web-app-status-bar-style=black-translucent, the
+// usual answer: that forces the status bar TEXT to always be light, which is
+// unreadable against the light theme. theme-color lets iOS pick legible text
+// for whichever background we hand it.
+const PAGE_BG = { dark: '#120c09', light: '#F4ECE0' } // must match --page-bg in style.css
 function applyTheme() {
   document.documentElement.setAttribute('data-theme', state.lightMode ? 'light' : 'dark')
+  const meta = document.querySelector('meta[name="theme-color"]')
+  if (meta) meta.setAttribute('content', state.lightMode ? PAGE_BG.light : PAGE_BG.dark)
 }
 applyTheme()
 
