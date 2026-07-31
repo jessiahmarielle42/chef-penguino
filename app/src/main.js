@@ -8441,16 +8441,15 @@ function tourPositionCard(card, rect) {
   const vw = window.innerWidth, vh = window.innerHeight
   const cardW = Math.min(320, vw - 32)
   const estH = card.offsetHeight || 120
+  // Vertical placement is unchanged: below the target, flipping above when
+  // it would run off the bottom of the viewport.
   let top = rect.bottom + 16
   if (top + estH > vh - 104) top = Math.max(64, rect.top - estH - 16)
-  const targetCenter = rect.left + rect.width / 2
-  const viewportCenter = vw / 2
-  let left
-  if (Math.abs(targetCenter - viewportCenter) <= 24) {
-    left = (vw - cardW) / 2
-  } else {
-    left = Math.min(Math.max(16, targetCenter - cardW / 2), vw - cardW - 16)
-  }
+  // Horizontal placement is unconditionally centered on the VIEWPORT
+  // (never anchored to the target's horizontal center) - anchoring to an
+  // off-center target's position made the card look misaligned rather than
+  // deliberate.
+  const left = (vw - cardW) / 2
   card.style.cssText = `left:${left}px; top:${top}px; width:${cardW}px;`
 }
 
@@ -8517,7 +8516,17 @@ function tourPositionForStep(step) {
   else tourClearBlockers()
   if (step.arrow) {
     arrow.hidden = false
-    arrow.style.cssText = `left:${rect.left + rect.width / 2 - 14}px; top:${Math.max(4, rect.top - 46)}px;`
+    const fitsAbove = rect.top - 46 >= 4
+    if (fitsAbove) {
+      arrow.textContent = '👇'
+      arrow.style.cssText = `left:${rect.left + rect.width / 2 - 14}px; top:${rect.top - 46}px;`
+    } else {
+      // No room above the target (e.g. pause-timer's chip sits right at the
+      // top of the screen) - flip the arrow below the target instead of
+      // clamping it on top, covering the thing it's meant to point at.
+      arrow.textContent = '👆'
+      arrow.style.cssText = `left:${rect.left + rect.width / 2 - 14}px; top:${rect.bottom + 8}px;`
+    }
   } else {
     arrow.hidden = true
   }
