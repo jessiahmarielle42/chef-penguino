@@ -6,9 +6,31 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.3.3.0'
+const APP_VERSION = 'v2.4.0.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
+
+// Native "Add to Home Screen" install support - capability detection, NOT
+// browser sniffing. Chromium-family browsers (desktop/Android Chrome, Edge,
+// Brave, Samsung Internet...) fire `beforeinstallprompt` when the page meets
+// install criteria (manifest + service-worker-less PWA still qualifies with
+// just a manifest in modern Chrome); we stash that event and can replay it
+// on demand via .prompt(). Anything that never fires it - iOS Safari,
+// Firefox, or a Chromium instance that already installed the app - simply
+// leaves deferredInstallPrompt null, and callers fall back to the manual
+// tutorial. Checking navigator.userAgent instead would be wrong: it can't
+// tell us whether the browser will actually honor a prompt() call, only
+// what it claims to be, and UA strings drift/lie across versions and
+// embedded webviews. Presence of the real event is the only thing that
+// reliably answers "can I install this right now?".
+let deferredInstallPrompt = null
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault()
+  deferredInstallPrompt = e
+})
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null
+})
 
 // Single source of truth for which destructive confirms play the
 // barrel-explosion clip (see playDeleteClip()). Action-based, not
@@ -75,7 +97,7 @@ async function refreshProfile() {
   // loads and the app doesn't break for signed-in users before the migration.
   let { data } = await supabase
     .from('profiles')
-    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels, level_seen')
+    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels, level_seen, waving_free, onboarding_done, onboarding_coin_claimed')
     .eq('id', currentUser.id)
     .single()
   if (!data) {
@@ -363,7 +385,9 @@ function load() {
     pizzas: 0, muted: false, volume: 0.5, lastVolume: 0.5, darkenLevel: 1, autoDarken: true,
     timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null,
     pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', lastSeenCoins: null,
-    lightMode: false, taskTypeLabels: {}, deleteAnimations: true,
+    lightMode: false, taskTypeLabels: {}, deleteAnimations: true, onboardingDone: false,
+    onboardingResumeStep: null,
+    lastHomescreenPromptAt: null, homescreenPromptDismissedForever: false,
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -599,6 +623,7 @@ async function boot() {
   if (data.session?.user) {
     await handleSignedIn(data.session.user)
     checkLevelUp()
+    maybeResumeOnboardingTour()
   }
 
   supabase.auth.onAuthStateChange((event, session) => {
@@ -610,6 +635,7 @@ async function boot() {
         checkPendingCoinGifts()
         checkPendingWarnings()
         ensureBugFab()
+        maybeResumeOnboardingTour()
       })
     } else if (event === 'SIGNED_OUT') {
       unsubscribeFromSocial()
@@ -635,6 +661,11 @@ async function boot() {
     }
   } else {
     renderHome()
+    // Auto-start the tour only on a fresh Home landing (never mid-session) -
+    // see maybeAutoStartOnboardingTour(). The welcome step needs no DOM, and
+    // later steps pick up the Home markup via the tour's own MutationObserver
+    // once renderHome()'s async fetch finishes mounting it.
+    maybeAutoStartOnboardingTour()
   }
   ensureBugFab()
   checkPendingNoots()
@@ -794,7 +825,19 @@ const LORE_VIDEOS = [
 function ownedEmotes() {
   return (currentProfile ? currentProfile.owned_emotes : state.ownedEmotes) || []
 }
-function isOwned(id) { return id === 'waving' || ownedEmotes().includes(id) }
+// Waving is free (without ever being added to owned_emotes - see coinBalance
+// comment above) for: guests (not signed in yet, so not a "new signup"), and
+// signed-in users grandfathered via profiles.waving_free. Guard the column
+// read with `?.` and treat undefined as free: pre-migration the column
+// doesn't exist yet, and the safe default is "everyone keeps waving free"
+// until the migration lands, so nothing breaks in the interim.
+function wavingFreeForCurrentUser() {
+  return !isSignedIn() || currentProfile?.waving_free !== false
+}
+function isOwned(id) {
+  if (id === 'waving') return wavingFreeForCurrentUser() || ownedEmotes().includes(id)
+  return ownedEmotes().includes(id)
+}
 function coinsEarned() { return Math.floor(Math.floor(displayPizzas()) / 12) }
 // coin_adjustment is the net of coins gifted away (-) and received (+); it
 // only exists for signed-in profiles. Guests can't gift, so it's 0 for them.
@@ -848,9 +891,28 @@ function levelProgress() {
   return { level, next, into, need, pct }
 }
 
+// Same ownership rules as equippedEmote()/isOwned()/wavingFreeForCurrentUser(),
+// but generalized to any profile row (e.g. a friend's, from a friends-list
+// select) instead of always reading currentProfile/state. Returns the
+// equipped emote id if owned, else 'waving' if waving is free to that
+// profile, else null (owns nothing - e.g. a new signup who hasn't bought
+// an emote yet).
+function effectiveEmoteFor(profileRow) {
+  const owned = profileRow?.owned_emotes || []
+  const wavingFree = profileRow?.waving_free !== false
+  const e = profileRow?.equipped_emote || 'waving'
+  const isOwnedByRow = (id) => (id === 'waving' ? (wavingFree || owned.includes(id)) : owned.includes(id))
+  if (isOwnedByRow(e)) return e
+  return wavingFree ? 'waving' : null
+}
+
+// Returns the equipped emote id if owned, else 'waving' if waving is free to
+// this user, else null (user owns nothing - e.g. a new signup who hasn't
+// bought an emote yet).
 function equippedEmote() {
   const e = (currentProfile ? currentProfile.equipped_emote : state.equippedEmote) || 'waving'
-  return isOwned(e) ? e : 'waving'
+  if (isOwned(e)) return e
+  return wavingFreeForCurrentUser() ? 'waving' : null
 }
 
 async function buyEmote(id) {
@@ -1343,12 +1405,18 @@ async function renderHome() {
     ? groups.map(g => renderDateGroup(g, true)).join('')
     : '<p class="log-empty">No sessions yet. Start cooking!</p>'
 
+  // Owns nothing (new signup who hasn't bought waving yet) - button still
+  // reads "Tap to emote", but tapping just toasts a nudge to the Shop
+  // instead of navigating (no clip to play).
+  const myEmote = equippedEmote()
+  const heroTapHtml = `<button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>`
+
   const content = `
     <div class="hero-card" id="hero-card" role="button" tabindex="0">
       <img class="hero-still" src="${heroSrc}" alt="" />
       <div class="glow"></div>
       <button class="hero-info" type="button" data-action="emote-info" aria-label="About emotes">i</button>
-      <button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>
+      ${heroTapHtml}
     </div>
 
     <div class="tiles">
@@ -1383,22 +1451,27 @@ async function renderHome() {
     app.querySelector('[data-action="emote-info"]')?.addEventListener('click', (e) => { e.stopPropagation(); openEmoteInfo() })
 
     // Tap the shopfront to play the equipped emote, then revert to the still.
+    // If the chef owns no emote yet, tapping just nudges toward the Shop via
+    // toast - no navigation, no clip to play.
     const attachEmoteTap = (btnHost) => {
       btnHost.addEventListener('click', () => {
+        if (!myEmote) { toast('Equip emotes in shop'); return }
         const img = app.querySelector('#hero-card .hero-still')
         if (img && img.tagName === 'IMG') {
-          playEmoteInto(img, equippedEmote(), heroSrc)
+          playEmoteInto(img, myEmote, heroSrc)
         }
       })
     }
     attachEmoteTap(app.querySelector('#hero-card'))
     // Greet the chef with their equipped emote on arrival - buffered first so
-    // it plays smoothly rather than stuttering into life.
-    autoplayEmoteWhenReady(app.querySelector('#hero-card .hero-still'), equippedEmote(), heroSrc)
+    // it plays smoothly rather than stuttering into life. No clip to preload
+    // when the chef owns nothing yet.
+    if (myEmote) autoplayEmoteWhenReady(app.querySelector('#hero-card .hero-still'), myEmote, heroSrc)
 
     // Log content is already in the DOM (built above) — just wire the swipes.
     wireLogSwipe(app.querySelector('#home-log'))
     maybeShowCoinMilestone()
+    maybeShowAddToHomescreenPrompt()
   })
 }
 
@@ -1441,6 +1514,72 @@ function maybeShowCoinMilestone() {
       toast(`${coinImg('toast-coin')} +${gained} coin${gained > 1 ? 's' : ''}!`)
     })
   }
+}
+
+// Recurring "Add this lil' app to Homescreen?" nudge - fires at most once
+// every 6 hours, for guests and signed-in users alike (localStorage only,
+// no DB column). Skipped entirely in standalone/installed mode, during an
+// active cooking session, while the onboarding tour is running, or if
+// another popup/overlay is already up. Checked once per app load from
+// renderHome (see maybeShowCoinMilestone's call site) - homescreenPromptShownThisSession
+// keeps it from firing again if Home re-renders later in the same visit.
+const HOMESCREEN_PROMPT_INTERVAL_MS = 6 * 60 * 60 * 1000
+let homescreenPromptShownThisSession = false
+function isStandaloneApp() {
+  return (window.matchMedia?.('(display-mode: standalone)').matches) || window.navigator.standalone === true
+}
+
+// Shared entry point for both "add to homescreen" surfaces (the recurring
+// popup's button and Settings > Tutorials > Add to Homescreen row). If the
+// browser handed us a real beforeinstallprompt event, replay it - that's a
+// native install, no tutorial needed. Otherwise fall back to the manual
+// step-by-step guide subpage, exactly as before.
+function triggerAddToHomescreen() {
+  if (deferredInstallPrompt) {
+    const evt = deferredInstallPrompt
+    deferredInstallPrompt = null
+    evt.prompt()
+    return
+  }
+  renderAddToHomescreenGuide()
+}
+function maybeShowAddToHomescreenPrompt() {
+  if (homescreenPromptShownThisSession) return
+  if (isStandaloneApp()) return
+  if (state.homescreenPromptDismissedForever) return
+  if (state.timer) return
+  if (tour) return
+  if (document.querySelector('.overlay.show')) return
+  const last = state.lastHomescreenPromptAt
+  if (last && Date.now() - last < HOMESCREEN_PROMPT_INTERVAL_MS) return
+
+  homescreenPromptShownThisSession = true
+  state.lastHomescreenPromptAt = Date.now()
+  save()
+
+  const o = overlay(`
+    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
+    <h3>Add this lil' app to Homescreen?</h3>
+    <img class="add-homescreen-img" src="${BASE}assets/add-homescreen.jpg" alt="" />
+    <p>Makes cooking pizzas super convenient for you.</p>
+    <div class="home-btn-col">
+      <button type="button" data-action="add">Add to homescreen</button>
+      <button type="button" class="btn-secondary" data-action="never">Don't show again</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="add"]').addEventListener('click', () => {
+    o.remove()
+    if (deferredInstallPrompt) { triggerAddToHomescreen(); return }
+    renderSettings(false, true)
+  })
+  o.querySelector('[data-action="never"]').addEventListener('click', () => {
+    o.remove()
+    state.homescreenPromptDismissedForever = true
+    save()
+    playDeleteClip()
+  })
 }
 
 // =================================================================
@@ -2535,14 +2674,14 @@ async function loadFriendsList() {
 // unfiltered pre-migration query - which only ever contained accepted rows
 // anyway - so the board still loads if that migration hasn't been run yet.
 async function fetchAcceptedFriends() {
-  const sel = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote, baking_since)'
+  const sel = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote, owned_emotes, waving_free, baking_since)'
   let { data, error } = await supabase.from('friends').select(sel).eq('status', 'accepted')
   // Fall back twice: once without the status filter (pre-friend-requests DB),
   // then without baking_since (pre-migration_baking_now DB), so the board
   // still loads on an older schema instead of coming back empty.
   if (error) ({ data, error } = await supabase.from('friends').select(sel))
   if (error) {
-    const legacy = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote)'
+    const legacy = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote, owned_emotes)'
     ;({ data } = await supabase.from('friends').select(legacy))
   }
   return data || []
@@ -3620,6 +3759,10 @@ function renderFriendHome(friend) {
   const toNext = 12 - stash
   const pct = Math.round((stash / 12) * 100)
   const heroSrc = pizzaImagePath(stash)
+  // Only play/offer an emote on a friend's page if THEY actually own one -
+  // never assume the raw equipped_emote DB field is playable, since a new
+  // signup who hasn't bought anything yet still has it defaulted to 'waving'.
+  const friendEmote = effectiveEmoteFor(friend)
 
   const content = `
     <div class="viewing-banner" id="viewing-banner" role="button" tabindex="0" aria-label="Back to Chefs">
@@ -3629,7 +3772,7 @@ function renderFriendHome(friend) {
     <div class="hero-card" id="hero-card" role="button" tabindex="0">
       <img class="hero-still" src="${heroSrc}" alt="" />
       <div class="glow"></div>
-      <button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>
+      ${friendEmote ? `<button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>` : ''}
     </div>
 
     <div class="tiles">
@@ -3660,11 +3803,13 @@ function renderFriendHome(friend) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); renderFriends() }
     })
     app.querySelector('#hero-card')?.addEventListener('click', () => {
+      if (!friendEmote) return
       const img = app.querySelector('#hero-card .hero-still')
-      if (img && img.tagName === 'IMG') playEmoteInto(img, friend.equipped_emote || 'waving', heroSrc)
+      if (img && img.tagName === 'IMG') playEmoteInto(img, friendEmote, heroSrc)
     })
-    // Same welcome on a friend's Pizzeria: preload, then play once.
-    autoplayEmoteWhenReady(app.querySelector('#hero-card .hero-still'), friend.equipped_emote || 'waving', heroSrc)
+    // Same welcome on a friend's Pizzeria: preload, then play once. Skip
+    // entirely if the friend owns no emote - nothing to preload or play.
+    if (friendEmote) autoplayEmoteWhenReady(app.querySelector('#hero-card .hero-still'), friendEmote, heroSrc)
   }, { hideStatusBar: true, key: 'friend-home' })
 }
 
@@ -4248,7 +4393,7 @@ function openAvatarCropper(file, onCropped) {
 // =================================================================
 //  Settings
 // =================================================================
-function renderSettings(highlightProfile) {
+function renderSettings(highlightProfile, highlightHomescreen) {
   const signed = isSignedIn()
   const avatarSrc = myAvatar()
 
@@ -4283,8 +4428,8 @@ function renderSettings(highlightProfile) {
     <div class="group">
       <p class="glab">Tutorials</p>
       <div class="glist">
-        <div class="grow" role="button" tabindex="0" data-action="add-to-homescreen">
-          <div><div class="gt">Add to Homescreen</div><div class="gs">Tutorial: How to add this webapp to your phone's homescreen</div></div>
+        <div class="grow" id="add-homescreen-row" role="button" tabindex="0" data-action="add-to-homescreen">
+          <div><div class="gt">Add to Homescreen</div><div class="gs">How to add this webapp to phone's homescreen</div></div>
           <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
         </div>
         <div class="grow" role="button" tabindex="0" data-action="replay-tutorial">
@@ -4392,11 +4537,9 @@ function renderSettings(highlightProfile) {
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="task-types"]')?.addEventListener('click', renderTaskTypesEditor)
     app.querySelector('[data-action="lore"]')?.addEventListener('click', renderLore)
-    app.querySelector('[data-action="add-to-homescreen"]')?.addEventListener('click', renderAddToHomescreenGuide)
+    app.querySelector('[data-action="add-to-homescreen"]')?.addEventListener('click', triggerAddToHomescreen)
     app.querySelector('[data-action="replay-tutorial"]')?.addEventListener('click', () => {
-      // PLACEHOLDER: the onboarding/spotlight tour engine doesn't exist yet.
-      // Once it's built, replace this with a call to startOnboardingTour().
-      toast('Tutorial coming soon!')
+      startOnboardingTour()
     })
     app.querySelector('[data-action="steam"]')?.addEventListener('click', () => {
       window.open('https://store.steampowered.com/app/1451480/The_Greatest_Penguin_Heist_of_All_Time/', '_blank', 'noopener')
@@ -4439,6 +4582,13 @@ function renderSettings(highlightProfile) {
 
     if (highlightProfile) {
       const row = app.querySelector('#profile-row')
+      if (row) {
+        row.classList.remove('highlight'); void row.offsetWidth; row.classList.add('highlight')
+        setTimeout(() => row.classList.remove('highlight'), 3600)
+      }
+    }
+    if (highlightHomescreen) {
+      const row = app.querySelector('#add-homescreen-row')
       if (row) {
         row.classList.remove('highlight'); void row.offsetWidth; row.classList.add('highlight')
         setTimeout(() => row.classList.remove('highlight'), 3600)
@@ -4982,6 +5132,17 @@ function renderLore() {
 
 let addToHomescreenTab = 'ios' // 'ios' | 'android' - defaults to iOS on open
 
+// Ordered captions for ios-1.jpg..ios-5.jpg (app/public/assets/homescreen/).
+// Step 4 calls out that "Open as Web App" must stay ON, or iOS falls back to
+// a plain Safari bookmark - no standalone chrome, no fullscreen.
+const IOS_A2HS_STEPS = [
+  { img: 'ios-1.jpg', caption: `Tap the <b>•••</b> menu in Safari` },
+  { img: 'ios-2.jpg', caption: `Tap <b>Share</b>` },
+  { img: 'ios-3.jpg', caption: `Tap <b>Add to Home Screen</b>` },
+  { img: 'ios-4.jpg', caption: `Keep <b>"Open as Web App"</b> switched on, then tap <b>Add</b> - turning it off gives you a plain bookmark, not the full app` },
+  { img: 'ios-5.jpg', caption: `The icon's now on your homescreen, ready to cook!` },
+]
+
 function renderAddToHomescreenGuide() {
   addToHomescreenTab = 'ios'
   const content = `
@@ -4992,14 +5153,27 @@ function renderAddToHomescreenGuide() {
       <button type="button" data-v="android">Android</button>
     </div>
     <div class="a2hs-panel" data-panel="ios">
-      <p class="editpic-empty">Screenshots coming soon</p>
+      <div class="a2hs-steps">
+        ${IOS_A2HS_STEPS.map((s, i) => `
+          <div class="a2hs-step">
+            <img class="a2hs-shot" src="${BASE}assets/homescreen/${s.img}" alt="Step ${i + 1}" loading="lazy" />
+            <p class="a2hs-caption"><span class="a2hs-num">${i + 1}</span>${s.caption}</p>
+          </div>
+        `).join('')}
+      </div>
     </div>
     <div class="a2hs-panel" data-panel="android" hidden>
-      <p class="editpic-empty">Screenshots coming soon</p>
+      ${deferredInstallPrompt
+        ? `<div class="a2hs-native">
+            <p>Your browser can install Chef Penguino directly - no bookmarking needed.</p>
+            <button type="button" class="a2hs-install-btn" data-action="native-install">Install</button>
+          </div>`
+        : `<p class="editpic-empty">Screenshots coming soon</p>`}
     </div>
   `
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
+    app.querySelector('[data-action="native-install"]')?.addEventListener('click', triggerAddToHomescreen)
     app.querySelectorAll('#a2hs-seg button').forEach(b => {
       b.addEventListener('click', () => {
         if (b.dataset.v === addToHomescreenTab) return
@@ -7880,4 +8054,686 @@ function renderTimerLoop(justStarted) {
   } else {
     startTicking()
   }
+}
+
+// =================================================================
+//  Onboarding tour engine (spotlight coach-marks) — steps 1-6, the
+//  "cooking half". Steps 7+ (coin claim, forced waving purchase, equip,
+//  tap-to-emote demo, Add to Homescreen) are a separate later task - see the
+//  TODO at the bottom of buildOnboardingSteps().
+//
+//  The whole overlay lives outside #app, appended straight to <body>, so it
+//  survives every app.innerHTML swap the tour walks through (home -> intro
+//  video -> pickers -> timer -> results -> history -> day sheet) instead of
+//  getting wiped by mountScreen()/renderIntro()/etc.
+//
+//  z-index 90: above every ordinary screen and popup/sheet it may need to
+//  sit over or point at (.overlay 70, #bug-fab 65, .cal-sheet 60,
+//  .cal-scrim 50, .pause-overlay 4, .darken-overlay 5, .tabbar 3), but below
+//  .lore-player (999), which must never be covered.
+//
+//  Two step kinds:
+//    - explain: a description card only, no target. A document-level click
+//      listener (bubble phase, never preventDefault/stopPropagation'd)
+//      advances the tour on ANY tap - it never swallows the tap, so if that
+//      tap also lands on a real control (e.g. a duration button) that
+//      control's own handler still runs normally and the real screen still
+//      advances too.
+//    - action: the user must perform the REAL action on a real target. Four
+//      fixed "blocker" rectangles surround the target's bounding rect - an
+//      actual gap in the DOM with nothing overlaid on it, not just a
+//      transparent hit-test hole - so the target is genuinely the only
+//      clickable thing on screen; taps elsewhere hit an opaque blocker and
+//      go nowhere. The tour advances only when the real target itself is
+//      clicked (or, for the swipe-to-reveal step, when it detects the row's
+//      own "open" class actually appears).
+// =================================================================
+
+let tour = null // non-null while active: { steps, index, entered, timers, savedAutoDarken, cleanupStep, obs }
+
+// ---- eligibility: single source of truth (step 7's coin-claim reuses this) ----
+// Mirrors supabase/migration_onboarding.sql's claim_onboarding_coin() refusal
+// conditions exactly, so the client never promises a coin the server would
+// then refuse to grant. Guests are never eligible - the coin is a signed-in
+// profile column. Every profile column read is optional-chained so this
+// stays safe pre-migration (refreshProfile() already falls back to a
+// pre-migration column set when these columns don't exist yet).
+function isEligibleForOnboardingCoin() {
+  if (!isSignedIn()) return false
+  if (currentProfile?.onboarding_coin_claimed) return false
+  if (coinsEarned() >= 1) return false
+  if (coinAdjustment() !== 0) return false
+  if (isOwned('waving')) return false
+  return true
+}
+
+function onboardingDoneForCurrentUser() {
+  return isSignedIn() ? currentProfile?.onboarding_done === true : !!state.onboardingDone
+}
+
+// Fire-and-forget for signed-in users (mirrors setBakingNow()'s pattern) -
+// never blocks ending the tour on a slow/failed network write.
+function markOnboardingDone() {
+  if (isSignedIn() && currentUser) {
+    if (currentProfile) currentProfile.onboarding_done = true
+    supabase.from('profiles').update({ onboarding_done: true }).eq('id', currentUser.id).then(() => {}, () => {})
+  } else {
+    state.onboardingDone = true
+    save()
+  }
+}
+
+// Called once at boot, only on a fresh Home landing (never mid-session, and
+// never more than once, since onboardingDoneForCurrentUser() flips true the
+// moment a tour finishes or is skipped).
+function maybeAutoStartOnboardingTour() {
+  if (tour) return
+  if (onboardingDoneForCurrentUser()) return
+  // Only brand-new chefs get pulled into the tour unasked. Both flags default
+  // to false, so without this every existing user would be auto-started into a
+  // tutorial for an app they already know - the migration grandfathers signed-in
+  // profiles, and this covers guests, whose flag lives in localStorage and so
+  // can't be backfilled. Anyone with pizzas or a session behind them has
+  // clearly used the app before; they can still replay it from Settings.
+  if (displayPizzas() > 0 || (state.log && state.log.length > 0)) {
+    markOnboardingDone()
+    return
+  }
+  startOnboardingTour()
+}
+
+// `resumeAfterId`, when passed, starts the tour at that step's index instead
+// of the beginning - used to resume at the coin-claim steps after a Google
+// OAuth round trip (see maybeResumeOnboardingTour()). Falls back through a
+// short candidate list if that exact step isn't in this run's array (e.g. the
+// chef became ineligible for the coin between opening the sign-in prompt and
+// finishing sign-in), so it always lands somewhere sane instead of restarting
+// the whole tour from Welcome.
+function startOnboardingTour(resumeAfterId) {
+  if (tour) return
+  const steps = buildOnboardingSteps()
+  let startIndex = 0
+  if (resumeAfterId) {
+    const candidates = [resumeAfterId, 'tap-emote-demo', 'add-to-homescreen']
+    for (const id of candidates) {
+      const idx = steps.findIndex(s => s.id === id)
+      if (idx >= 0) { startIndex = idx; break }
+    }
+  }
+  tour = {
+    steps,
+    index: startIndex,
+    entered: -1,
+    timers: [],
+    cleanupStep: null,
+    savedAutoDarken: state.autoDarken,
+    obs: null,
+  }
+  // Suppressed for the whole tour, not just the timer steps - simplest way
+  // to guarantee the screen never auto-darkens mid-instruction. Restored to
+  // the user's real setting (not hardcoded true) the moment the tour ends.
+  state.autoDarken = false
+  save()
+  document.addEventListener('visibilitychange', onTourVisibilityChange)
+  tourMount()
+  tourSync()
+}
+
+// Consumes the OAuth-resume marker at most once (cleared immediately on
+// read, before it's acted on) so a stale/bad marker can never trap the chef
+// in a resume loop. Called from both boot() paths (initial getSession() and
+// the SIGNED_IN auth-state-change branch) since either can be the one that
+// observes the post-redirect session first.
+function maybeResumeOnboardingTour() {
+  const resumeId = state.onboardingResumeStep
+  if (!resumeId) return
+  state.onboardingResumeStep = null
+  save()
+  if (!isSignedIn() || tour) return
+  startOnboardingTour(resumeId)
+}
+
+// Navigating away from the app entirely (backgrounding, switching tabs) ends
+// the tour silently rather than trying to resume it later.
+function onTourVisibilityChange() {
+  if (document.hidden && tour) endOnboardingTour(true)
+}
+
+function tourClearTimers() {
+  if (!tour) return
+  tour.timers.forEach(clearTimeout)
+  tour.timers = []
+}
+
+function endOnboardingTour(markDone) {
+  if (!tour) return
+  tourClearTimers()
+  if (tour.cleanupStep) { try { tour.cleanupStep() } catch {} }
+  if (tour.obs) tour.obs.disconnect()
+  document.removeEventListener('visibilitychange', onTourVisibilityChange)
+  document.removeEventListener('click', tourExplainClickHandler)
+  window.removeEventListener('resize', tourReposition)
+  window.removeEventListener('scroll', tourReposition, true)
+  state.autoDarken = tour.savedAutoDarken
+  // Defensive: any tour end clears a pending OAuth-resume marker too, so one
+  // can never survive to trap a later tour run in a loop.
+  state.onboardingResumeStep = null
+  save()
+  document.getElementById('tour-root')?.remove()
+  tour = null
+  if (markDone) markOnboardingDone()
+}
+
+// Advancing NEVER ends the tour early except off the very last step - only
+// Skip Tutorial / "I'm a pro." end it before that.
+function tourAdvance() {
+  if (!tour) return
+  if (tour.index >= tour.steps.length - 1) { endOnboardingTour(true); return }
+  tour.index += 1
+  tour.entered = -1
+  tourSync()
+}
+
+function tourExplainClickHandler() { tourAdvance() }
+function tourReposition() { tourSync() }
+
+function tourMount() {
+  const root = document.createElement('div')
+  root.id = 'tour-root'
+  root.className = 'tour-root'
+  root.innerHTML = `
+    <div class="tour-block tour-block-t" hidden></div>
+    <div class="tour-block tour-block-b" hidden></div>
+    <div class="tour-block tour-block-l" hidden></div>
+    <div class="tour-block tour-block-r" hidden></div>
+    <div class="tour-ring" id="tour-ring" hidden></div>
+    <div class="tour-arrow" id="tour-arrow" hidden>👇</div>
+    <div class="popup tour-card" id="tour-card" hidden><p></p></div>
+    <div class="tour-topright">
+      <button class="tour-skip-btn" type="button" id="tour-skip">Skip Tutorial</button>
+      <button class="tour-pro-btn" type="button" id="tour-pro">I'm a pro.</button>
+    </div>
+    <p class="tour-hint" id="tour-hint" hidden>Tap anywhere to continue</p>
+  `
+  document.body.appendChild(root)
+  root.querySelector('#tour-skip').addEventListener('click', (e) => { e.stopPropagation(); endOnboardingTour(true) })
+  root.querySelector('#tour-pro').addEventListener('click', (e) => { e.stopPropagation(); endOnboardingTour(true) })
+  window.addEventListener('resize', tourReposition)
+  window.addEventListener('scroll', tourReposition, true)
+  // Re-syncs on every real screen change (new picker, timer, results,
+  // history, day sheet…) without the tour needing to know each screen's
+  // internals. Mutations caused by the tour's own DOM (repositioning the
+  // ring/card each sync) are filtered out below so this can't feedback-loop
+  // on itself.
+  tour.obs = new MutationObserver((records) => {
+    const tourRoot = document.getElementById('tour-root')
+    const external = records.some(r => !tourRoot || !tourRoot.contains(r.target))
+    if (external) tourSync()
+  })
+  tour.obs.observe(document.body, { childList: true, subtree: true })
+}
+
+function tourSetVisible(show) {
+  const root = document.getElementById('tour-root')
+  if (!root) return
+  root.querySelectorAll('.tour-card, .tour-ring, .tour-arrow, .tour-hint').forEach(el => { el.hidden = !show })
+  if (!show) tourClearBlockers()
+}
+
+function tourSync() {
+  if (!tour) return
+  const step = tour.steps[tour.index]
+  if (!step) { endOnboardingTour(true); return }
+  const ready = step.ready ? step.ready() : true
+  if (!ready) {
+    tourSetVisible(false)
+    if (tour.cleanupStep) { try { tour.cleanupStep() } catch {}; tour.cleanupStep = null }
+    document.removeEventListener('click', tourExplainClickHandler)
+    tour.entered = -1
+    return
+  }
+  tourSetVisible(true)
+  if (tour.entered !== tour.index) {
+    tour.entered = tour.index
+    tourClearTimers()
+    if (tour.cleanupStep) { try { tour.cleanupStep() } catch {}; tour.cleanupStep = null }
+    document.removeEventListener('click', tourExplainClickHandler)
+    // Silent steps (a real popup/screen elsewhere is doing the talking - e.g.
+    // the reused coin-info popup, or a background coin-claim RPC with nothing
+    // to show at all) drive their own advance from enter(); the generic
+    // tap-anywhere handler would just be a second, redundant way to dismiss.
+    if (step.kind === 'explain' && !step.silent) document.addEventListener('click', tourExplainClickHandler)
+    tour.cleanupStep = step.enter ? step.enter() : null
+  }
+  tourPositionForStep(step)
+  // Runs on every sync (not just on entering the step), so a step can watch
+  // for a real state change - e.g. a purchase completing elsewhere on
+  // screen - and advance itself without needing its own click handler.
+  if (step.watch) { try { step.watch() } catch {} }
+}
+
+function tourApplyBlockers(rect, pad) {
+  const vw = window.innerWidth, vh = window.innerHeight
+  const top = document.querySelector('.tour-block-t')
+  const bottom = document.querySelector('.tour-block-b')
+  const left = document.querySelector('.tour-block-l')
+  const right = document.querySelector('.tour-block-r')
+  const x0 = Math.max(0, rect.left - pad), x1 = Math.min(vw, rect.right + pad)
+  const y0 = Math.max(0, rect.top - pad), y1 = Math.min(vh, rect.bottom + pad)
+  top.hidden = false; bottom.hidden = false; left.hidden = false; right.hidden = false
+  top.style.cssText = `left:0; top:0; width:${vw}px; height:${Math.max(0, y0)}px;`
+  bottom.style.cssText = `left:0; top:${y1}px; width:${vw}px; height:${Math.max(0, vh - y1)}px;`
+  left.style.cssText = `left:0; top:${y0}px; width:${Math.max(0, x0)}px; height:${Math.max(0, y1 - y0)}px;`
+  right.style.cssText = `left:${x1}px; top:${y0}px; width:${Math.max(0, vw - x1)}px; height:${Math.max(0, y1 - y0)}px;`
+}
+
+function tourClearBlockers() {
+  document.querySelectorAll('.tour-block').forEach(b => { b.hidden = true; b.style.cssText = '' })
+}
+
+// No target (explain steps only): a single full-viewport, non-blocking dim -
+// still "dims the screen" for consistency, but never intercepts a tap since
+// explain steps must let the real underlying control still receive it.
+function tourDimFull() {
+  const top = document.querySelector('.tour-block-t')
+  document.querySelector('.tour-block-b').hidden = true
+  document.querySelector('.tour-block-l').hidden = true
+  document.querySelector('.tour-block-r').hidden = true
+  top.hidden = false
+  top.style.cssText = 'left:0; top:0; width:100%; height:100%; pointer-events:none; background:rgba(8,5,3,0.5);'
+}
+
+function tourPositionCard(card, rect) {
+  const vw = window.innerWidth, vh = window.innerHeight
+  const cardW = Math.min(320, vw - 32)
+  const estH = card.offsetHeight || 120
+  let top = rect.bottom + 16
+  if (top + estH > vh - 104) top = Math.max(64, rect.top - estH - 16)
+  const left = Math.min(Math.max(16, rect.left + rect.width / 2 - cardW / 2), vw - cardW - 16)
+  card.style.cssText = `left:${left}px; top:${top}px; width:${cardW}px;`
+}
+
+function tourPositionForStep(step) {
+  const card = document.getElementById('tour-card')
+  const ring = document.getElementById('tour-ring')
+  const arrow = document.getElementById('tour-arrow')
+  const hint = document.getElementById('tour-hint')
+  if (!card || !ring || !arrow) return
+  // A silent step reuses a REAL popup/screen to explain itself (e.g. the
+  // existing coin-info popup) rather than drawing the tour's own card over
+  // it, so hide every bit of tour chrome (it'd otherwise sit at a higher
+  // z-index than that real popup and visually stack on top of it).
+  if (step.silent) {
+    card.hidden = true
+    ring.hidden = true
+    arrow.hidden = true
+    if (hint) hint.hidden = true
+    tourClearBlockers()
+    document.querySelectorAll('.tour-block').forEach(b => { b.hidden = true })
+    return
+  }
+  card.querySelector('p').innerHTML = step.text
+  const target = step.getTarget ? step.getTarget() : null
+  if (!target) {
+    ring.hidden = true
+    arrow.hidden = true
+    tourDimFull()
+    card.classList.add('tour-card-center')
+    card.style.cssText = ''
+    return
+  }
+  card.classList.remove('tour-card-center')
+  const rect = target.getBoundingClientRect()
+  const pad = 8
+  ring.hidden = false
+  ring.style.cssText = `left:${rect.left - pad}px; top:${rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad * 2}px;`
+  if (step.kind === 'action') tourApplyBlockers(rect, pad)
+  else tourClearBlockers()
+  if (step.arrow) {
+    arrow.hidden = false
+    arrow.style.cssText = `left:${rect.left + rect.width / 2 - 14}px; top:${Math.max(4, rect.top - 46)}px;`
+  } else {
+    arrow.hidden = true
+  }
+  tourPositionCard(card, rect)
+}
+
+// Wires a click on `selector` (queried fresh, since the real screen may have
+// just (re)mounted) to advance the tour, WITHOUT touching the real handler
+// already wired elsewhere for that element - both simply fire. Returns a
+// cleanup function, or null if the element isn't there (ready() should have
+// already guaranteed it is, but this stays defensive).
+function tourAdvanceOnRealClick(selector) {
+  const el = document.querySelector(selector)
+  if (!el) return null
+  const onClick = () => tourAdvance()
+  el.addEventListener('click', onClick)
+  return () => el.removeEventListener('click', onClick)
+}
+
+function buildOnboardingSteps() {
+  const eligible = isEligibleForOnboardingCoin()
+  // Closure-scoped (fresh per tour run) so a replayed tour re-arms its own
+  // 2-second "let the session actually run" delay from scratch.
+  let pauseArmedAt = null
+
+  const steps = [
+    // ---------- 1. Welcome ----------
+    {
+      id: 'welcome',
+      kind: 'explain',
+      getTarget: () => null,
+      text: eligible
+        ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes real pizzas - one hour of focus makes one pizza. Finish this quick tour and earn a <b>FREE Penguino Coin</b>!`
+        : `<b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes real pizzas - one hour of focus makes one pizza. Let's take a quick look around.`,
+    },
+    // ---------- 2. Point at the Cook button ----------
+    {
+      id: 'tap-cook',
+      kind: 'action',
+      ready: () => !!document.querySelector('.tab-fab[data-action="cook"]'),
+      getTarget: () => document.querySelector('.tab-fab[data-action="cook"]'),
+      text: `Tap <b>Cook</b> to start a focus session.`,
+      enter: () => tourAdvanceOnRealClick('.tab-fab[data-action="cook"]'),
+    },
+    // ---------- 3. Through the pickers (brief, explain) ----------
+    {
+      id: 'duration',
+      kind: 'explain',
+      ready: () => !!document.querySelector('.picker-grid'),
+      getTarget: () => null,
+      text: `Pick how long you want to focus for.`,
+    },
+    {
+      id: 'task-name',
+      kind: 'explain',
+      ready: () => !!document.querySelector('.task-input'),
+      getTarget: () => null,
+      text: `Give the session a short name.`,
+    },
+    {
+      id: 'task-type',
+      kind: 'explain',
+      ready: () => !!document.querySelector('.tt-type-list'),
+      getTarget: () => null,
+      text: `Pick a category, then start cooking!`,
+    },
+    // ---------- 4. On the timer (two-part action) ----------
+    {
+      id: 'pause-timer',
+      kind: 'action',
+      // Waits until the real timer has actually been running for ~2s before
+      // the spotlight appears, so it never fights the "Start Cooking!"
+      // splash or shows up before there's anything worth pausing.
+      ready: () => {
+        const el = document.querySelector('.timer-value')
+        if (!el) { pauseArmedAt = null; return false }
+        if (pauseArmedAt == null) {
+          pauseArmedAt = Date.now()
+          const id = setTimeout(tourSync, 2100)
+          if (tour) tour.timers.push(id)
+          return false
+        }
+        return Date.now() - pauseArmedAt >= 2000
+      },
+      getTarget: () => document.querySelector('.timer-value'),
+      arrow: true,
+      text: `Tap the timer to pause your session.`,
+      enter: () => tourAdvanceOnRealClick('.timer-value'),
+    },
+    {
+      id: 'end-early',
+      kind: 'action',
+      ready: () => !!document.querySelector('.pause-overlay .home-btn-col [data-action="end"]'),
+      getTarget: () => document.querySelector('.pause-overlay .home-btn-col [data-action="end"]'),
+      text: `Tap <b>End Early</b> to finish this practice session.`,
+      enter: () => tourAdvanceOnRealClick('.pause-overlay .home-btn-col [data-action="end"]'),
+    },
+    {
+      id: 'confirm-end',
+      kind: 'action',
+      ready: () => !!document.querySelector('.pause-overlay [data-action="confirm-end"]'),
+      getTarget: () => document.querySelector('.pause-overlay [data-action="confirm-end"]'),
+      text: `Tap <b>Yes, End Session</b> to see your results.`,
+      enter: () => tourAdvanceOnRealClick('.pause-overlay [data-action="confirm-end"]'),
+    },
+    // ---------- 5. Results ----------
+    {
+      id: 'results',
+      kind: 'explain',
+      ready: () => !!document.querySelector('.intro-start button'),
+      getTarget: () => null,
+      text: `You just baked your first (tiny) pizza! Every session you focus adds up.`,
+    },
+    // ---------- 6. History + swipe-to-delete ----------
+    {
+      id: 'see-all',
+      kind: 'action',
+      ready: () => !!document.querySelector('.cal-seeall-btn[data-action="see-all-sessions"]'),
+      getTarget: () => document.querySelector('.cal-seeall-btn[data-action="see-all-sessions"]'),
+      text: `Tap <b>See All Sessions</b> to view your history.`,
+      enter: () => tourAdvanceOnRealClick('.cal-seeall-btn[data-action="see-all-sessions"]'),
+    },
+    {
+      id: 'open-day',
+      kind: 'action',
+      ready: () => !!document.querySelector(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
+      getTarget: () => document.querySelector(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
+      text: `Tap today's date to see your session.`,
+      enter: () => tourAdvanceOnRealClick(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
+    },
+    {
+      id: 'swipe-row',
+      kind: 'action',
+      ready: () => !!document.querySelector('.cal-sheet-list .log-row-wrap[data-log-id] .log-row'),
+      getTarget: () => document.querySelector('.cal-sheet-list .log-row-wrap[data-log-id]'),
+      text: `Swipe the session left to reveal Edit and Delete.`,
+      enter: () => {
+        const row = document.querySelector('.cal-sheet-list .log-row-wrap[data-log-id] .log-row')
+        if (!row) return null
+        const obs = new MutationObserver(() => { if (row.classList.contains('open')) tourAdvance() })
+        obs.observe(row, { attributes: true, attributeFilter: ['class'] })
+        return () => obs.disconnect()
+      },
+    },
+    {
+      id: 'tap-delete',
+      kind: 'action',
+      ready: () => !!document.querySelector('.cal-sheet-list [data-action="delete-log"]'),
+      getTarget: () => document.querySelector('.cal-sheet-list [data-action="delete-log"]'),
+      text: `Tap <b>Delete</b> to remove this practice session - it doesn't count for anything.`,
+      enter: () => tourAdvanceOnRealClick('.cal-sheet-list [data-action="delete-log"]'),
+    },
+    {
+      id: 'confirm-delete',
+      kind: 'action',
+      ready: () => !!document.querySelector('.overlay.show [data-action="yes"]'),
+      getTarget: () => document.querySelector('.overlay.show [data-action="yes"]'),
+      text: `Tap <b>Yes, delete</b> to finish up.`,
+      enter: () => tourAdvanceOnRealClick('.overlay.show [data-action="yes"]'),
+    },
+  ]
+
+  // ---------- 7-12: coin claim, forced waving purchase, equip, tap-to-emote
+  // demo, Add to Homescreen. `eligible` (isEligibleForOnboardingCoin(),
+  // computed above) is the single source of truth for whether the coin/
+  // waving-purchase steps run at all - an ineligible signed-in chef (already
+  // claimed, already owns waving, or already earned a coin the honest way)
+  // skips 7-10 silently and picks straight back up at the emote demo (or
+  // straight to Add to Homescreen if there's nothing to demo either).
+  //
+  // Side-effecting `ready()` guards (shopKicked/homeKicked/settingsKicked)
+  // navigate to the right screen exactly once before waiting for its real
+  // DOM to show up - same pattern as `pauseArmedAt` above, just for a full
+  // screen swap instead of a timer delay.
+  let shopKicked = false
+  let homeKicked = false
+  let settingsKicked = false
+
+  // Step 11 - always reachable from either branch below, so built once and
+  // reused. Owning literally nothing (equippedEmote() null - a signed-in
+  // chef who never had waving_free and hasn't bought anything) means there's
+  // no clip to demo, so callers below skip pushing this at all in that case.
+  const tapEmoteStep = {
+    id: 'tap-emote-demo',
+    kind: 'action',
+    ready: () => {
+      const btn = document.querySelector('.hero-tap[data-action="emote"]')
+      if (!btn) { if (!homeKicked) { homeKicked = true; renderHome() }; return false }
+      return true
+    },
+    getTarget: () => document.querySelector('.hero-tap[data-action="emote"]'),
+    text: `Tap <b>Tap to emote</b> to see your chef's new move!`,
+    enter: () => tourAdvanceOnRealClick('.hero-tap[data-action="emote"]'),
+  }
+
+  // Step 12 - the final step for EVERY branch (signed-in eligible/
+  // ineligible, and guest). tourAdvance() past it already calls
+  // endOnboardingTour(true) with no extra code needed here.
+  // Explain-style (not action) - dismissable with a tap anywhere, so a chef
+  // who already has the app installed isn't forced to tap this row. Still
+  // spotlights the real row via getTarget; a real tap on it works too since
+  // explain steps never block the underlying element.
+  const addHomescreenStep = {
+    id: 'add-to-homescreen',
+    kind: 'explain',
+    ready: () => {
+      const el = document.querySelector('[data-action="add-to-homescreen"]')
+      if (!el) { if (!settingsKicked) { settingsKicked = true; renderSettings() }; return false }
+      return true
+    },
+    getTarget: () => document.querySelector('[data-action="add-to-homescreen"]'),
+    text: `<b>Add to Homescreen</b> installs Chef Penguino like a real app!`,
+  }
+
+  if (isSignedIn()) {
+    if (eligible) {
+      steps.push(
+        // 7. Coin explainer - reuses the EXISTING coin-info popup (the same
+        // one the (i) coin chip opens) rather than a bespoke tour card, so
+        // it's `silent` (see tourPositionForStep/tourSync) - all the tour
+        // engine does here is get out of the way and wait for "Got it".
+        {
+          id: 'coin-explainer',
+          kind: 'explain',
+          silent: true,
+          getTarget: () => null,
+          text: '',
+          enter: () => {
+            openCoinInfo()
+            const wrap = document.querySelector('.overlay.show')
+            const okBtn = wrap?.querySelector('[data-action="ok"]')
+            if (!okBtn) { tourAdvance(); return null }
+            okBtn.addEventListener('click', () => tourAdvance())
+            // Tapping the dim backdrop also closes openCoinInfo()'s popup
+            // (overlay()'s default dismissable behavior) - advance there too
+            // so the tour can't get stranded showing nothing.
+            wrap.addEventListener('click', (e) => { if (e.target === wrap) tourAdvance() })
+            return () => {}
+          },
+        },
+        // 8. Grant the coin server-side - the ONLY place this ever happens
+        // is this RPC; never a client-side coin_adjustment write. Silent
+        // (nothing to show), and continues on regardless of the RPC result -
+        // false just means "no coin this time", never an error to surface.
+        {
+          id: 'grant-coin',
+          kind: 'explain',
+          silent: true,
+          getTarget: () => null,
+          text: '',
+          enter: () => {
+            ;(async () => {
+              try { await supabase.rpc('claim_onboarding_coin') } catch {}
+              try { await refreshProfile() } catch {}
+              tourAdvance()
+            })()
+            return null
+          },
+        },
+        // 9. Forced waving purchase - an action step the chef can't skip
+        // past except via Skip Tutorial. Advancing is driven by `watch()`
+        // (checked on every tourSync, not just on entering the step) rather
+        // than a click handler, because the real "buy" tap only opens a
+        // confirm popup ("Yes, unlock it?") - the purchase itself completes
+        // a beat later, and that's the moment that should count.
+        {
+          id: 'buy-waving',
+          kind: 'action',
+          ready: () => {
+            if (!document.querySelector('.shop-sort-row')) { if (!shopKicked) { shopKicked = true; renderShop() }; return false }
+            return true
+          },
+          getTarget: () => document.querySelector('[data-buy="waving"]'),
+          text: `Buy the <b>Waving</b> emote to give your chef its first move!`,
+          watch: () => { if (isOwned('waving')) tourAdvance() },
+        },
+        // 10. Equip it. confirmBuy() already auto-equips right after a
+        // purchase, so this control will already read "✓ Equipped" by the
+        // time the chef gets here - it's still the real, only equip control
+        // for this card, and tapping it re-confirms the equip harmlessly.
+        {
+          id: 'equip-waving',
+          kind: 'action',
+          ready: () => !!document.querySelector('[data-equip="waving"]'),
+          getTarget: () => document.querySelector('[data-equip="waving"]'),
+          text: `Tap <b>Equip</b> to lock in your chef's new move!`,
+          enter: () => tourAdvanceOnRealClick('[data-equip="waving"]'),
+        },
+        tapEmoteStep,
+        addHomescreenStep,
+      )
+    } else {
+      // Not eligible: skip 7-10 entirely and silently, straight to the
+      // emote demo (if there's anything to demo) or Add to Homescreen.
+      if (equippedEmote()) steps.push(tapEmoteStep)
+      steps.push(addHomescreenStep)
+    }
+  } else {
+    // Guest branch: instead of the coin-claim steps, a popup nudging sign-in.
+    // Signing in kicks off the real Google OAuth flow (same signInWithGoogle()
+    // every other sign-in prompt uses), which navigates the page away and
+    // reloads it - destroying this in-memory tour. Before that happens, a
+    // resume marker is persisted to localStorage (state.onboardingResumeStep)
+    // so boot(), once handleSignedIn() + migrateLocalDataIfNeeded() have run
+    // post-redirect (pizzas/coins merged, profile loaded), can pick the tour
+    // back up at the coin-claim steps with eligibility re-evaluated fresh on
+    // the merged totals - see maybeResumeOnboardingTour().
+    steps.push(
+      {
+        id: 'guest-coin-prompt',
+        kind: 'explain',
+        silent: true,
+        getTarget: () => null,
+        text: '',
+        enter: () => {
+          const o = overlay(`
+            <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
+            ${coinImg('xl')}
+            <h3>Sign in to redeem your free coin</h3>
+            <p>Free coin only applies if you've never earned one before. Either way, signing in saves your progress, pizzas and coins.</p>
+            ${googleBtn()}
+            <button type="button" class="btn-secondary" style="margin-top:10px" data-action="continue-guest">Continue without signing in</button>
+          `, { popupClass: 'popup-wide', dismissable: false })
+          o.querySelector('[data-action="google"]').addEventListener('click', () => {
+            // Persist BEFORE kicking off the OAuth redirect so it's never
+            // lost to the navigation that follows.
+            state.onboardingResumeStep = 'coin-explainer'
+            save()
+            signInWithGoogle()
+          })
+          o.querySelector('[data-action="apple"]')?.addEventListener('click', () => toast('Sign in with Apple is coming soon! 🚧'))
+          o.querySelector('[data-action="continue-guest"]').addEventListener('click', () => {
+            o.remove()
+            const idx = tour.steps.findIndex(s => s.id === 'add-to-homescreen')
+            if (idx >= 0) { tour.index = idx; tour.entered = -1; tourSync() } else tourAdvance()
+          })
+          return () => o.remove()
+        },
+      },
+      addHomescreenStep,
+    )
+  }
+
+  return steps
 }
