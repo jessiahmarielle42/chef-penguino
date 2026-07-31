@@ -3089,3 +3089,11 @@ img.shop-image {
   color: var(--cream); opacity: 0.85; font-size: 0.75rem; font-weight: 700; pointer-events: none;
 }
 .tour-hint[hidden] { display: none; }
+
+/* Secondary note under a destructive confirm. Scoped with .popup so it beats
+   the base `.popup p` rule (0-1-1), which would otherwise reimpose its own
+   size and margin and make this read as weightily as the warning above it. */
+.popup .delete-note {
+  font-size:0.75rem; line-height:1.5; color: var(--muted-2);
+  margin:0 0 1.25rem; text-align: center;
+}

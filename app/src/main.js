@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.1.3'
+const APP_VERSION = 'v2.4.1.4'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -63,7 +63,15 @@ let afterLogChange = renderHome
 async function signInWithGoogle() {
   await supabase.auth.signInWithOAuth({
     provider: 'google',
-    options: { redirectTo: window.location.origin + BASE },
+    options: {
+      redirectTo: window.location.origin + BASE,
+      // Always show Google's account chooser. Without this Google silently
+      // reuses whichever account is already signed in, which is confusing for
+      // anyone with more than one - and actively misleading right after an
+      // account deletion, where being dropped instantly into a fresh account
+      // bearing the same name and picture looks like the deletion failed.
+      queryParams: { prompt: 'select_account' },
+    },
   })
 }
 
@@ -3551,6 +3559,7 @@ function confirmDeleteAccountFinal() {
     <h3>Are you absolutely sure? ⚠️</h3>
     <img class="delete-illus" src="${BASE}assets/delete-barrel-poster.jpg" alt="" />
     <p>Last chance &mdash; this will permanently delete everything and you will be signed out. This cannot be undone.</p>
+    <p class="delete-note">Signing in with Google again creates a brand new, empty account. To also remove Chef Penguino's access to your Google account, visit <b>Google Account &rsaquo; Data &amp; privacy &rsaquo; Third-party apps</b> &mdash; only you can do that, we can't.</p>
     <div class="home-btn-col">
       <button type="button" class="btn-danger" data-action="yes">Yes, delete forever</button>
       <button type="button" class="btn-secondary" data-action="no">Keep my account</button>
