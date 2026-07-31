@@ -690,12 +690,21 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .icon-btn svg { width:0.875rem; height:0.875rem; }
 .icon-btn:hover, .icon-btn:active { opacity: 1; }
 
-#profile-row.highlight { animation: profile-glow 1.8s ease 2; }
+#profile-row.highlight, #add-homescreen-row.highlight { animation: profile-glow 1.8s ease 2; }
 @keyframes profile-glow {
   0%, 100% { box-shadow: none; background: transparent; }
   30% { box-shadow: 0 0 0 2px rgba(251,122,46,0.7), 0 0 18px 2px rgba(251,122,46,0.5); background: rgba(251,122,46,0.1); }
 }
-@media (prefers-reduced-motion: reduce) { #profile-row.highlight { animation: none; } }
+@media (prefers-reduced-motion: reduce) { #profile-row.highlight, #add-homescreen-row.highlight { animation: none; } }
+
+/* "Add to Homescreen" promo popup image - a wide phone-homescreen photo,
+   sized to sit comfortably inside the popup without blowing it out on a
+   small phone. Mirrors .delete-illus's rounded-corner/shadow treatment. */
+.popup .add-homescreen-img {
+  width:100%; max-width:16rem; aspect-ratio:16/11; object-fit:cover;
+  border-radius:0.875rem; display:block; margin:0.75rem auto 1.25rem;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+}
 
 .editpic-avatar-wrap { position: relative; width:7.5rem; margin:0.75rem auto 1.25rem; }
 .editpic-avatar { width:7.5rem; height:7.5rem; border-radius:50%; object-fit:cover; border:3px solid var(--line); display:block; }

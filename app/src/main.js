@@ -365,6 +365,7 @@ function load() {
     pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', lastSeenCoins: null,
     lightMode: false, taskTypeLabels: {}, deleteAnimations: true, onboardingDone: false,
     onboardingResumeStep: null,
+    lastHomescreenPromptAt: null, homescreenPromptDismissedForever: false,
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -1448,6 +1449,7 @@ async function renderHome() {
     // Log content is already in the DOM (built above) — just wire the swipes.
     wireLogSwipe(app.querySelector('#home-log'))
     maybeShowCoinMilestone()
+    maybeShowAddToHomescreenPrompt()
   })
 }
 
@@ -1490,6 +1492,56 @@ function maybeShowCoinMilestone() {
       toast(`${coinImg('toast-coin')} +${gained} coin${gained > 1 ? 's' : ''}!`)
     })
   }
+}
+
+// Recurring "Add this lil' app to Homescreen?" nudge - fires at most once
+// every 6 hours, for guests and signed-in users alike (localStorage only,
+// no DB column). Skipped entirely in standalone/installed mode, during an
+// active cooking session, while the onboarding tour is running, or if
+// another popup/overlay is already up. Checked once per app load from
+// renderHome (see maybeShowCoinMilestone's call site) - homescreenPromptShownThisSession
+// keeps it from firing again if Home re-renders later in the same visit.
+const HOMESCREEN_PROMPT_INTERVAL_MS = 6 * 60 * 60 * 1000
+let homescreenPromptShownThisSession = false
+function isStandaloneApp() {
+  return (window.matchMedia?.('(display-mode: standalone)').matches) || window.navigator.standalone === true
+}
+function maybeShowAddToHomescreenPrompt() {
+  if (homescreenPromptShownThisSession) return
+  if (isStandaloneApp()) return
+  if (state.homescreenPromptDismissedForever) return
+  if (state.timer) return
+  if (tour) return
+  if (document.querySelector('.overlay.show')) return
+  const last = state.lastHomescreenPromptAt
+  if (last && Date.now() - last < HOMESCREEN_PROMPT_INTERVAL_MS) return
+
+  homescreenPromptShownThisSession = true
+  state.lastHomescreenPromptAt = Date.now()
+  save()
+
+  const o = overlay(`
+    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
+    <h3>Add this lil' app to Homescreen?</h3>
+    <img class="add-homescreen-img" src="${BASE}assets/add-homescreen.jpg" alt="" />
+    <p>Makes cooking pizzas super convenient for you.</p>
+    <div class="home-btn-col">
+      <button type="button" data-action="add">Add to homescreen</button>
+      <button type="button" class="btn-secondary" data-action="never">Don't show again</button>
+    </div>
+  `, { popupClass: 'popup-wide' })
+
+  o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
+  o.querySelector('[data-action="add"]').addEventListener('click', () => {
+    o.remove()
+    renderSettings(false, true)
+  })
+  o.querySelector('[data-action="never"]').addEventListener('click', () => {
+    o.remove()
+    state.homescreenPromptDismissedForever = true
+    save()
+    playDeleteClip()
+  })
 }
 
 // =================================================================
@@ -4303,7 +4355,7 @@ function openAvatarCropper(file, onCropped) {
 // =================================================================
 //  Settings
 // =================================================================
-function renderSettings(highlightProfile) {
+function renderSettings(highlightProfile, highlightHomescreen) {
   const signed = isSignedIn()
   const avatarSrc = myAvatar()
 
@@ -4338,7 +4390,7 @@ function renderSettings(highlightProfile) {
     <div class="group">
       <p class="glab">Tutorials</p>
       <div class="glist">
-        <div class="grow" role="button" tabindex="0" data-action="add-to-homescreen">
+        <div class="grow" id="add-homescreen-row" role="button" tabindex="0" data-action="add-to-homescreen">
           <div><div class="gt">Add to Homescreen</div><div class="gs">How to add this webapp to phone's homescreen</div></div>
           <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
         </div>
@@ -4492,6 +4544,13 @@ function renderSettings(highlightProfile) {
 
     if (highlightProfile) {
       const row = app.querySelector('#profile-row')
+      if (row) {
+        row.classList.remove('highlight'); void row.offsetWidth; row.classList.add('highlight')
+        setTimeout(() => row.classList.remove('highlight'), 3600)
+      }
+    }
+    if (highlightHomescreen) {
+      const row = app.querySelector('#add-homescreen-row')
       if (row) {
         row.classList.remove('highlight'); void row.offsetWidth; row.classList.add('highlight')
         setTimeout(() => row.classList.remove('highlight'), 3600)
