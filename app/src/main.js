@@ -6,9 +6,31 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.3.3.0'
+const APP_VERSION = 'v2.4.0.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
+
+// Native "Add to Home Screen" install support - capability detection, NOT
+// browser sniffing. Chromium-family browsers (desktop/Android Chrome, Edge,
+// Brave, Samsung Internet...) fire `beforeinstallprompt` when the page meets
+// install criteria (manifest + service-worker-less PWA still qualifies with
+// just a manifest in modern Chrome); we stash that event and can replay it
+// on demand via .prompt(). Anything that never fires it - iOS Safari,
+// Firefox, or a Chromium instance that already installed the app - simply
+// leaves deferredInstallPrompt null, and callers fall back to the manual
+// tutorial. Checking navigator.userAgent instead would be wrong: it can't
+// tell us whether the browser will actually honor a prompt() call, only
+// what it claims to be, and UA strings drift/lie across versions and
+// embedded webviews. Presence of the real event is the only thing that
+// reliably answers "can I install this right now?".
+let deferredInstallPrompt = null
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault()
+  deferredInstallPrompt = e
+})
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null
+})
 
 // Single source of truth for which destructive confirms play the
 // barrel-explosion clip (see playDeleteClip()). Action-based, not
@@ -1506,6 +1528,21 @@ let homescreenPromptShownThisSession = false
 function isStandaloneApp() {
   return (window.matchMedia?.('(display-mode: standalone)').matches) || window.navigator.standalone === true
 }
+
+// Shared entry point for both "add to homescreen" surfaces (the recurring
+// popup's button and Settings > Tutorials > Add to Homescreen row). If the
+// browser handed us a real beforeinstallprompt event, replay it - that's a
+// native install, no tutorial needed. Otherwise fall back to the manual
+// step-by-step guide subpage, exactly as before.
+function triggerAddToHomescreen() {
+  if (deferredInstallPrompt) {
+    const evt = deferredInstallPrompt
+    deferredInstallPrompt = null
+    evt.prompt()
+    return
+  }
+  renderAddToHomescreenGuide()
+}
 function maybeShowAddToHomescreenPrompt() {
   if (homescreenPromptShownThisSession) return
   if (isStandaloneApp()) return
@@ -1534,6 +1571,7 @@ function maybeShowAddToHomescreenPrompt() {
   o.querySelector('[data-action="close"]').addEventListener('click', () => o.remove())
   o.querySelector('[data-action="add"]').addEventListener('click', () => {
     o.remove()
+    if (deferredInstallPrompt) { triggerAddToHomescreen(); return }
     renderSettings(false, true)
   })
   o.querySelector('[data-action="never"]').addEventListener('click', () => {
@@ -4499,7 +4537,7 @@ function renderSettings(highlightProfile, highlightHomescreen) {
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="task-types"]')?.addEventListener('click', renderTaskTypesEditor)
     app.querySelector('[data-action="lore"]')?.addEventListener('click', renderLore)
-    app.querySelector('[data-action="add-to-homescreen"]')?.addEventListener('click', renderAddToHomescreenGuide)
+    app.querySelector('[data-action="add-to-homescreen"]')?.addEventListener('click', triggerAddToHomescreen)
     app.querySelector('[data-action="replay-tutorial"]')?.addEventListener('click', () => {
       startOnboardingTour()
     })
@@ -5094,6 +5132,17 @@ function renderLore() {
 
 let addToHomescreenTab = 'ios' // 'ios' | 'android' - defaults to iOS on open
 
+// Ordered captions for ios-1.jpg..ios-5.jpg (app/public/assets/homescreen/).
+// Step 4 calls out that "Open as Web App" must stay ON, or iOS falls back to
+// a plain Safari bookmark - no standalone chrome, no fullscreen.
+const IOS_A2HS_STEPS = [
+  { img: 'ios-1.jpg', caption: `Tap the <b>•••</b> menu in Safari` },
+  { img: 'ios-2.jpg', caption: `Tap <b>Share</b>` },
+  { img: 'ios-3.jpg', caption: `Tap <b>Add to Home Screen</b>` },
+  { img: 'ios-4.jpg', caption: `Keep <b>"Open as Web App"</b> switched on, then tap <b>Add</b> - turning it off gives you a plain bookmark, not the full app` },
+  { img: 'ios-5.jpg', caption: `The icon's now on your homescreen, ready to cook!` },
+]
+
 function renderAddToHomescreenGuide() {
   addToHomescreenTab = 'ios'
   const content = `
@@ -5104,14 +5153,27 @@ function renderAddToHomescreenGuide() {
       <button type="button" data-v="android">Android</button>
     </div>
     <div class="a2hs-panel" data-panel="ios">
-      <p class="editpic-empty">Screenshots coming soon</p>
+      <div class="a2hs-steps">
+        ${IOS_A2HS_STEPS.map((s, i) => `
+          <div class="a2hs-step">
+            <img class="a2hs-shot" src="${BASE}assets/homescreen/${s.img}" alt="Step ${i + 1}" loading="lazy" />
+            <p class="a2hs-caption"><span class="a2hs-num">${i + 1}</span>${s.caption}</p>
+          </div>
+        `).join('')}
+      </div>
     </div>
     <div class="a2hs-panel" data-panel="android" hidden>
-      <p class="editpic-empty">Screenshots coming soon</p>
+      ${deferredInstallPrompt
+        ? `<div class="a2hs-native">
+            <p>Your browser can install Chef Penguino directly - no bookmarking needed.</p>
+            <button type="button" class="a2hs-install-btn" data-action="native-install">Install</button>
+          </div>`
+        : `<p class="editpic-empty">Screenshots coming soon</p>`}
     </div>
   `
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
+    app.querySelector('[data-action="native-install"]')?.addEventListener('click', triggerAddToHomescreen)
     app.querySelectorAll('#a2hs-seg button').forEach(b => {
       b.addEventListener('click', () => {
         if (b.dataset.v === addToHomescreenTab) return
@@ -8528,17 +8590,20 @@ function buildOnboardingSteps() {
   // Step 12 - the final step for EVERY branch (signed-in eligible/
   // ineligible, and guest). tourAdvance() past it already calls
   // endOnboardingTour(true) with no extra code needed here.
+  // Explain-style (not action) - dismissable with a tap anywhere, so a chef
+  // who already has the app installed isn't forced to tap this row. Still
+  // spotlights the real row via getTarget; a real tap on it works too since
+  // explain steps never block the underlying element.
   const addHomescreenStep = {
     id: 'add-to-homescreen',
-    kind: 'action',
+    kind: 'explain',
     ready: () => {
       const el = document.querySelector('[data-action="add-to-homescreen"]')
       if (!el) { if (!settingsKicked) { settingsKicked = true; renderSettings() }; return false }
       return true
     },
     getTarget: () => document.querySelector('[data-action="add-to-homescreen"]'),
-    text: `Tap <b>Add to Homescreen</b> to install Chef Penguino like a real app!`,
-    enter: () => tourAdvanceOnRealClick('[data-action="add-to-homescreen"]'),
+    text: `<b>Add to Homescreen</b> installs Chef Penguino like a real app!`,
   }
 
   if (isSignedIn()) {

@@ -1,0 +1,22 @@
+{
+  "name": "Chef Penguino",
+  "short_name": "Penguino",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#120c09",
+  "theme_color": "#120c09",
+  "icons": [
+    {
+      "src": "/assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
