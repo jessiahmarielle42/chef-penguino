@@ -7643,6 +7643,11 @@ function openRenamePopup() {
 }
 
 function showNotSignedInWarning() {
+  // Mid-tour, this popup is an unguided dead-end the tutorial never
+  // mentions, and it duplicates the tour's own dedicated sign-in moment
+  // (guest-coin-prompt, later in the flow) - skip straight to what "I'll
+  // risk it" does instead of showing it.
+  if (tour) { renderIntro(renderDurationPicker, false); return }
   const o = overlay(`
     <h3>Not signed in</h3>
     <p>Your progress may not be saved since you're not signed in.</p>
@@ -8192,7 +8197,7 @@ function startOnboardingTour(resumeAfterId) {
     savedAutoDarken: state.autoDarken,
     obs: null,
     notReadyCount: 0,
-    syncing: false,
+    scanning: false,
   }
   // Suppressed for the whole tour, not just the timer steps - simplest way
   // to guarantee the screen never auto-darkens mid-instruction. Restored to
@@ -8321,48 +8326,64 @@ function tourSetVisible(show) {
 
 function tourSync() {
   if (!tour) return
-  if (tour.syncing) return
-  const step = tour.steps[tour.index]
+  let step = tour.steps[tour.index]
   if (!step) { endOnboardingTour(true); return }
-  const ready = step.ready ? step.ready() : true
+  let ready = step.ready ? step.ready() : true
   if (!ready) {
     tour.notReadyCount = (tour.notReadyCount || 0) + 1
     // Self-healing: if the real screen has moved on faster than the tour
-    // card was tapped, the current step's ready() can go permanently false
-    // (e.g. mid-tour the chef already advanced past this screen). Scan
-    // FORWARD ONLY for the first later step that IS ready and jump to it,
+    // card was tapped, the current step's ready() can go permanently
+    // false (e.g. mid-tour the chef already advanced past this screen).
+    // Scan FORWARD ONLY for the first later step whose PURE, side-effect-
+    // free `probe()` says its target already exists, and jump to it,
     // rather than stranding the tour hidden forever. Only after two
     // consecutive not-ready syncs, so a step's ready() that's merely
     // momentarily false (e.g. pause-timer's 2s arming window) isn't
-    // mistaken for "the chef skipped ahead" and doesn't trip a later step's
-    // side-effecting ready() (shopKicked/homeKicked/settingsKicked kickers,
-    // pause-timer's arming timer) prematurely.
-    if (tour.notReadyCount >= 2) {
-      tour.syncing = true
+    // mistaken for "the chef skipped ahead".
+    //
+    // Deliberately does NOT call ready() in the scan: several steps have
+    // no ready() at all (welcome, coin-explainer, grant-coin,
+    // guest-coin-prompt) and `candidate.ready ? candidate.ready() : true`
+    // would treat those as unconditionally ready, teleporting the tour to
+    // the end. Only steps that opt in with an explicit `probe` are ever
+    // considered a match; every other step (including side-effecting
+    // ready()s like pause-timer's timer-arm or the shopKicked/homeKicked/
+    // settingsKicked screen kickers) is skipped by the scan entirely.
+    // Re-entrancy guard (tour.scanning) is scoped ONLY to the scan loop
+    // below, not the render/enter path further down, so a step's enter()
+    // that synchronously calls tourAdvance() (e.g. coin-explainer's
+    // fallback) can still recurse into tourSync() and render normally.
+    if (tour.notReadyCount >= 2 && !tour.scanning) {
+      tour.scanning = true
       try {
         for (let i = tour.index + 1; i < tour.steps.length; i++) {
           const candidate = tour.steps[i]
-          const candidateReady = candidate.ready ? candidate.ready() : true
-          if (candidateReady) {
+          if (candidate.probe && candidate.probe()) {
             tour.index = i
             tour.entered = -1
             tour.notReadyCount = 0
-            tour.syncing = false
-            tourSync()
-            return
+            step = candidate
+            ready = true
+            break
           }
         }
       } finally {
-        tour.syncing = false
+        tour.scanning = false
       }
     }
-    tourSetVisible(false)
-    if (tour.cleanupStep) { try { tour.cleanupStep() } catch {}; tour.cleanupStep = null }
-    document.removeEventListener('click', tourExplainClickHandler)
-    tour.entered = -1
-    return
+    if (!ready) {
+      tourSetVisible(false)
+      if (tour.cleanupStep) { try { tour.cleanupStep() } catch {}; tour.cleanupStep = null }
+      document.removeEventListener('click', tourExplainClickHandler)
+      tour.entered = -1
+      return
+    }
   }
   tour.notReadyCount = 0
+  tourSyncEnter(step)
+}
+
+function tourSyncEnter(step) {
   tourSetVisible(true)
   if (tour.entered !== tour.index) {
     tour.entered = tour.index
@@ -8560,6 +8581,7 @@ function buildOnboardingSteps() {
       id: 'duration',
       kind: 'action',
       ready: () => !!document.querySelector('.picker-grid [data-minutes="15"]'),
+      probe: () => !!document.querySelector('.picker-grid [data-minutes="15"]'),
       getTarget: () => document.querySelector('.picker-grid [data-minutes="15"]'),
       text: `Let's run a test session. You won't have to go through the whole thing - we'll end it early. Tap <b>15 min</b>.`,
       enter: () => tourAdvanceOnRealClick('.picker-grid [data-minutes="15"]'),
@@ -8568,6 +8590,7 @@ function buildOnboardingSteps() {
       id: 'task-name',
       kind: 'action',
       ready: () => !!document.querySelector('.task-input'),
+      probe: () => !!document.querySelector('.task-input'),
       getTarget: () => document.querySelector('.task-input'),
       text: `Type anything - it's just a label for this session.`,
       enter: () => {
@@ -8582,6 +8605,7 @@ function buildOnboardingSteps() {
       id: 'task-done',
       kind: 'action',
       ready: () => !!document.querySelector('.picker [data-done]'),
+      probe: () => !!document.querySelector('.picker [data-done]'),
       getTarget: () => document.querySelector('.picker [data-done]'),
       text: `Tap <b>Done</b>.`,
       enter: () => tourAdvanceOnRealClick('.picker [data-done]'),
@@ -8590,6 +8614,7 @@ function buildOnboardingSteps() {
       id: 'task-type',
       kind: 'action',
       ready: () => !!document.querySelector('.picker .tt-type-list .tt-type-row'),
+      probe: () => !!document.querySelector('.picker .tt-type-list .tt-type-row'),
       getTarget: () => document.querySelector('.picker .tt-type-list'),
       text: `Pick any category.`,
       enter: () => {
@@ -8604,6 +8629,7 @@ function buildOnboardingSteps() {
       id: 'start-cook',
       kind: 'action',
       ready: () => !!document.querySelector('.picker [data-start]'),
+      probe: () => !!document.querySelector('.picker [data-start]'),
       getTarget: () => document.querySelector('.picker [data-start]'),
       text: `Tap <b>Start cooking</b>.`,
       enter: () => tourAdvanceOnRealClick('.picker [data-start]'),
@@ -8635,6 +8661,7 @@ function buildOnboardingSteps() {
       id: 'end-early',
       kind: 'action',
       ready: () => !!document.querySelector('.pause-overlay .home-btn-col [data-action="end"]'),
+      probe: () => !!document.querySelector('.pause-overlay .home-btn-col [data-action="end"]'),
       getTarget: () => document.querySelector('.pause-overlay .home-btn-col [data-action="end"]'),
       text: `Tap <b>End Early</b> to finish this practice session.`,
       enter: () => tourAdvanceOnRealClick('.pause-overlay .home-btn-col [data-action="end"]'),
@@ -8643,6 +8670,7 @@ function buildOnboardingSteps() {
       id: 'confirm-end',
       kind: 'action',
       ready: () => !!document.querySelector('.pause-overlay [data-action="confirm-end"]'),
+      probe: () => !!document.querySelector('.pause-overlay [data-action="confirm-end"]'),
       getTarget: () => document.querySelector('.pause-overlay [data-action="confirm-end"]'),
       text: `Tap <b>Yes, End Session</b> to see your results.`,
       enter: () => tourAdvanceOnRealClick('.pause-overlay [data-action="confirm-end"]'),
@@ -8652,6 +8680,7 @@ function buildOnboardingSteps() {
       id: 'results',
       kind: 'explain',
       ready: () => !!document.querySelector('.intro-start button'),
+      probe: () => !!document.querySelector('.intro-start button'),
       getTarget: () => null,
       text: `You just baked your first (tiny) pizza! Every session you focus adds up.`,
     },
@@ -8660,6 +8689,7 @@ function buildOnboardingSteps() {
       id: 'see-all',
       kind: 'action',
       ready: () => !!document.querySelector('.cal-seeall-btn[data-action="see-all-sessions"]'),
+      probe: () => !!document.querySelector('.cal-seeall-btn[data-action="see-all-sessions"]'),
       getTarget: () => document.querySelector('.cal-seeall-btn[data-action="see-all-sessions"]'),
       text: `Tap <b>See All Sessions</b> to view your history.`,
       enter: () => tourAdvanceOnRealClick('.cal-seeall-btn[data-action="see-all-sessions"]'),
