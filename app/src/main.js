@@ -8431,14 +8431,185 @@ function buildOnboardingSteps() {
       text: `Tap <b>Yes, delete</b> to finish up.`,
       enter: () => tourAdvanceOnRealClick('.overlay.show [data-action="yes"]'),
     },
-    // TODO: steps 7+ (coin claim, forced waving-emote purchase, equip,
-    // tap-to-emote demo, Add to Homescreen) attach here - append their step
-    // definitions to this array. `eligible` (computed above via
-    // isEligibleForOnboardingCoin()) is already available for the coin-claim
-    // step to reuse. tourAdvance() past the last step already calls
-    // endOnboardingTour(true), so extending this array is the only change
-    // needed to grow the tour - no engine changes required.
   ]
+
+  // ---------- 7-12: coin claim, forced waving purchase, equip, tap-to-emote
+  // demo, Add to Homescreen. `eligible` (isEligibleForOnboardingCoin(),
+  // computed above) is the single source of truth for whether the coin/
+  // waving-purchase steps run at all - an ineligible signed-in chef (already
+  // claimed, already owns waving, or already earned a coin the honest way)
+  // skips 7-10 silently and picks straight back up at the emote demo (or
+  // straight to Add to Homescreen if there's nothing to demo either).
+  //
+  // Side-effecting `ready()` guards (shopKicked/homeKicked/settingsKicked)
+  // navigate to the right screen exactly once before waiting for its real
+  // DOM to show up - same pattern as `pauseArmedAt` above, just for a full
+  // screen swap instead of a timer delay.
+  let shopKicked = false
+  let homeKicked = false
+  let settingsKicked = false
+
+  // Step 11 - always reachable from either branch below, so built once and
+  // reused. Owning literally nothing (equippedEmote() null - a signed-in
+  // chef who never had waving_free and hasn't bought anything) means there's
+  // no clip to demo, so callers below skip pushing this at all in that case.
+  const tapEmoteStep = {
+    id: 'tap-emote-demo',
+    kind: 'action',
+    ready: () => {
+      const btn = document.querySelector('.hero-tap[data-action="emote"]')
+      if (!btn) { if (!homeKicked) { homeKicked = true; renderHome() }; return false }
+      return true
+    },
+    getTarget: () => document.querySelector('.hero-tap[data-action="emote"]'),
+    text: `Tap <b>Tap to emote</b> to see your chef's new move!`,
+    enter: () => tourAdvanceOnRealClick('.hero-tap[data-action="emote"]'),
+  }
+
+  // Step 12 - the final step for EVERY branch (signed-in eligible/
+  // ineligible, and guest). tourAdvance() past it already calls
+  // endOnboardingTour(true) with no extra code needed here.
+  const addHomescreenStep = {
+    id: 'add-to-homescreen',
+    kind: 'action',
+    ready: () => {
+      const el = document.querySelector('[data-action="add-to-homescreen"]')
+      if (!el) { if (!settingsKicked) { settingsKicked = true; renderSettings() }; return false }
+      return true
+    },
+    getTarget: () => document.querySelector('[data-action="add-to-homescreen"]'),
+    text: `Tap <b>Add to Homescreen</b> to install Chef Penguino like a real app!`,
+    enter: () => tourAdvanceOnRealClick('[data-action="add-to-homescreen"]'),
+  }
+
+  if (isSignedIn()) {
+    if (eligible) {
+      steps.push(
+        // 7. Coin explainer - reuses the EXISTING coin-info popup (the same
+        // one the (i) coin chip opens) rather than a bespoke tour card, so
+        // it's `silent` (see tourPositionForStep/tourSync) - all the tour
+        // engine does here is get out of the way and wait for "Got it".
+        {
+          id: 'coin-explainer',
+          kind: 'explain',
+          silent: true,
+          getTarget: () => null,
+          text: '',
+          enter: () => {
+            openCoinInfo()
+            const wrap = document.querySelector('.overlay.show')
+            const okBtn = wrap?.querySelector('[data-action="ok"]')
+            if (!okBtn) { tourAdvance(); return null }
+            okBtn.addEventListener('click', () => tourAdvance())
+            // Tapping the dim backdrop also closes openCoinInfo()'s popup
+            // (overlay()'s default dismissable behavior) - advance there too
+            // so the tour can't get stranded showing nothing.
+            wrap.addEventListener('click', (e) => { if (e.target === wrap) tourAdvance() })
+            return () => {}
+          },
+        },
+        // 8. Grant the coin server-side - the ONLY place this ever happens
+        // is this RPC; never a client-side coin_adjustment write. Silent
+        // (nothing to show), and continues on regardless of the RPC result -
+        // false just means "no coin this time", never an error to surface.
+        {
+          id: 'grant-coin',
+          kind: 'explain',
+          silent: true,
+          getTarget: () => null,
+          text: '',
+          enter: () => {
+            ;(async () => {
+              try { await supabase.rpc('claim_onboarding_coin') } catch {}
+              try { await refreshProfile() } catch {}
+              tourAdvance()
+            })()
+            return null
+          },
+        },
+        // 9. Forced waving purchase - an action step the chef can't skip
+        // past except via Skip Tutorial. Advancing is driven by `watch()`
+        // (checked on every tourSync, not just on entering the step) rather
+        // than a click handler, because the real "buy" tap only opens a
+        // confirm popup ("Yes, unlock it?") - the purchase itself completes
+        // a beat later, and that's the moment that should count.
+        {
+          id: 'buy-waving',
+          kind: 'action',
+          ready: () => {
+            if (!document.querySelector('.shop-sort-row')) { if (!shopKicked) { shopKicked = true; renderShop() }; return false }
+            return true
+          },
+          getTarget: () => document.querySelector('[data-buy="waving"]'),
+          text: `Buy the <b>Waving</b> emote to give your chef its first move!`,
+          watch: () => { if (isOwned('waving')) tourAdvance() },
+        },
+        // 10. Equip it. confirmBuy() already auto-equips right after a
+        // purchase, so this control will already read "✓ Equipped" by the
+        // time the chef gets here - it's still the real, only equip control
+        // for this card, and tapping it re-confirms the equip harmlessly.
+        {
+          id: 'equip-waving',
+          kind: 'action',
+          ready: () => !!document.querySelector('[data-equip="waving"]'),
+          getTarget: () => document.querySelector('[data-equip="waving"]'),
+          text: `Tap <b>Equip</b> to lock in your chef's new move!`,
+          enter: () => tourAdvanceOnRealClick('[data-equip="waving"]'),
+        },
+        tapEmoteStep,
+        addHomescreenStep,
+      )
+    } else {
+      // Not eligible: skip 7-10 entirely and silently, straight to the
+      // emote demo (if there's anything to demo) or Add to Homescreen.
+      if (equippedEmote()) steps.push(tapEmoteStep)
+      steps.push(addHomescreenStep)
+    }
+  } else {
+    // Guest branch: instead of the coin-claim steps, a popup nudging sign-in.
+    // Signing in kicks off the real Google OAuth flow (same signInWithGoogle()
+    // every other sign-in prompt uses), which navigates the page away and
+    // reloads it - destroying this in-memory tour. Before that happens, a
+    // resume marker is persisted to localStorage (state.onboardingResumeStep)
+    // so boot(), once handleSignedIn() + migrateLocalDataIfNeeded() have run
+    // post-redirect (pizzas/coins merged, profile loaded), can pick the tour
+    // back up at the coin-claim steps with eligibility re-evaluated fresh on
+    // the merged totals - see maybeResumeOnboardingTour().
+    steps.push(
+      {
+        id: 'guest-coin-prompt',
+        kind: 'explain',
+        silent: true,
+        getTarget: () => null,
+        text: '',
+        enter: () => {
+          const o = overlay(`
+            <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
+            ${coinImg('xl')}
+            <h3>Sign in to redeem your free coin</h3>
+            <p>Free coin only applies if you've never earned one before. Either way, signing in saves your progress, pizzas and coins.</p>
+            ${googleBtn()}
+            <button type="button" class="btn-secondary" style="margin-top:10px" data-action="continue-guest">Continue without signing in</button>
+          `, { popupClass: 'popup-wide', dismissable: false })
+          o.querySelector('[data-action="google"]').addEventListener('click', () => {
+            // Persist BEFORE kicking off the OAuth redirect so it's never
+            // lost to the navigation that follows.
+            state.onboardingResumeStep = 'coin-explainer'
+            save()
+            signInWithGoogle()
+          })
+          o.querySelector('[data-action="apple"]')?.addEventListener('click', () => toast('Sign in with Apple is coming soon! 🚧'))
+          o.querySelector('[data-action="continue-guest"]').addEventListener('click', () => {
+            o.remove()
+            const idx = tour.steps.findIndex(s => s.id === 'add-to-homescreen')
+            if (idx >= 0) { tour.index = idx; tour.entered = -1; tourSync() } else tourAdvance()
+          })
+          return () => o.remove()
+        },
+      },
+      addHomescreenStep,
+    )
+  }
 
   return steps
 }
