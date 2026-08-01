@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.3.2'
+const APP_VERSION = 'v2.4.4.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -418,15 +418,51 @@ function save() {
 // as a pale strip above a dark app.
 // Deliberately NOT apple-mobile-web-app-status-bar-style=black-translucent, the
 // usual answer: that forces the status bar TEXT to always be light, which is
-// unreadable against the light theme. theme-color lets iOS pick legible text
-// for whichever background we hand it.
-const PAGE_BG = { dark: '#120c09', light: '#F4ECE0' } // must match --page-bg in style.css
+// unreadable against the light theme. index.html now ships `default`
+// instead, which lets iOS pick legible text for whichever background we
+// hand it via theme-color.
 function applyTheme() {
   document.documentElement.setAttribute('data-theme', state.lightMode ? 'light' : 'dark')
-  const meta = document.querySelector('meta[name="theme-color"]')
-  if (meta) meta.setAttribute('content', state.lightMode ? PAGE_BG.light : PAGE_BG.dark)
+  syncThemeColorMeta()
+}
+
+// Vanilla-JS equivalent of a "ThemeColorSync" component: keeps
+// <meta name="theme-color"> in step with the ACTUAL resolved page
+// background, read straight off the --page-bg custom property, rather than
+// duplicating its hex values in JS (the old approach here, which could
+// silently drift out of sync with style.css). Deliberately NOT
+// getComputedStyle(document.body).backgroundColor - html/body's background
+// is set via the `background: linear-gradient(...)` SHORTHAND (see
+// style.css), which only sets background-image; backgroundColor stays
+// 'rgba(0, 0, 0, 0)' regardless of theme, so reading it would silently do
+// nothing.
+function syncThemeColorMeta() {
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--page-bg').trim()
+  if (!bg) return
+  // Targets the UNCONDITIONAL (no `media` attribute) theme-color meta -
+  // index.html also ships a light/dark `prefers-color-scheme`-scoped pair
+  // for the very first paint, before this script has even run. This plain
+  // one is appended after them in the DOM, so it's the LAST matching meta
+  // (which wins) and becomes the single source of truth for every in-app
+  // theme change from here on, independent of the OS-level scheme.
+  let meta = document.querySelector('meta[name="theme-color"]:not([media])')
+  if (!meta) {
+    meta = document.createElement('meta')
+    meta.setAttribute('name', 'theme-color')
+    document.head.appendChild(meta)
+  }
+  meta.setAttribute('content', bg)
 }
 applyTheme()
+// Belt and braces: re-syncs on ANY attribute change to <html> that could
+// affect --page-bg, not just the ones applyTheme() itself makes - this
+// app's toggle only ever sets data-theme (confirmed at the setAttribute
+// call above), so `class` never actually changes, but it's included
+// defensively in case a future code path flips theme some other way.
+new MutationObserver(syncThemeColorMeta).observe(document.documentElement, {
+  attributes: true,
+  attributeFilter: ['class', 'data-theme'],
+})
 
 // ---------- App-wide background music (persists across screens) ----------
 // Volume is driven through a Web Audio gain node rather than
@@ -1227,7 +1263,7 @@ function mountScreen(active, contentHtml, after, opts = {}) {
   app.innerHTML = `
     <div class="app">
       ${opts.hideStatusBar ? '' : statusBarHtml()}
-      <div class="scroll view active">${contentHtml}</div>
+      <div class="scroll view active${opts.hideStatusBar ? ' scroll-no-header' : ''}">${contentHtml}</div>
       ${tabBarHtml(active)}
     </div>
   `
@@ -4052,6 +4088,14 @@ function wireLogSwipe(listEl) {
       active = true; decided = false; dragging = false; dx = 0
       startX = e.clientX; startY = e.clientY
       row.style.transition = 'none'
+      // Touch pointers get IMPLICIT capture from the browser - mouse
+      // pointers do not. Without this, as soon as the cursor leaves the
+      // row's box mid-drag (easy, since the row slides out from under it)
+      // pointermove stops firing and pointerup lands on some other
+      // element - the row freezes mid-transform, `open` never gets applied
+      // and openSwipeRow never gets set. Explicit capture makes mouse
+      // behave like touch. Guarded - throws if the pointer's already gone.
+      try { row.setPointerCapture(e.pointerId) } catch {}
     })
     row.addEventListener('pointermove', (e) => {
       if (!active) return
@@ -4069,10 +4113,13 @@ function wireLogSwipe(listEl) {
       dx = Math.min(0, Math.max(-reveal, base + deltaX))
       row.style.transform = `translateX(${dx}px)`
     })
-    const endDrag = () => {
+    const endDrag = (e) => {
       if (!active) return
       active = false
       row.style.transition = ''
+      if (e && row.hasPointerCapture?.(e.pointerId)) {
+        try { row.releasePointerCapture(e.pointerId) } catch {}
+      }
       if (!dragging) return
       const reveal = actionsEl ? actionsEl.offsetWidth : 112
       if (dx <= -reveal / 2) {
@@ -4087,6 +4134,11 @@ function wireLogSwipe(listEl) {
     }
     row.addEventListener('pointerup', endDrag)
     row.addEventListener('pointercancel', endDrag)
+    // Capture can be lost for reasons other than pointerup/pointercancel
+    // (e.g. certain OS/browser gestures reclaiming it) - settle the row
+    // into a valid open/closed state instead of leaving it mid-transform
+    // whenever that happens too.
+    row.addEventListener('lostpointercapture', endDrag)
     row.addEventListener('click', (e) => {
       if (row.classList.contains('open')) { e.preventDefault(); closeOpenSwipe() }
     })
@@ -8499,7 +8551,22 @@ function tourSyncEnter(step) {
     // the reused coin-info popup, or a background coin-claim RPC with nothing
     // to show at all) drive their own advance from enter(); the generic
     // tap-anywhere handler would just be a second, redundant way to dismiss.
-    if (step.kind === 'explain' && !step.silent) document.addEventListener('click', tourExplainClickHandler)
+    // Deferred by a tick: if THIS step was entered as a consequence of a
+    // click (e.g. tapping "Continue without signing in" jumps the tour
+    // straight to add-to-homescreen via tour.index = idx; tourSync()), that
+    // same click event is still bubbling up the DOM. Attaching the handler
+    // synchronously let it catch that same bubbling click and immediately
+    // advance past the step the chef was never shown. The setTimeout(...,0)
+    // pushes the attach past the current event's bubble phase; the guard
+    // re-checks the tour still exists and is still on this exact step
+    // object, so a fast subsequent transition can't attach a handler for a
+    // step that's already been left.
+    if (step.kind === 'explain' && !step.silent) {
+      const attachId = setTimeout(() => {
+        if (tour && tour.steps[tour.index] === step) document.addEventListener('click', tourExplainClickHandler)
+      }, 0)
+      tour.timers.push(attachId)
+    }
     const enterCleanup = step.enter ? step.enter() : null
 
     // Modal cards animate in with a scale transform - `.popup`'s `pop`
@@ -8844,6 +8911,11 @@ function buildOnboardingSteps() {
   // tap-delete/confirm-delete steps must target, so they can't drift onto
   // some OTHER real session the chef has that day (see those steps below).
   let tourLogId = null
+  // Guards confirm-delete's advance so it can only ever fire once - it has
+  // TWO independent advance triggers (the click handler and watch()'s
+  // "the row is actually gone" check) that can both fire for the same
+  // delete, which without this double-advances past the following step.
+  let confirmDeleteAdvanced = false
 
   const steps = [
     // ---------- 1. Welcome ----------
@@ -9081,7 +9153,20 @@ function buildOnboardingSteps() {
       probe: () => !!document.querySelector('.overlay.show [data-action="yes"]'),
       getTarget: () => document.querySelector('.overlay.show [data-action="yes"]'),
       text: `Tap <b>Yes, delete</b> to finish up.`,
-      enter: () => tourAdvanceOnRealClick('.overlay.show [data-action="yes"]'),
+      enter: () => {
+        // Reset on every fresh entry into this step (not just once per
+        // tour run) - e.g. a replayed tour re-runs this step from scratch.
+        confirmDeleteAdvanced = false
+        const el = document.querySelector('.overlay.show [data-action="yes"]')
+        if (!el) return null
+        const onClick = () => {
+          if (confirmDeleteAdvanced) return
+          confirmDeleteAdvanced = true
+          tourAdvance()
+        }
+        el.addEventListener('click', onClick)
+        return () => el.removeEventListener('click', onClick)
+      },
       // Advances the moment the specific captured entry is actually gone,
       // instead of only reacting to the confirm button click - covers both
       // the row disappearing from the day sheet once afterLogChange()
@@ -9089,11 +9174,18 @@ function buildOnboardingSteps() {
       // ultimately removes the row from the DOM) and, for guests
       // specifically, state.log directly. No-op when tourLogId is null
       // (capture failed - falls back to click-only advance as before).
+      // Guarded by the SAME confirmDeleteAdvanced flag as the click handler
+      // above - both are independent triggers for the same delete and
+      // either can fire first; without the shared guard, both firing
+      // double-advances the tour and skips the following step entirely.
       watch: () => {
-        if (!tourLogId) return
+        if (confirmDeleteAdvanced || !tourLogId) return
         const rowGone = !document.querySelector(`.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"]`)
         const missingFromLocalLog = !currentUser && !state.log.some(e => e.id === tourLogId)
-        if (rowGone || missingFromLocalLog) tourAdvance()
+        if (rowGone || missingFromLocalLog) {
+          confirmDeleteAdvanced = true
+          tourAdvance()
+        }
       },
     },
   ]
@@ -9129,9 +9221,16 @@ function buildOnboardingSteps() {
     kind: 'action',
     ready: () => {
       const btn = document.querySelector('.hero-tap[data-action="emote"]')
-      if (!btn) { if (!homeKicked) { homeKicked = true; renderHome() }; return false }
-      return true
+      // Spend the guard the moment the target is FOUND, not only when it
+      // kicks - same fix as tap-cook's cookHomeKicked: otherwise it stays
+      // armed through the chef's first interaction and can misfire
+      // renderHome() later, yanking them off whatever they've moved on to.
+      if (btn) { homeKicked = true; return true }
+      if (!homeKicked) { homeKicked = true; renderHome() }
+      return false
     },
+    // Pure, side-effect-free - lets the self-heal scan land here.
+    probe: () => !!document.querySelector('.hero-tap[data-action="emote"]'),
     getTarget: () => document.querySelector('.hero-tap[data-action="emote"]'),
     text: `Tap <b>Tap to emote</b> to see your chef's new move!`,
     enter: () => tourAdvanceOnRealClick('.hero-tap[data-action="emote"]'),
@@ -9149,9 +9248,18 @@ function buildOnboardingSteps() {
     kind: 'explain',
     ready: () => {
       const el = document.querySelector('[data-action="add-to-homescreen"]')
-      if (!el) { if (!settingsKicked) { settingsKicked = true; renderSettings() }; return false }
-      return true
+      // Same guard-spent-on-found fix as tap-emote-demo/tap-cook above.
+      if (el) { settingsKicked = true; return true }
+      if (!settingsKicked) { settingsKicked = true; renderSettings() }
+      return false
     },
+    // Pure, side-effect-free - lets the self-heal scan land here. This row
+    // sits below the fold in Settings' Tutorials section (same row fixed
+    // for the non-tour recurring popup in bug report 89b30c3b) -
+    // tourPositionForStep's generic out-of-view scrollIntoView already
+    // handles bringing it on screen for the tour path too, since it
+    // applies to every step with a real getTarget().
+    probe: () => !!document.querySelector('[data-action="add-to-homescreen"]'),
     getTarget: () => document.querySelector('[data-action="add-to-homescreen"]'),
     text: `<b>Add to Homescreen</b> installs Chef Penguino like a real app!`,
   }
@@ -9233,24 +9341,28 @@ function buildOnboardingSteps() {
           kind: 'action',
           ready: () => {
             if (!document.querySelector('.shop-sort-row')) { if (!shopKicked) { shopKicked = true; renderShop() }; return false }
+            // Same guard-spent-on-found fix as tap-emote-demo/tap-cook -
+            // otherwise this stays armed through the chef's first
+            // interaction with the shop and can misfire renderShop() later.
+            shopKicked = true
             return true
           },
+          // Pure, side-effect-free - lets the self-heal scan land here.
+          probe: () => !!document.querySelector('.shop-sort-row') && !!document.querySelector('[data-buy="waving"]'),
           getTarget: () => document.querySelector('[data-buy="waving"]'),
           text: `Buy the <b>Waving</b> emote to give your chef its first move!`,
+          // The card the tour targets may be well down a long shop list -
+          // tourPositionForStep's generic out-of-view scrollIntoView
+          // already handles bringing it on screen (applies to every step
+          // with a real getTarget()), so no extra scroll call is needed
+          // here.
           watch: () => { if (isOwned('waving')) tourAdvance() },
         },
-        // 10. Equip it. confirmBuy() already auto-equips right after a
-        // purchase, so this control will already read "✓ Equipped" by the
-        // time the chef gets here - it's still the real, only equip control
-        // for this card, and tapping it re-confirms the equip harmlessly.
-        {
-          id: 'equip-waving',
-          kind: 'action',
-          ready: () => !!document.querySelector('[data-equip="waving"]'),
-          getTarget: () => document.querySelector('[data-equip="waving"]'),
-          text: `Tap <b>Equip</b> to lock in your chef's new move!`,
-          enter: () => tourAdvanceOnRealClick('[data-equip="waving"]'),
-        },
+        // Step 10 (equip-waving) removed: confirmBuy() already auto-equips
+        // immediately after a purchase, so that step spotlit a control that
+        // already read "✓ Equipped" - it taught nothing and asked for a tap
+        // that did nothing. tap-emote-demo is now the step right after
+        // buy-waving.
         tapEmoteStep,
         addHomescreenStep,
       )

@@ -9,19 +9,30 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/assets/favicon-16.png" />
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <!-- Dark-theme page background, since dark is the default. applyTheme()
-         rewrites this on load and on every theme toggle - see PAGE_BG in main.js,
-         which must stay in step with --page-bg in style.css. -->
-    <meta name="theme-color" content="#120c09" />
-    <!-- Without this the installed app renders iOS's `default` status bar: a
-         white strip with dark text, regardless of the app's own theme. -->
+    <!-- Static first-paint theme-color pair, read BEFORE main.js has run (so
+         there's no flash of the wrong colour on first load) - hexes are
+         style.css's --page-bg for each theme (light: :root[data-theme="light"],
+         dark: :root[data-theme="dark"] / the default :root). main.js's
+         syncThemeColorMeta() adds a third, unconditional (no `media` attr)
+         theme-color meta once it runs, appended after these two - being last
+         in the DOM makes it the one that actually wins from then on, and it's
+         what stays in sync with the chef's in-app light/dark TOGGLE (which is
+         independent of the OS-level scheme these two only cover pre-JS). -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F4ECE0" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#120c09" />
+    <!-- `default` (not `black`, and NOT `black-translucent`) lets iOS pick
+         legible status bar text against whatever theme-color is currently
+         set, instead of forcing permanently-light text that's unreadable
+         against the light theme (black-translucent) or always rendering a
+         plain white strip regardless of the app's theme (the previous
+         `black` value here, and the default no-meta-at-all behaviour). -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <!-- viewport-fit=cover is required for env(safe-area-inset-*) to report real
          values on iOS; without it they resolve to 0, which is why the header
          padded with a hardcoded guess and the tab bar's bottom inset never
          actually applied. -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Chef Penguino</title>
   </head>
   <body>

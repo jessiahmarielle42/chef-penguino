@@ -36,6 +36,10 @@
   --banner-wash: rgba(44,33,26,0.4);
   --badge-bg: #F7EDDF;
   --badge-fg: #2a1d13;
+  /* Theme-independent (not overridden by :root[data-theme]) - real values
+     only once viewport-fit=cover is set on the viewport meta, else 0px. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 :root[data-theme="light"] {
   --card: #FFFFFF;
@@ -246,6 +250,15 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .scroll::-webkit-scrollbar { width: 6px; }
 .scroll::-webkit-scrollbar-track { background: transparent; }
 .scroll::-webkit-scrollbar-thumb { background: var(--muted-2); border-radius: 62.4375rem; }
+/* mountScreen()'s `hideStatusBar` option (currently only the friend's-
+   Pizzeria screen) renders `.scroll` with nothing above it - .statusbar
+   normally reserves the safe-area-inset-top space (see .statusbar below),
+   so any screen skipping it needs to reserve that space itself instead, or
+   its content (here, .viewing-banner) slides in under the notch/clock.
+   Scoped to this modifier class rather than applied to .scroll itself,
+   which would double the top offset on every other (statusbar-having)
+   screen. */
+.scroll.scroll-no-header { padding-top: var(--safe-top); }
 
 /* ---------- home ---------- */
 .hero-card {
@@ -2287,7 +2300,11 @@ img.shop-image {
   background:#241a13; border-radius:1.5rem 1.5rem 0 0;
   border-top: 1px solid var(--panel-line); box-shadow: 0 -1.25rem 3.125rem -1.25rem rgba(0,0,0,0.6);
   transform: translateY(100%); transition: transform 0.26s cubic-bezier(.22,1,.36,1);
-  max-height: 74%; display: flex; flex-direction: column; padding-bottom:1.125rem;
+  max-height: 74%; display: flex; flex-direction: column;
+  /* Pinned to the true bottom edge of the screen (unlike .tabbar, nothing
+     sits below it) - its own rows/Delete actions could otherwise land under
+     the home indicator now that viewport-fit=cover makes the inset real. */
+  padding-bottom: calc(1.125rem + var(--safe-bottom));
 }
 :root[data-theme="light"] .cal-sheet { background: #FBF4E9; }
 @media (prefers-color-scheme: light) { :root:not([data-theme]) .cal-sheet { background: #FBF4E9; } }
