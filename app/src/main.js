@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.3.0'
+const APP_VERSION = 'v2.4.3.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -1651,7 +1651,13 @@ function calDayTotals(map, key) {
   const arr = map.get(key) || []
   let pz = 0, mn = 0
   arr.forEach(e => { pz += e.pizzas; mn += e.minutes })
-  return { pz, mn, n: arr.length, entries: arr }
+  // Newest first for display - copy the array rather than sorting arr in
+  // place, since arr is the map's own stored bucket and other code (the
+  // pz/mn totals above, calMonthTotals) doesn't care about order but
+  // there's no reason to risk mutating shared state for a rendering
+  // concern. Entries use `completedAt` (see renderLogRow), not `ts`.
+  const entries = [...arr].sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt))
+  return { pz, mn, n: arr.length, entries }
 }
 
 function calMonthTotals(map, y, mo) {
@@ -8714,16 +8720,21 @@ function tourPositionForStep(step) {
   const isPill = parsedRadius >= Math.min(rect.width, rect.height) / 2 - 1
   const ringRadius = isPill ? '999px' : `${parsedRadius + pad}px`
   ring.style.cssText = `left:${vp.offsetLeft + rect.left - pad}px; top:${vp.offsetTop + rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad * 2}px; border-radius:${ringRadius};`
-  // When the target lives inside a real modal card (either overlay()'s
-  // `.popup` markup, or the pause screens' `.pause-content` card), cutting
-  // the blocker hole around just the target dimmed the modal's OWN title
-  // and body copy while only the target button stayed lit - it read as a
-  // half-broken modal, not a highlight. Cut the hole around the whole
-  // modal instead, so the modal's own content reads at full brightness (it
-  // already blocks interaction with the background on its own); the ring
-  // stays on the real target exactly as before - that's still the thing
-  // being pointed at.
-  const modal = target.closest('.popup') || target.closest('.pause-content')
+  // When the target lives inside a real modal CARD - overlay()'s `.popup`
+  // markup, which has an actual visual boundary (background, radius,
+  // shadow) - cutting the blocker hole around just the target dimmed the
+  // modal's OWN title and body copy while only the target button stayed
+  // lit, reading as a half-broken modal. Cut the hole around the whole
+  // modal instead, so its own content reads at full brightness (it already
+  // blocks interaction with the background on its own); the ring stays on
+  // the real target exactly as before. Deliberately NOT applied to
+  // `.pause-content` (the pause/End-Early/confirm-end screens' wrapper) -
+  // unlike `.popup` it has no background/border/visible boundary of its
+  // own, so cutting a hole around its full bounding box produced a large,
+  // unjustified rectangle with no edge to explain its shape. Those steps
+  // go back to the original per-target behavior (hole around just the
+  // button) instead.
+  const modal = target.closest('.popup')
   const blockerRect = modal ? tourTargetRect(modal, vp) : rect
   // Blockers use the SAME uniform pad as the ring so the tappable hole
   // exactly matches what's visually lit - different pads would let the
