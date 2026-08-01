@@ -8860,15 +8860,28 @@ function tourPositionForStep(step) {
   // the button) instead.
   const modal = target.closest('.popup')
   const blockerRect = modal ? tourTargetRect(modal, vp) : rect
+  // NET RULE for the whole tour engine: at every point, exactly three
+  // things are tappable - the current step's real target, Skip Tutorial,
+  // and I'm a pro. Nothing else. Explain steps WITH a target (e.g.
+  // add-to-homescreen) used to skip blockers entirely on the theory that
+  // "explain steps let the real underlying control still receive it" -
+  // that left the ENTIRE rest of the app live behind the tour (Settings
+  // rows, the tab bar, everything), a real trap since a tap meant to
+  // dismiss the card could fire a real app action instead. Blockers now
+  // apply the same way for kind:'action' and kind:'explain' with a target -
+  // the real target stays reachable either way (a tap on it fires its own
+  // handler same as before; for explain steps the document-level
+  // tourExplainClickHandler ALSO still advances on that same tap, since
+  // it's not stopped/prevented), only the rest of the screen is blocked.
+  // A target-less explain step (e.g. `welcome`) has nothing to protect, so
+  // tourDimFull() above already blocks everything except tour-topright.
   if (modal) {
     tourClearBlockers()
-  } else if (step.kind === 'action') {
+  } else {
     // Blockers use the SAME uniform pad as the ring so the tappable hole
     // exactly matches what's visually lit - different pads would let the
     // hole and the highlight disagree.
     tourApplyBlockers(blockerRect, pad, vp)
-  } else {
-    tourClearBlockers()
   }
   let arrowBelow = false
   if (step.arrow) {
@@ -8920,11 +8933,17 @@ function buildOnboardingSteps() {
   // Closure-scoped (fresh per tour run) so a replayed tour re-arms its own
   // 2-second "let the session actually run" delay from scratch.
   let pauseArmedAt = null
-  // Same pattern as shopKicked/homeKicked/settingsKicked below - a one-shot
-  // guard so replaying the tour from Settings -> Tutorials -> Replay Tutorial
+  // Guards pause-timer's advance so it can only ever fire once - it has
+  // TWO independent advance triggers (the click handler and watch()'s "the
+  // pause overlay is already open" check), same pattern/reason as
+  // confirmDeleteAdvanced below.
+  let pauseTimerAdvanced = false
+  // Index-scoped one-shot navigation guard (see shopKickedForIndex/
+  // homeKickedForIndex/settingsKickedForIndex below for the full rationale)
+  // so replaying the tour from Settings -> Tutorials -> Replay Tutorial
   // (background screen is Settings, not Home) navigates to Home once before
   // the Cook FAB step waits for its target.
-  let cookHomeKicked = false
+  let cookHomeKickedForIndex = -1
   // Captured in the results step's enter() once the practice session has
   // definitely been written - the specific entry the later swipe-row/
   // tap-delete/confirm-delete steps must target, so they can't drift onto
@@ -8952,17 +8971,20 @@ function buildOnboardingSteps() {
       kind: 'action',
       ready: () => {
         const btn = document.querySelector('.tab-fab[data-action="cook"]')
-        // The guard is spent the moment the FAB is FOUND, not only when it
-        // fires - otherwise it stays armed through the chef's first tap: the
-        // tour starts on Home (FAB already present, kicker never fires,
-        // flag stays false), the chef taps Cook, the picker mounts, the FAB
-        // disappears, ready() re-runs, sees no FAB, and misfires
-        // renderHome() - yanking the chef off the picker they just opened
-        // back to Home. Marking it spent on the FIRST evaluation (whether
-        // or not it had to navigate) means it can only ever fire once,
-        // before the chef has interacted with anything.
-        if (btn) { cookHomeKicked = true; return true }
-        if (!cookHomeKicked) { cookHomeKicked = true; renderHome() }
+        if (btn) return true
+        // Index-scoped, not a plain boolean: a one-shot-per-TOUR-RUN flag
+        // conflates "have I ever seen this target" with "have I already
+        // tried navigating for THIS visit to the step" - it's wrong the
+        // moment the target lives on a screen the tour could plausibly
+        // revisit later (see homeKicked/settingsKicked/shopKicked below,
+        // which hit exactly that). tap-cook's target never gets revisited
+        // after this step advances (tour.index moves on, so this ready()
+        // is never evaluated again), so a plain boolean happened to work
+        // here, but it's converted to the same index-scoped pattern for
+        // consistency: fires renderHome() at most once per visit to THIS
+        // step (tracked by tour.index), never leaves a stale flag that
+        // could suppress a legitimate future navigation.
+        if (cookHomeKickedForIndex !== tour.index) { cookHomeKickedForIndex = tour.index; renderHome() }
         return false
       },
       getTarget: () => document.querySelector('.tab-fab[data-action="cook"]'),
@@ -9027,9 +9049,21 @@ function buildOnboardingSteps() {
       // Waits until the real timer has actually been running for ~2s before
       // the spotlight appears, so it never fights the "Start Cooking!"
       // splash or shows up before there's anything worth pausing.
+      // ALSO requires the pause overlay not already be open (the chef
+      // paused on their own before the step armed - no click listener was
+      // attached yet, so the tour never saw that tap). Now that blockers
+      // apply properly to every action step, letting this spotlight the
+      // TIMER while the chef is actually looking at the pause overlay's
+      // Resume/Edit Time/End Early buttons would block all three and trap
+      // them with only Skip Tutorial reachable - spotlighting a control
+      // they've already used, with an instruction that's no longer true.
+      // Going not-ready here lets the forward self-heal scan (3-step
+      // lookahead) land on end-early instead, whose probe matches the
+      // overlay that's actually on screen - exactly where they should be.
       ready: () => {
         const el = document.querySelector('.timer-value')
         if (!el) { pauseArmedAt = null; return false }
+        if (document.querySelector('.pause-overlay:not([hidden])')) return false
         if (pauseArmedAt == null) {
           pauseArmedAt = Date.now()
           const id = setTimeout(tourSync, 2100)
@@ -9047,7 +9081,34 @@ function buildOnboardingSteps() {
       getTarget: () => document.querySelector('.timer-value'),
       arrow: true,
       text: `Tap the timer to pause your session.`,
-      enter: () => tourAdvanceOnRealClick('.timer-value'),
+      enter: () => {
+        // Reset on every fresh entry (a replayed tour re-runs this step
+        // from scratch).
+        pauseTimerAdvanced = false
+        const el = document.querySelector('.timer-value')
+        if (!el) return null
+        const onClick = () => {
+          if (pauseTimerAdvanced) return
+          pauseTimerAdvanced = true
+          tourAdvance()
+        }
+        el.addEventListener('click', onClick)
+        return () => el.removeEventListener('click', onClick)
+      },
+      // Covers the case where the step is already entered/armed and the
+      // chef pauses via any route the click listener above didn't catch
+      // (e.g. a route that doesn't dispatch a plain click on .timer-value).
+      // Guarded by the SAME pauseTimerAdvanced flag as the click handler -
+      // both are independent triggers for the same "the chef paused" event
+      // and either can fire first; without the shared guard, both firing
+      // double-advances the tour and skips end-early entirely.
+      watch: () => {
+        if (pauseTimerAdvanced) return
+        if (document.querySelector('.pause-overlay:not([hidden])')) {
+          pauseTimerAdvanced = true
+          tourAdvance()
+        }
+      },
     },
     {
       id: 'end-early',
@@ -9217,13 +9278,25 @@ function buildOnboardingSteps() {
   // skips 7-10 silently and picks straight back up at the emote demo (or
   // straight to Add to Homescreen if there's nothing to demo either).
   //
-  // Side-effecting `ready()` guards (shopKicked/homeKicked/settingsKicked)
-  // navigate to the right screen exactly once before waiting for its real
-  // DOM to show up - same pattern as `pauseArmedAt` above, just for a full
-  // screen swap instead of a timer delay.
-  let shopKicked = false
-  let homeKicked = false
-  let settingsKicked = false
+  // Side-effecting `ready()` guards navigate to the right screen before
+  // waiting for its real DOM to show up. Index-scoped (the step's OWN
+  // tour.index, not a plain per-tour-run boolean) - critical, not
+  // cosmetic: a plain boolean conflates "have I ever seen this target"
+  // with "have I already tried navigating for THIS visit to the step".
+  // tap-emote-demo's target (.hero-tap) and add-to-homescreen's target
+  // both live on screens (Home, Settings) the tour is ALREADY on earlier
+  // in the run (the tour starts on Home; Home is also where Cook is
+  // tapped from) - a plain boolean got spent then, on a DIFFERENT step's
+  // visit, and by the time these steps actually needed to navigate (e.g.
+  // after the delete flow leaves a signed-in chef on the History screen),
+  // the guard was already burned and never fired again, permanently
+  // stranding the tour with the target never appearing. Scoping the guard
+  // to `tour.index` means each step gets exactly one navigation attempt
+  // PER VISIT to that step, and can never be pre-spent by an earlier,
+  // unrelated step's evaluation.
+  let shopKickedForIndex = -1
+  let homeKickedForIndex = -1
+  let settingsKickedForIndex = -1
   // Tracks the coin/sign-in popups' own overlay element so their steps can
   // self-heal (watch()) if it ever disappears from the DOM out from under
   // them - e.g. a screen re-render elsewhere replacing app.innerHTML while
@@ -9240,12 +9313,12 @@ function buildOnboardingSteps() {
     kind: 'action',
     ready: () => {
       const btn = document.querySelector('.hero-tap[data-action="emote"]')
-      // Spend the guard the moment the target is FOUND, not only when it
-      // kicks - same fix as tap-cook's cookHomeKicked: otherwise it stays
-      // armed through the chef's first interaction and can misfire
-      // renderHome() later, yanking them off whatever they've moved on to.
-      if (btn) { homeKicked = true; return true }
-      if (!homeKicked) { homeKicked = true; renderHome() }
+      if (btn) return true
+      // Index-scoped - see the comment above shopKickedForIndex for why a
+      // plain boolean here stranded the tour (Home, this step's screen, is
+      // also where the tour starts, so a plain flag got burned long before
+      // this step ever needed to navigate).
+      if (homeKickedForIndex !== tour.index) { homeKickedForIndex = tour.index; renderHome() }
       return false
     },
     // Pure, side-effect-free - lets the self-heal scan land here.
@@ -9267,9 +9340,14 @@ function buildOnboardingSteps() {
     kind: 'explain',
     ready: () => {
       const el = document.querySelector('[data-action="add-to-homescreen"]')
-      // Same guard-spent-on-found fix as tap-emote-demo/tap-cook above.
-      if (el) { settingsKicked = true; return true }
-      if (!settingsKicked) { settingsKicked = true; renderSettings() }
+      if (el) return true
+      // Index-scoped - see the comment above shopKickedForIndex for why a
+      // plain boolean here stranded the tour on the History screen for a
+      // signed-in chef (Settings, this step's screen, may have been the
+      // background for an earlier step - e.g. a replayed tour - which
+      // would burn a plain flag long before this step ever needed to
+      // navigate).
+      if (settingsKickedForIndex !== tour.index) { settingsKickedForIndex = tour.index; renderSettings() }
       return false
     },
     // Pure, side-effect-free - lets the self-heal scan land here. This row
@@ -9359,12 +9437,15 @@ function buildOnboardingSteps() {
           id: 'buy-waving',
           kind: 'action',
           ready: () => {
-            if (!document.querySelector('.shop-sort-row')) { if (!shopKicked) { shopKicked = true; renderShop() }; return false }
-            // Same guard-spent-on-found fix as tap-emote-demo/tap-cook -
-            // otherwise this stays armed through the chef's first
-            // interaction with the shop and can misfire renderShop() later.
-            shopKicked = true
-            return true
+            if (document.querySelector('.shop-sort-row')) return true
+            // Index-scoped - see the comment above shopKickedForIndex's
+            // declaration for why a plain boolean here stranded the tour:
+            // this is the FIRST of the three navigating steps in the
+            // eligible branch, so it happened to be less exposed than
+            // tap-emote-demo/add-to-homescreen, but the same shape applies
+            // if the chef ever revisits Shop before reaching this step.
+            if (shopKickedForIndex !== tour.index) { shopKickedForIndex = tour.index; renderShop() }
+            return false
           },
           // Pure, side-effect-free - lets the self-heal scan land here.
           probe: () => !!document.querySelector('.shop-sort-row') && !!document.querySelector('[data-buy="waving"]'),
