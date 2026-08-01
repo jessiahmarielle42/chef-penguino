@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.2.3'
+const APP_VERSION = 'v2.4.3.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -8214,7 +8214,7 @@ function startOnboardingTour(resumeAfterId) {
     scanning: false,
     backJumps: 0,
     retryId: null,
-    retryCount: 0,
+    maxIndexReached: startIndex,
   }
   // Suppressed for the whole tour, not just the timer steps - simplest way
   // to guarantee the screen never auto-darkens mid-instruction. Restored to
@@ -8282,6 +8282,7 @@ function tourAdvance() {
   if (!tour) return
   if (tour.index >= tour.steps.length - 1) { endOnboardingTour(true); return }
   tour.index += 1
+  tour.maxIndexReached = Math.max(tour.maxIndexReached, tour.index)
   tour.entered = -1
   tourSync()
 }
@@ -8394,20 +8395,42 @@ function tourSync() {
     if (tour.notReadyCount >= 2 && !tour.scanning) {
       tour.scanning = true
       try {
+        // A probe() match only means "this step's target exists on screen" -
+        // it is NOT a promise the step is ready to display. Some steps
+        // (pause-timer) have a ready() that gates on more than DOM
+        // existence - a deliberate ~2s arming delay so the spotlight
+        // doesn't fight the "Start Cooking!" splash. Forcing ready = true
+        // on a scan match rendered pause-timer instantly (a visible flash),
+        // only for the very next sync's honest ready() call to arm the
+        // delay and hide it again, before it reappeared correctly 2s later.
+        // So a match re-evaluates the candidate's OWN ready() honestly
+        // instead of assuming it - if that's false, this falls through to
+        // the existing hide-and-wait path below, and the 250ms retry tick
+        // picks it up the instant the step's own gate actually opens. This
+        // is structural, not a pause-timer special case: it protects any
+        // future step whose ready() gates on timing rather than DOM alone.
         const scanEnd = Math.min(tour.index + 3, tour.steps.length - 1)
         for (let i = tour.index + 1; i <= scanEnd; i++) {
           const candidate = tour.steps[i]
           if (candidate.probe && candidate.probe()) {
             tour.index = i
+            tour.maxIndexReached = Math.max(tour.maxIndexReached, i)
             tour.entered = -1
             tour.notReadyCount = 0
             step = candidate
-            ready = true
+            ready = step.ready ? step.ready() : true
             break
           }
         }
+        // Never let a backward jump target a step the tour has already
+        // moved past in this run (further back than maxIndexReached - 1) -
+        // e.g. during the results video, results.ready() is false and
+        // pause-timer's probe (.timer-value) can still momentarily match if
+        // that DOM hasn't been torn down yet, which would otherwise yank
+        // the tour backwards to an already-completed step and require a
+        // second recovery.
         if (!ready && tour.backJumps < 3) {
-          const backEnd = Math.max(tour.index - 3, 0)
+          const backEnd = Math.max(tour.index - 3, 0, tour.maxIndexReached - 1)
           for (let i = tour.index - 1; i >= backEnd; i--) {
             const candidate = tour.steps[i]
             if (candidate.probe && candidate.probe()) {
@@ -8416,7 +8439,7 @@ function tourSync() {
               tour.notReadyCount = 0
               tour.backJumps += 1
               step = candidate
-              ready = true
+              ready = step.ready ? step.ready() : true
               break
             }
           }
@@ -8433,16 +8456,18 @@ function tourSync() {
       // tourSync is otherwise purely event-driven (MutationObserver records,
       // window resize/scroll) - if the current step's ready() is false at
       // the moment of the last such event (the screen is mid-render, an
-      // async/late render, an image still settling), nothing re-checks it
-      // and the tour sits idle until some UNRELATED event happens to fire
-      // (which is why tapping the dead screen "fixes" it). Self-retry so it
-      // recovers without needing that. Goes through the normal tourSync
-      // path, so the forward/backward scans above still apply on each tick.
-      // Capped at ~40 consecutive not-ready retries (~10s) so it can't spin
-      // forever on a genuinely gone screen, after which it falls back to
-      // the existing hide-and-wait (still resumed by the next real event).
-      tour.retryCount = (tour.retryCount || 0) + 1
-      if (tour.retryCount <= 40 && tour.retryId == null) {
+      // async/late render, a multi-second video playing before the DOM the
+      // step targets ever shows up), nothing re-checks it and the tour sits
+      // idle until some UNRELATED event happens to fire (which is why
+      // tapping the dead screen "fixes" it). Self-retry so it recovers
+      // without needing that. Goes through the normal tourSync path, so the
+      // forward/backward scans above still apply on each tick. Deliberately
+      // UNCAPPED - it retries every 250ms for as long as the tour stays
+      // mounted and the step stays not-ready. A cap bought nothing (a
+      // 250ms no-op check is free) and could only ever cause a strand: the
+      // results step, gated behind a multi-second results video on device,
+      // could legitimately stay not-ready longer than any fixed cap.
+      if (tour.retryId == null) {
         tour.retryId = setTimeout(() => {
           if (!tour) return
           tour.retryId = null
@@ -8453,7 +8478,6 @@ function tourSync() {
       return
     }
   }
-  tour.retryCount = 0
   tour.notReadyCount = 0
   tourSyncEnter(step)
 }
@@ -8515,19 +8539,30 @@ function tourDimFull() {
   top.style.cssText = 'left:0; top:0; width:100%; height:100%; pointer-events:none; background:rgba(8,5,3,0.5);'
 }
 
-function tourPositionCard(card, rect, arrowBelow, vp) {
+function tourPositionCard(card, rect, arrowBelow, vp, avoidRect) {
   const vw = vp.width, vh = vp.height
   const cardW = Math.min(320, vw - 32)
   const estH = card.offsetHeight || 120
-  // Vertical placement: below the target, flipping above when it would run
-  // off the bottom of the viewport. When the directional arrow itself has
-  // been flipped below the target (no room above it - see
-  // tourPositionForStep), the card's usual rect.bottom + 16 start would
-  // stack directly on top of the arrow (which occupies roughly
-  // rect.bottom+8..rect.bottom+42), rendering it invisible underneath the
-  // card - start lower to clear it instead.
-  let top = arrowBelow ? rect.bottom + 50 : rect.bottom + 16
-  if (top + estH > vh - 104) top = Math.max(64, rect.top - estH - 16)
+  let top
+  if (avoidRect) {
+    // Target sits inside a real modal card (see tourPositionForStep) - the
+    // tour's own card must never overlap the modal's layout, so it's placed
+    // OUTSIDE the modal's bounding rect entirely: below its bottom edge if
+    // there's room, otherwise above its top edge. Never relative to the
+    // target's own (smaller) rect, which would still land inside the modal.
+    top = avoidRect.bottom + 16
+    if (top + estH > vh - 104) top = Math.max(64, avoidRect.top - estH - 16)
+  } else {
+    // Vertical placement: below the target, flipping above when it would run
+    // off the bottom of the viewport. When the directional arrow itself has
+    // been flipped below the target (no room above it - see
+    // tourPositionForStep), the card's usual rect.bottom + 16 start would
+    // stack directly on top of the arrow (which occupies roughly
+    // rect.bottom+8..rect.bottom+42), rendering it invisible underneath the
+    // card - start lower to clear it instead.
+    top = arrowBelow ? rect.bottom + 50 : rect.bottom + 16
+    if (top + estH > vh - 104) top = Math.max(64, rect.top - estH - 16)
+  }
   // Horizontal placement is unconditionally centered on the VIEWPORT
   // (never anchored to the target's horizontal center) - anchoring to an
   // off-center target's position made the card look misaligned rather than
@@ -8625,6 +8660,32 @@ function tourPositionForStep(step) {
   }
   card.classList.remove('tour-card-center')
   const vp = tourViewport()
+  // With the iOS soft keyboard open, the visual viewport shrinks by however
+  // much the keyboard covers - computing a "correct" ring/card position in
+  // that state proved unreliable in practice for every step tried (not just
+  // the input-focused one: e.g. task-done's Done button also renders with
+  // the ring floating over the wrong content while the keyboard is up).
+  // Rather than keep chasing exact positioning against a viewport that's
+  // actively changing, drop the spotlight entirely while the keyboard is
+  // open and pin a plain instruction card to the top of the visual
+  // viewport instead - a card that's definitely readable beats a ring
+  // that's potentially in the wrong place. Normal ring+blockers behaviour
+  // resumes the instant the keyboard closes (the visualViewport resize
+  // listener re-syncs then).
+  const vv = window.visualViewport
+  const keyboardOpen = !!vv && (window.innerHeight - vv.height) > 150
+  if (keyboardOpen) {
+    ring.hidden = true
+    arrow.hidden = true
+    tourClearBlockers()
+    if (hint) hint.hidden = true
+    card.classList.remove('tour-card-center')
+    const cardW = Math.min(320, vp.width - 32)
+    const left = vp.offsetLeft + (vp.width - cardW) / 2
+    const top = vp.offsetTop + 12
+    card.style.cssText = `left:${left}px; top:${top}px; width:${cardW}px;`
+    return
+  }
   let rect = tourTargetRect(target, vp)
   // If the target is wholly or partly outside the visible (visual) viewport
   // - e.g. "See All Sessions" sitting below the fold on a real phone -
@@ -8637,8 +8698,13 @@ function tourPositionForStep(step) {
     target.scrollIntoView({ block: 'center', behavior: 'auto' })
     rect = tourTargetRect(target, vp)
   }
-  const pad = 8
-  const bottomPad = pad + 4 // extra clearance for pill buttons' raised bottom lip (box-shadow), which getBoundingClientRect() excludes
+  // Uniform pad on all four sides so the ring stays concentric with the
+  // target - an earlier asymmetric bottom pad (meant to cover buttons'
+  // raised 3D shadow lip) skewed the box off-center, which on a pill button
+  // read as the ring cutting through it rather than framing it. A slightly
+  // generous, perfectly concentric ring is correct even if the lip still
+  // peeks outside it; a tight skewed one is not.
+  const pad = 10
   ring.hidden = false
   const cs = getComputedStyle(target)
   const parsedRadius = parseFloat(cs.borderRadius) || 0
@@ -8647,8 +8713,22 @@ function tourPositionForStep(step) {
   // undershoot the button's actual rounding.
   const isPill = parsedRadius >= Math.min(rect.width, rect.height) / 2 - 1
   const ringRadius = isPill ? '999px' : `${parsedRadius + pad}px`
-  ring.style.cssText = `left:${vp.offsetLeft + rect.left - pad}px; top:${vp.offsetTop + rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad + bottomPad}px; border-radius:${ringRadius};`
-  if (step.kind === 'action') tourApplyBlockers(rect, pad, vp)
+  ring.style.cssText = `left:${vp.offsetLeft + rect.left - pad}px; top:${vp.offsetTop + rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad * 2}px; border-radius:${ringRadius};`
+  // When the target lives inside a real modal card (either overlay()'s
+  // `.popup` markup, or the pause screens' `.pause-content` card), cutting
+  // the blocker hole around just the target dimmed the modal's OWN title
+  // and body copy while only the target button stayed lit - it read as a
+  // half-broken modal, not a highlight. Cut the hole around the whole
+  // modal instead, so the modal's own content reads at full brightness (it
+  // already blocks interaction with the background on its own); the ring
+  // stays on the real target exactly as before - that's still the thing
+  // being pointed at.
+  const modal = target.closest('.popup') || target.closest('.pause-content')
+  const blockerRect = modal ? tourTargetRect(modal, vp) : rect
+  // Blockers use the SAME uniform pad as the ring so the tappable hole
+  // exactly matches what's visually lit - different pads would let the
+  // hole and the highlight disagree.
+  if (step.kind === 'action') tourApplyBlockers(blockerRect, pad, vp)
   else tourClearBlockers()
   let arrowBelow = false
   if (step.arrow) {
@@ -8668,11 +8748,15 @@ function tourPositionForStep(step) {
   } else {
     arrow.hidden = true
   }
-  tourPositionCard(card, rect, arrowBelow, vp)
+  // Card placement: normally relative to the target itself. Inside a modal,
+  // that would render the tour's own card on top of/overlapping the
+  // modal's layout - place it OUTSIDE the modal instead (below its bottom
+  // edge if there's room, else above its top edge), never overlapping it.
+  tourPositionCard(card, rect, arrowBelow, vp, modal ? blockerRect : null)
   if (hint) {
     hint.hidden = !showHint
     if (showHint) {
-      const ringRect = { top: rect.top - pad, bottom: rect.bottom + bottomPad }
+      const ringRect = { top: rect.top - pad, bottom: rect.bottom + pad }
       tourPositionHint(hint, card, ringRect, vp)
     }
   }
@@ -8709,8 +8793,8 @@ function buildOnboardingSteps() {
       kind: 'explain',
       getTarget: () => null,
       text: eligible
-        ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes real pizzas - one hour of focus makes one pizza. Finish this quick tour and earn a <b>FREE Penguino Coin</b>!`
-        : `<b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes real pizzas - one hour of focus makes one pizza. Let's take a quick look around.`,
+        ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes pizzas - one hour of focus makes one pizza. Finish this quick tour and earn a <b>FREE Penguino Coin</b>!`
+        : `<b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes pizzas - one hour of focus makes one pizza. Let's take a quick look around.`,
     },
     // ---------- 2. Point at the Cook button ----------
     {
@@ -8762,12 +8846,6 @@ function buildOnboardingSteps() {
         if (!el) return null
         const onInput = () => { if (el.value.trim().length > 0) tourAdvance() }
         el.addEventListener('input', onInput)
-        // The input is already focused by renderTaskPrompt(), which on iOS
-        // triggers the soft keyboard - scroll it into view so the card has
-        // room, then re-sync once the keyboard/visualViewport has settled.
-        el.scrollIntoView({ block: 'center' })
-        const id = setTimeout(tourSync, 350)
-        if (tour) tour.timers.push(id)
         return () => el.removeEventListener('input', onInput)
       },
     },
@@ -8780,21 +8858,9 @@ function buildOnboardingSteps() {
       text: `Tap <b>Done</b>.`,
       enter: () => tourAdvanceOnRealClick('.picker [data-done]'),
     },
-    {
-      id: 'task-type',
-      kind: 'action',
-      ready: () => !!document.querySelector('.picker .tt-type-list .tt-type-row'),
-      probe: () => !!document.querySelector('.picker .tt-type-list .tt-type-row'),
-      getTarget: () => document.querySelector('.picker .tt-type-list'),
-      text: `Pick any category.`,
-      enter: () => {
-        const list = document.querySelector('.picker .tt-type-list')
-        if (!list) return null
-        const onClick = (e) => { if (e.target.closest('.tt-type-row')) tourAdvance() }
-        list.addEventListener('click', onClick)
-        return () => list.removeEventListener('click', onClick)
-      },
-    },
+    // task-type step removed - Deep Work is already selected by default on
+    // this screen, so asking the chef to pick a category was a pointless
+    // extra tap. start-cook is now the active step here.
     {
       id: 'start-cook',
       kind: 'action',
@@ -8939,6 +9005,12 @@ function buildOnboardingSteps() {
   let shopKicked = false
   let homeKicked = false
   let settingsKicked = false
+  // Tracks the coin/sign-in popups' own overlay element so their steps can
+  // self-heal (watch()) if it ever disappears from the DOM out from under
+  // them - e.g. a screen re-render elsewhere replacing app.innerHTML while
+  // the overlay was appended to the old .app wrapper.
+  let coinExplainerOverlayEl = null
+  let guestCoinOverlayEl = null
 
   // Step 11 - always reachable from either branch below, so built once and
   // reused. Owning literally nothing (equippedEmote() null - a signed-in
@@ -8987,11 +9059,20 @@ function buildOnboardingSteps() {
           id: 'coin-explainer',
           kind: 'explain',
           silent: true,
+          // Gate on the barrel-explosion delete clip (playDeleteClip(),
+          // wrapper class `.delete-clip`) not being on screen. This step
+          // has no ready() of its own, so without this its enter() would
+          // fire the instant the tour advances onto it - including into a
+          // transient full-screen clip still playing, opening (or losing)
+          // the popup underneath/behind it with nothing to reveal that
+          // anything went wrong (it's silent).
+          ready: () => !document.querySelector('.delete-clip'),
           getTarget: () => null,
           text: '',
           enter: () => {
             openCoinInfo()
             const wrap = document.querySelector('.overlay.show')
+            coinExplainerOverlayEl = wrap || null
             const okBtn = wrap?.querySelector('[data-action="ok"]')
             if (!okBtn) { tourAdvance(); return null }
             okBtn.addEventListener('click', () => tourAdvance())
@@ -8999,7 +9080,19 @@ function buildOnboardingSteps() {
             // (overlay()'s default dismissable behavior) - advance there too
             // so the tour can't get stranded showing nothing.
             wrap.addEventListener('click', (e) => { if (e.target === wrap) tourAdvance() })
-            return () => {}
+            return () => { coinExplainerOverlayEl = null }
+          },
+          // Self-healing: re-open if the popup this step opened has been
+          // removed from the DOM by something other than the chef actually
+          // dismissing it (e.g. an unrelated screen re-render replacing
+          // app.innerHTML while the overlay was appended to the old .app
+          // wrapper) - runs on every sync, not just on entering the step.
+          watch: () => {
+            if (coinExplainerOverlayEl && !document.body.contains(coinExplainerOverlayEl)) {
+              coinExplainerOverlayEl = null
+              tour.entered = -1
+              tourSync()
+            }
           },
         },
         // 8. Grant the coin server-side - the ONLY place this ever happens
@@ -9074,6 +9167,12 @@ function buildOnboardingSteps() {
         id: 'guest-coin-prompt',
         kind: 'explain',
         silent: true,
+        // Gate on the barrel-explosion delete clip (playDeleteClip(),
+        // wrapper class `.delete-clip`) not being on screen - same reason as
+        // coin-explainer above: this step has no ready() of its own, so
+        // without this its enter() would fire straight into a transient
+        // full-screen clip still playing.
+        ready: () => !document.querySelector('.delete-clip'),
         getTarget: () => null,
         text: '',
         enter: () => {
@@ -9085,6 +9184,7 @@ function buildOnboardingSteps() {
             ${googleBtn()}
             <button type="button" class="btn-secondary" style="margin-top:10px" data-action="continue-guest">Continue without signing in</button>
           `, { popupClass: 'popup-wide', dismissable: false })
+          guestCoinOverlayEl = o
           o.querySelector('[data-action="google"]').addEventListener('click', () => {
             // Persist BEFORE kicking off the OAuth redirect so it's never
             // lost to the navigation that follows.
@@ -9095,10 +9195,23 @@ function buildOnboardingSteps() {
           o.querySelector('[data-action="apple"]')?.addEventListener('click', () => toast('Sign in with Apple is coming soon! 🚧'))
           o.querySelector('[data-action="continue-guest"]').addEventListener('click', () => {
             o.remove()
+            guestCoinOverlayEl = null
             const idx = tour.steps.findIndex(s => s.id === 'add-to-homescreen')
             if (idx >= 0) { tour.index = idx; tour.entered = -1; tourSync() } else tourAdvance()
           })
-          return () => o.remove()
+          return () => { o.remove(); guestCoinOverlayEl = null }
+        },
+        // Self-healing: re-open the sign-in popup if it's been removed from
+        // the DOM by something other than the chef actually dismissing it
+        // (e.g. an unrelated screen re-render replacing app.innerHTML while
+        // the overlay was appended to the old .app wrapper) - runs on every
+        // sync, not just on entering the step.
+        watch: () => {
+          if (guestCoinOverlayEl && !document.body.contains(guestCoinOverlayEl)) {
+            guestCoinOverlayEl = null
+            tour.entered = -1
+            tourSync()
+          }
         },
       },
       addHomescreenStep,
