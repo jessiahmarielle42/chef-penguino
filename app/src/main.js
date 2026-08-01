@@ -4606,6 +4606,11 @@ function renderSettings(highlightProfile, highlightHomescreen) {
     if (highlightHomescreen) {
       const row = app.querySelector('#add-homescreen-row')
       if (row) {
+        // #add-homescreen-row lives well down the Tutorials section, below
+        // the fold on a phone - Settings opens scrolled to the top, so
+        // without this the 3.6s glow animation played entirely off-screen
+        // and expired before the chef ever scrolled down to see it.
+        row.scrollIntoView({ block: 'center', behavior: 'smooth' })
         row.classList.remove('highlight'); void row.offsetWidth; row.classList.add('highlight')
         setTimeout(() => row.classList.remove('highlight'), 3600)
       }
