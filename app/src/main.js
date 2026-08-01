@@ -418,15 +418,51 @@ function save() {
 // as a pale strip above a dark app.
 // Deliberately NOT apple-mobile-web-app-status-bar-style=black-translucent, the
 // usual answer: that forces the status bar TEXT to always be light, which is
-// unreadable against the light theme. theme-color lets iOS pick legible text
-// for whichever background we hand it.
-const PAGE_BG = { dark: '#120c09', light: '#F4ECE0' } // must match --page-bg in style.css
+// unreadable against the light theme. index.html now ships `default`
+// instead, which lets iOS pick legible text for whichever background we
+// hand it via theme-color.
 function applyTheme() {
   document.documentElement.setAttribute('data-theme', state.lightMode ? 'light' : 'dark')
-  const meta = document.querySelector('meta[name="theme-color"]')
-  if (meta) meta.setAttribute('content', state.lightMode ? PAGE_BG.light : PAGE_BG.dark)
+  syncThemeColorMeta()
+}
+
+// Vanilla-JS equivalent of a "ThemeColorSync" component: keeps
+// <meta name="theme-color"> in step with the ACTUAL resolved page
+// background, read straight off the --page-bg custom property, rather than
+// duplicating its hex values in JS (the old approach here, which could
+// silently drift out of sync with style.css). Deliberately NOT
+// getComputedStyle(document.body).backgroundColor - html/body's background
+// is set via the `background: linear-gradient(...)` SHORTHAND (see
+// style.css), which only sets background-image; backgroundColor stays
+// 'rgba(0, 0, 0, 0)' regardless of theme, so reading it would silently do
+// nothing.
+function syncThemeColorMeta() {
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--page-bg').trim()
+  if (!bg) return
+  // Targets the UNCONDITIONAL (no `media` attribute) theme-color meta -
+  // index.html also ships a light/dark `prefers-color-scheme`-scoped pair
+  // for the very first paint, before this script has even run. This plain
+  // one is appended after them in the DOM, so it's the LAST matching meta
+  // (which wins) and becomes the single source of truth for every in-app
+  // theme change from here on, independent of the OS-level scheme.
+  let meta = document.querySelector('meta[name="theme-color"]:not([media])')
+  if (!meta) {
+    meta = document.createElement('meta')
+    meta.setAttribute('name', 'theme-color')
+    document.head.appendChild(meta)
+  }
+  meta.setAttribute('content', bg)
 }
 applyTheme()
+// Belt and braces: re-syncs on ANY attribute change to <html> that could
+// affect --page-bg, not just the ones applyTheme() itself makes - this
+// app's toggle only ever sets data-theme (confirmed at the setAttribute
+// call above), so `class` never actually changes, but it's included
+// defensively in case a future code path flips theme some other way.
+new MutationObserver(syncThemeColorMeta).observe(document.documentElement, {
+  attributes: true,
+  attributeFilter: ['class', 'data-theme'],
+})
 
 // ---------- App-wide background music (persists across screens) ----------
 // Volume is driven through a Web Audio gain node rather than
@@ -1227,7 +1263,7 @@ function mountScreen(active, contentHtml, after, opts = {}) {
   app.innerHTML = `
     <div class="app">
       ${opts.hideStatusBar ? '' : statusBarHtml()}
-      <div class="scroll view active">${contentHtml}</div>
+      <div class="scroll view active${opts.hideStatusBar ? ' scroll-no-header' : ''}">${contentHtml}</div>
       ${tabBarHtml(active)}
     </div>
   `
@@ -8515,7 +8551,22 @@ function tourSyncEnter(step) {
     // the reused coin-info popup, or a background coin-claim RPC with nothing
     // to show at all) drive their own advance from enter(); the generic
     // tap-anywhere handler would just be a second, redundant way to dismiss.
-    if (step.kind === 'explain' && !step.silent) document.addEventListener('click', tourExplainClickHandler)
+    // Deferred by a tick: if THIS step was entered as a consequence of a
+    // click (e.g. tapping "Continue without signing in" jumps the tour
+    // straight to add-to-homescreen via tour.index = idx; tourSync()), that
+    // same click event is still bubbling up the DOM. Attaching the handler
+    // synchronously let it catch that same bubbling click and immediately
+    // advance past the step the chef was never shown. The setTimeout(...,0)
+    // pushes the attach past the current event's bubble phase; the guard
+    // re-checks the tour still exists and is still on this exact step
+    // object, so a fast subsequent transition can't attach a handler for a
+    // step that's already been left.
+    if (step.kind === 'explain' && !step.silent) {
+      const attachId = setTimeout(() => {
+        if (tour && tour.steps[tour.index] === step) document.addEventListener('click', tourExplainClickHandler)
+      }, 0)
+      tour.timers.push(attachId)
+    }
     const enterCleanup = step.enter ? step.enter() : null
 
     // Modal cards animate in with a scale transform - `.popup`'s `pop`
