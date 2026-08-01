@@ -31,16 +31,68 @@ Opus reviews using **real screenshots**, not assumptions about how something
 looks:
 - Guest-visible / non-auth screens: screenshot directly (headless
   Chromium / the review harness).
-- Auth-gated or admin screens: use the gitignored review harness at
-  `app/review/` — it monkeypatches the real Supabase client's
-  `.from()`/`.rpc()`/`.channel()` with an in-memory fixture layer
-  (`reviewHarness.js`), sets the app's module-level `currentUser`/
-  `currentProfile` directly to a fake admin/user object (no real OAuth or
-  Supabase session needed), and exposes `window.__review(screenName)` for
-  Playwright to call the matching render function and screenshot it. Only
-  imported behind a `VITE_REVIEW` env-guarded dynamic import so it's
-  dead-code-eliminated from production builds — never guess how an
-  auth-gated screen looks, always capture it this way.
+- Auth-gated or admin screens: use the review harness at `app/review/` — it
+  monkeypatches the real Supabase client's `.from()`/`.rpc()`/`.channel()`
+  with an in-memory fixture layer (`reviewHarness.js`), sets the app's
+  module-level `currentUser`/`currentProfile` directly to a fake admin/user
+  object (no real OAuth or Supabase session needed), and exposes
+  `window.__review(screenName)` for Playwright to call the matching render
+  function and screenshot it. Only imported behind a `VITE_REVIEW`
+  env-guarded dynamic import so it's dead-code-eliminated from production
+  builds — never guess how an auth-gated screen looks, always capture it
+  this way.
+
+**The harness is COMMITTED to the repo. Never re-gitignore it.** It used to
+be gitignored; this container wipes untracked files on every recycle, so it
+kept vanishing and sessions fell back to guessing. That is exactly how a
+long run of "fixed" onboarding bugs shipped broken.
+
+### 4a. Test the user's ACTUAL state, not the easiest state
+The single biggest source of false "verified" claims in this repo: testing
+as a **guest with one session** when the reporter is a **signed-in chef with
+many sessions**. Different code path, different bugs. Guests skip whole
+branches of the onboarding tour entirely, so a clean guest run proves
+almost nothing about a signed-in report.
+
+Before claiming anything is fixed, run the fixture preset that matches the
+reporter:
+- `guest` — not signed in, empty log.
+- `signed-in-eligible` — brand-new signup, qualifies for the onboarding coin.
+- `signed-in-ineligible-many-sessions` — the admin's real account shape:
+  Lv 10, already holds coins (so `isEligibleForOnboardingCoin()` is false,
+  which SKIPS several tour steps), and ~7 sessions dated today so the day
+  sheet has many rows.
+
+Drive the full flow with `node app/review/tour.mjs <preset>` and read the
+per-step log + screenshots. If a report is about a signed-in user, a guest
+run is not evidence.
+
+### 4b. Never trust a worker's report as verification
+A worker saying "build passes, fixed" is not verification. Builds pass on
+broken behaviour constantly here. Opus re-runs the harness and looks at the
+screenshots/measurements itself before telling the user anything is fixed.
+Multiple regressions have shipped because a green build was reported as a
+green outcome.
+
+### 4c. Measure, don't eyeball
+Where a defect is geometric or behavioural, assert it numerically in the
+Playwright run rather than squinting at a screenshot:
+- ring alignment → compare `getBoundingClientRect()` of ring vs target and
+  assert the pad is equal on all four sides
+- "this button is still clickable" → `document.elementFromPoint(cx, cy)` and
+  check what actually receives the tap
+- "the tour died" → assert `#tour-root` still exists and log the active step
+- Playwright's `click({force:true})` bypasses the tour's blocker layer and
+  produces false passes. Use `page.evaluate(s => document.querySelector(s)
+  .click(), sel)` to simulate a real tap.
+
+### 4d. State plainly what was NOT verified
+The harness is headless Chromium with faked Supabase. It cannot verify:
+real Supabase/RLS/RPC behaviour, **iOS Safari specifics** (soft-keyboard
+viewport split, status bar, safe areas), H.264 video, or real touch
+gestures. Every report must say which fixes are harness-verified and which
+still need the user's device — never let an unverifiable fix sit inside a
+list of verified ones.
 
 ## 5. UI/functionality/design QA
 Every review pass checks:
