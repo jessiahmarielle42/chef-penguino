@@ -8722,25 +8722,35 @@ function tourPositionForStep(step) {
   ring.style.cssText = `left:${vp.offsetLeft + rect.left - pad}px; top:${vp.offsetTop + rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad * 2}px; border-radius:${ringRadius};`
   // When the target lives inside a real modal CARD - overlay()'s `.popup`
   // markup, which has an actual visual boundary (background, radius,
-  // shadow) - cutting the blocker hole around just the target dimmed the
-  // modal's OWN title and body copy while only the target button stayed
-  // lit, reading as a half-broken modal. Cut the hole around the whole
-  // modal instead, so its own content reads at full brightness (it already
-  // blocks interaction with the background on its own); the ring stays on
-  // the real target exactly as before. Deliberately NOT applied to
+  // shadow) - unlike `.pause-content` (see below), so it CAN be reasoned
+  // about geometrically. But cutting a rectangular, sharp-cornered hole
+  // around it still doesn't agree with the popup card's own rounded
+  // corners/padding - the hole sits visibly inside the card's shape no
+  // matter how it's sized, an artifact that can't be fixed by adjusting
+  // the rect. overlay() already renders its own dim backdrop and already
+  // blocks all interaction with everything behind it, so the tour's own
+  // blockers add nothing there except that artifact - skip them
+  // entirely for `.popup` targets. The ring still stays on the real
+  // target exactly as before, and the card is still positioned outside
+  // the modal (that part was already correct). Deliberately NOT applied to
   // `.pause-content` (the pause/End-Early/confirm-end screens' wrapper) -
   // unlike `.popup` it has no background/border/visible boundary of its
   // own, so cutting a hole around its full bounding box produced a large,
-  // unjustified rectangle with no edge to explain its shape. Those steps
-  // go back to the original per-target behavior (hole around just the
-  // button) instead.
+  // unjustified rectangle with no edge to explain its shape either. Those
+  // steps go back to the original per-target behavior (hole around just
+  // the button) instead.
   const modal = target.closest('.popup')
   const blockerRect = modal ? tourTargetRect(modal, vp) : rect
-  // Blockers use the SAME uniform pad as the ring so the tappable hole
-  // exactly matches what's visually lit - different pads would let the
-  // hole and the highlight disagree.
-  if (step.kind === 'action') tourApplyBlockers(blockerRect, pad, vp)
-  else tourClearBlockers()
+  if (modal) {
+    tourClearBlockers()
+  } else if (step.kind === 'action') {
+    // Blockers use the SAME uniform pad as the ring so the tappable hole
+    // exactly matches what's visually lit - different pads would let the
+    // hole and the highlight disagree.
+    tourApplyBlockers(blockerRect, pad, vp)
+  } else {
+    tourClearBlockers()
+  }
   let arrowBelow = false
   if (step.arrow) {
     arrow.hidden = false
@@ -8796,6 +8806,11 @@ function buildOnboardingSteps() {
   // (background screen is Settings, not Home) navigates to Home once before
   // the Cook FAB step waits for its target.
   let cookHomeKicked = false
+  // Captured in the results step's enter() once the practice session has
+  // definitely been written - the specific entry the later swipe-row/
+  // tap-delete/confirm-delete steps must target, so they can't drift onto
+  // some OTHER real session the chef has that day (see those steps below).
+  let tourLogId = null
 
   const steps = [
     // ---------- 1. Welcome ----------
@@ -8945,7 +8960,33 @@ function buildOnboardingSteps() {
       probe: () => !!document.querySelector('.intro-start[data-intro-stage="results"] button'),
       getTarget: () => document.querySelector('.intro-start[data-intro-stage="results"] button'),
       text: `You just baked your first (tiny) pizza! Every session you focus adds up. Tap <b>Tap for Results</b>.`,
-      enter: () => tourAdvanceOnRealClick('.intro-start[data-intro-stage="results"] button'),
+      enter: () => {
+        // Capture the id of the practice session just run - the session
+        // has definitely been written by this point. The later swipe-row/
+        // tap-delete/confirm-delete steps scope themselves to THIS
+        // specific entry: an unqualified "first row in the day sheet"
+        // selector would, for a chef with prior sessions that day, demand
+        // a REAL session be deleted once the practice one is gone (data-
+        // loss-adjacent) - see those steps below. Guests: state.log is the
+        // live, already-in-memory log, safe to read synchronously here.
+        // Signed-in: sessions live server-side, not in state.log, so a
+        // background fetch grabs the true newest entry's id - it resolves
+        // well before swipe-row (several taps/screens later) is reached.
+        // If capture fails either way, tourLogId stays null and those
+        // steps fall back to their original unqualified selectors (see
+        // comments there) rather than hard-stalling the tour.
+        const newestId = (log) => {
+          if (!log || !log.length) return null
+          let newest = log[0]
+          for (const e of log) { if (e.completedAt > newest.completedAt) newest = e }
+          return newest?.id || null
+        }
+        tourLogId = newestId(state.log)
+        if (currentUser) {
+          fetchLog(currentUser.id).then(log => { tourLogId = newestId(log) || tourLogId }).catch(() => {})
+        }
+        return tourAdvanceOnRealClick('.intro-start[data-intro-stage="results"] button')
+      },
     },
     // ---------- 6. History + swipe-to-delete ----------
     {
@@ -8969,12 +9010,18 @@ function buildOnboardingSteps() {
     {
       id: 'swipe-row',
       kind: 'action',
-      ready: () => !!document.querySelector('.cal-sheet-list .log-row-wrap[data-log-id] .log-row'),
-      probe: () => !!document.querySelector('.cal-sheet-list .log-row-wrap[data-log-id] .log-row'),
-      getTarget: () => document.querySelector('.cal-sheet-list .log-row-wrap[data-log-id]'),
+      // Scoped to the SPECIFIC row captured by results' enter() (tourLogId)
+      // whenever capture succeeded - an unqualified "first row" selector
+      // would re-match whatever session is first once the practice one is
+      // deleted, walking the chef through deleting a REAL session too.
+      // Falls back to the old unqualified selector only if capture failed
+      // (tourLogId still null), so the tour can't hard-stall.
+      ready: () => !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] .log-row` : '.cal-sheet-list .log-row-wrap[data-log-id] .log-row'),
+      probe: () => !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] .log-row` : '.cal-sheet-list .log-row-wrap[data-log-id] .log-row'),
+      getTarget: () => document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"]` : '.cal-sheet-list .log-row-wrap[data-log-id]'),
       text: `Swipe the session left to reveal Edit and Delete.`,
       enter: () => {
-        const row = document.querySelector('.cal-sheet-list .log-row-wrap[data-log-id] .log-row')
+        const row = document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] .log-row` : '.cal-sheet-list .log-row-wrap[data-log-id] .log-row')
         if (!row) return null
         const obs = new MutationObserver(() => { if (row.classList.contains('open')) tourAdvance() })
         obs.observe(row, { attributes: true, attributeFilter: ['class'] })
@@ -8984,20 +9031,37 @@ function buildOnboardingSteps() {
     {
       id: 'tap-delete',
       kind: 'action',
-      ready: () => !!document.querySelector('.cal-sheet-list [data-action="delete-log"]'),
-      probe: () => !!document.querySelector('.cal-sheet-list [data-action="delete-log"]'),
-      getTarget: () => document.querySelector('.cal-sheet-list [data-action="delete-log"]'),
+      // Same tourLogId scoping as swipe-row above, with the same
+      // unqualified fallback if capture failed.
+      ready: () => !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
+      probe: () => !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
+      getTarget: () => document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
       text: `Tap <b>Delete</b> to remove this practice session - it doesn't count for anything.`,
-      enter: () => tourAdvanceOnRealClick('.cal-sheet-list [data-action="delete-log"]'),
+      enter: () => tourAdvanceOnRealClick(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
     },
     {
       id: 'confirm-delete',
       kind: 'action',
+      // Selector unchanged - it's the confirm popup, only one can be open
+      // regardless of which row triggered it.
       ready: () => !!document.querySelector('.overlay.show [data-action="yes"]'),
       probe: () => !!document.querySelector('.overlay.show [data-action="yes"]'),
       getTarget: () => document.querySelector('.overlay.show [data-action="yes"]'),
       text: `Tap <b>Yes, delete</b> to finish up.`,
       enter: () => tourAdvanceOnRealClick('.overlay.show [data-action="yes"]'),
+      // Advances the moment the specific captured entry is actually gone,
+      // instead of only reacting to the confirm button click - covers both
+      // the row disappearing from the day sheet once afterLogChange()
+      // re-renders it (works for guest AND signed-in, since either backend
+      // ultimately removes the row from the DOM) and, for guests
+      // specifically, state.log directly. No-op when tourLogId is null
+      // (capture failed - falls back to click-only advance as before).
+      watch: () => {
+        if (!tourLogId) return
+        const rowGone = !document.querySelector(`.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"]`)
+        const missingFromLocalLog = !currentUser && !state.log.some(e => e.id === tourLogId)
+        if (rowGone || missingFromLocalLog) tourAdvance()
+      },
     },
   ]
 
