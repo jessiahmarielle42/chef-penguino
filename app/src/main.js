@@ -4084,20 +4084,30 @@ function wireLogSwipe(listEl) {
     // it stays correct under the app's dynamic (viewport-scaled) rem sizing.
     let startX = 0, startY = 0, dx = 0, active = false, decided = false, dragging = false
 
+    let onMove = null, onUp = null
+
     row.addEventListener('pointerdown', (e) => {
       active = true; decided = false; dragging = false; dx = 0
       startX = e.clientX; startY = e.clientY
       row.style.transition = 'none'
-      // Touch pointers get IMPLICIT capture from the browser - mouse
-      // pointers do not. Without this, as soon as the cursor leaves the
-      // row's box mid-drag (easy, since the row slides out from under it)
-      // pointermove stops firing and pointerup lands on some other
-      // element - the row freezes mid-transform, `open` never gets applied
-      // and openSwipeRow never gets set. Explicit capture makes mouse
-      // behave like touch. Guarded - throws if the pointer's already gone.
-      try { row.setPointerCapture(e.pointerId) } catch {}
+      // Mouse pointers (unlike touch, which gets implicit capture from the
+      // browser) stop delivering events to the row the instant the cursor
+      // leaves its box mid-drag - trivial here, since the row slides out
+      // from under the cursor on every drag. setPointerCapture() was tried
+      // and reverted: lostpointercapture fires whenever the captured
+      // element's own transform moves it out from under the pointer -
+      // which is every single pointermove on this row - so it kept ending
+      // the drag mid-gesture and the row could never be held open. Window-
+      // level listeners solve the same desktop problem (pointerup on
+      // window always fires, wherever the cursor ends up) with none of
+      // that. Attached fresh per gesture and removed in endDrag.
+      onMove = (e) => handleMove(e)
+      onUp = (e) => endDrag(e)
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+      window.addEventListener('pointercancel', onUp)
     })
-    row.addEventListener('pointermove', (e) => {
+    const handleMove = (e) => {
       if (!active) return
       const reveal = actionsEl ? actionsEl.offsetWidth : 112
       const deltaX = e.clientX - startX
@@ -4112,13 +4122,19 @@ function wireLogSwipe(listEl) {
       const base = row.classList.contains('open') ? -reveal : 0
       dx = Math.min(0, Math.max(-reveal, base + deltaX))
       row.style.transform = `translateX(${dx}px)`
-    })
-    const endDrag = (e) => {
+    }
+    const endDrag = () => {
+      // Idempotent - guarded on `active` so a double-fire (e.g. both
+      // pointerup and pointercancel landing for the same gesture) can't
+      // double-settle the row.
       if (!active) return
       active = false
       row.style.transition = ''
-      if (e && row.hasPointerCapture?.(e.pointerId)) {
-        try { row.releasePointerCapture(e.pointerId) } catch {}
+      if (onMove) { window.removeEventListener('pointermove', onMove); onMove = null }
+      if (onUp) {
+        window.removeEventListener('pointerup', onUp)
+        window.removeEventListener('pointercancel', onUp)
+        onUp = null
       }
       if (!dragging) return
       const reveal = actionsEl ? actionsEl.offsetWidth : 112
@@ -4132,13 +4148,6 @@ function wireLogSwipe(listEl) {
         if (openSwipeRow === row) openSwipeRow = null
       }
     }
-    row.addEventListener('pointerup', endDrag)
-    row.addEventListener('pointercancel', endDrag)
-    // Capture can be lost for reasons other than pointerup/pointercancel
-    // (e.g. certain OS/browser gestures reclaiming it) - settle the row
-    // into a valid open/closed state instead of leaving it mid-transform
-    // whenever that happens too.
-    row.addEventListener('lostpointercapture', endDrag)
     row.addEventListener('click', (e) => {
       if (row.classList.contains('open')) { e.preventDefault(); closeOpenSwipe() }
     })
@@ -8633,16 +8642,26 @@ function tourClearBlockers() {
   document.querySelectorAll('.tour-block').forEach(b => { b.hidden = true; b.style.cssText = '' })
 }
 
-// No target (explain steps only): a single full-viewport, non-blocking dim -
-// still "dims the screen" for consistency, but never intercepts a tap since
-// explain steps must let the real underlying control still receive it.
+// No target (explain steps only, e.g. `welcome`): a single full-viewport
+// dim. NET RULE for the whole tour engine: at every point, exactly three
+// things are tappable on screen - the current step's real target (if it
+// has one), Skip Tutorial, and I'm a pro. Nothing else. This dim used to be
+// pointer-events:none "so explain steps let the real underlying control
+// still receive it" - that was the bug: with no target to protect, that
+// meant EVERYTHING behind the tour (Settings rows, tab bar, every button)
+// stayed live while the tour looked modal. Now pointer-events:auto - the
+// dim swallows the tap instead of passing it through. tourExplainClickHandler
+// is bound to `document`, not to this element, and nothing here calls
+// stopPropagation/preventDefault, so a tap on the dim still bubbles up to
+// document and still advances the tour exactly as before - only taps on
+// the REAL app underneath are now blocked.
 function tourDimFull() {
   const top = document.querySelector('.tour-block-t')
   document.querySelector('.tour-block-b').hidden = true
   document.querySelector('.tour-block-l').hidden = true
   document.querySelector('.tour-block-r').hidden = true
   top.hidden = false
-  top.style.cssText = 'left:0; top:0; width:100%; height:100%; pointer-events:none; background:rgba(8,5,3,0.5);'
+  top.style.cssText = 'left:0; top:0; width:100%; height:100%; pointer-events:auto; background:rgba(8,5,3,0.5);'
 }
 
 function tourPositionCard(card, rect, arrowBelow, vp, avoidRect) {
