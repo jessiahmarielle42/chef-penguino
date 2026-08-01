@@ -8367,10 +8367,20 @@ function tourSync() {
     // below, not the render/enter path further down, so a step's enter()
     // that synchronously calls tourAdvance() (e.g. coin-explainer's
     // fallback) can still recurse into tourSync() and render normally.
+    //
+    // The lookahead window is capped at 3 steps, not scanned to the end of
+    // the array: this scan is meant to recover across ONE screen
+    // transition, not to teleport across the whole tutorial. An unbounded
+    // scan let a step whose target happens to live on a persistent screen
+    // (e.g. see-all's "See All Sessions" button, which is always present on
+    // Home) act as a magnet - a spurious not-ready blip anywhere earlier in
+    // the tour could jump 8 steps ahead to it and strand everything in
+    // between with no way back.
     if (tour.notReadyCount >= 2 && !tour.scanning) {
       tour.scanning = true
       try {
-        for (let i = tour.index + 1; i < tour.steps.length; i++) {
+        const scanEnd = Math.min(tour.index + 3, tour.steps.length - 1)
+        for (let i = tour.index + 1; i <= scanEnd; i++) {
           const candidate = tour.steps[i]
           if (candidate.probe && candidate.probe()) {
             tour.index = i
@@ -8657,8 +8667,18 @@ function buildOnboardingSteps() {
       kind: 'action',
       ready: () => {
         const btn = document.querySelector('.tab-fab[data-action="cook"]')
-        if (!btn) { if (!cookHomeKicked) { cookHomeKicked = true; renderHome() }; return false }
-        return true
+        // The guard is spent the moment the FAB is FOUND, not only when it
+        // fires - otherwise it stays armed through the chef's first tap: the
+        // tour starts on Home (FAB already present, kicker never fires,
+        // flag stays false), the chef taps Cook, the picker mounts, the FAB
+        // disappears, ready() re-runs, sees no FAB, and misfires
+        // renderHome() - yanking the chef off the picker they just opened
+        // back to Home. Marking it spent on the FIRST evaluation (whether
+        // or not it had to navigate) means it can only ever fire once,
+        // before the chef has interacted with anything.
+        if (btn) { cookHomeKicked = true; return true }
+        if (!cookHomeKicked) { cookHomeKicked = true; renderHome() }
+        return false
       },
       getTarget: () => document.querySelector('.tab-fab[data-action="cook"]'),
       text: `Tap <b>Cook</b> to start a focus session.`,
