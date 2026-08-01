@@ -4052,6 +4052,14 @@ function wireLogSwipe(listEl) {
       active = true; decided = false; dragging = false; dx = 0
       startX = e.clientX; startY = e.clientY
       row.style.transition = 'none'
+      // Touch pointers get IMPLICIT capture from the browser - mouse
+      // pointers do not. Without this, as soon as the cursor leaves the
+      // row's box mid-drag (easy, since the row slides out from under it)
+      // pointermove stops firing and pointerup lands on some other
+      // element - the row freezes mid-transform, `open` never gets applied
+      // and openSwipeRow never gets set. Explicit capture makes mouse
+      // behave like touch. Guarded - throws if the pointer's already gone.
+      try { row.setPointerCapture(e.pointerId) } catch {}
     })
     row.addEventListener('pointermove', (e) => {
       if (!active) return
@@ -4069,10 +4077,13 @@ function wireLogSwipe(listEl) {
       dx = Math.min(0, Math.max(-reveal, base + deltaX))
       row.style.transform = `translateX(${dx}px)`
     })
-    const endDrag = () => {
+    const endDrag = (e) => {
       if (!active) return
       active = false
       row.style.transition = ''
+      if (e && row.hasPointerCapture?.(e.pointerId)) {
+        try { row.releasePointerCapture(e.pointerId) } catch {}
+      }
       if (!dragging) return
       const reveal = actionsEl ? actionsEl.offsetWidth : 112
       if (dx <= -reveal / 2) {
@@ -4087,6 +4098,11 @@ function wireLogSwipe(listEl) {
     }
     row.addEventListener('pointerup', endDrag)
     row.addEventListener('pointercancel', endDrag)
+    // Capture can be lost for reasons other than pointerup/pointercancel
+    // (e.g. certain OS/browser gestures reclaiming it) - settle the row
+    // into a valid open/closed state instead of leaving it mid-transform
+    // whenever that happens too.
+    row.addEventListener('lostpointercapture', endDrag)
     row.addEventListener('click', (e) => {
       if (row.classList.contains('open')) { e.preventDefault(); closeOpenSwipe() }
     })
@@ -8844,6 +8860,11 @@ function buildOnboardingSteps() {
   // tap-delete/confirm-delete steps must target, so they can't drift onto
   // some OTHER real session the chef has that day (see those steps below).
   let tourLogId = null
+  // Guards confirm-delete's advance so it can only ever fire once - it has
+  // TWO independent advance triggers (the click handler and watch()'s
+  // "the row is actually gone" check) that can both fire for the same
+  // delete, which without this double-advances past the following step.
+  let confirmDeleteAdvanced = false
 
   const steps = [
     // ---------- 1. Welcome ----------
@@ -9081,7 +9102,20 @@ function buildOnboardingSteps() {
       probe: () => !!document.querySelector('.overlay.show [data-action="yes"]'),
       getTarget: () => document.querySelector('.overlay.show [data-action="yes"]'),
       text: `Tap <b>Yes, delete</b> to finish up.`,
-      enter: () => tourAdvanceOnRealClick('.overlay.show [data-action="yes"]'),
+      enter: () => {
+        // Reset on every fresh entry into this step (not just once per
+        // tour run) - e.g. a replayed tour re-runs this step from scratch.
+        confirmDeleteAdvanced = false
+        const el = document.querySelector('.overlay.show [data-action="yes"]')
+        if (!el) return null
+        const onClick = () => {
+          if (confirmDeleteAdvanced) return
+          confirmDeleteAdvanced = true
+          tourAdvance()
+        }
+        el.addEventListener('click', onClick)
+        return () => el.removeEventListener('click', onClick)
+      },
       // Advances the moment the specific captured entry is actually gone,
       // instead of only reacting to the confirm button click - covers both
       // the row disappearing from the day sheet once afterLogChange()
@@ -9089,11 +9123,18 @@ function buildOnboardingSteps() {
       // ultimately removes the row from the DOM) and, for guests
       // specifically, state.log directly. No-op when tourLogId is null
       // (capture failed - falls back to click-only advance as before).
+      // Guarded by the SAME confirmDeleteAdvanced flag as the click handler
+      // above - both are independent triggers for the same delete and
+      // either can fire first; without the shared guard, both firing
+      // double-advances the tour and skips the following step entirely.
       watch: () => {
-        if (!tourLogId) return
+        if (confirmDeleteAdvanced || !tourLogId) return
         const rowGone = !document.querySelector(`.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"]`)
         const missingFromLocalLog = !currentUser && !state.log.some(e => e.id === tourLogId)
-        if (rowGone || missingFromLocalLog) tourAdvance()
+        if (rowGone || missingFromLocalLog) {
+          confirmDeleteAdvanced = true
+          tourAdvance()
+        }
       },
     },
   ]
@@ -9129,9 +9170,16 @@ function buildOnboardingSteps() {
     kind: 'action',
     ready: () => {
       const btn = document.querySelector('.hero-tap[data-action="emote"]')
-      if (!btn) { if (!homeKicked) { homeKicked = true; renderHome() }; return false }
-      return true
+      // Spend the guard the moment the target is FOUND, not only when it
+      // kicks - same fix as tap-cook's cookHomeKicked: otherwise it stays
+      // armed through the chef's first interaction and can misfire
+      // renderHome() later, yanking them off whatever they've moved on to.
+      if (btn) { homeKicked = true; return true }
+      if (!homeKicked) { homeKicked = true; renderHome() }
+      return false
     },
+    // Pure, side-effect-free - lets the self-heal scan land here.
+    probe: () => !!document.querySelector('.hero-tap[data-action="emote"]'),
     getTarget: () => document.querySelector('.hero-tap[data-action="emote"]'),
     text: `Tap <b>Tap to emote</b> to see your chef's new move!`,
     enter: () => tourAdvanceOnRealClick('.hero-tap[data-action="emote"]'),
@@ -9149,9 +9197,18 @@ function buildOnboardingSteps() {
     kind: 'explain',
     ready: () => {
       const el = document.querySelector('[data-action="add-to-homescreen"]')
-      if (!el) { if (!settingsKicked) { settingsKicked = true; renderSettings() }; return false }
-      return true
+      // Same guard-spent-on-found fix as tap-emote-demo/tap-cook above.
+      if (el) { settingsKicked = true; return true }
+      if (!settingsKicked) { settingsKicked = true; renderSettings() }
+      return false
     },
+    // Pure, side-effect-free - lets the self-heal scan land here. This row
+    // sits below the fold in Settings' Tutorials section (same row fixed
+    // for the non-tour recurring popup in bug report 89b30c3b) -
+    // tourPositionForStep's generic out-of-view scrollIntoView already
+    // handles bringing it on screen for the tour path too, since it
+    // applies to every step with a real getTarget().
+    probe: () => !!document.querySelector('[data-action="add-to-homescreen"]'),
     getTarget: () => document.querySelector('[data-action="add-to-homescreen"]'),
     text: `<b>Add to Homescreen</b> installs Chef Penguino like a real app!`,
   }
@@ -9233,24 +9290,28 @@ function buildOnboardingSteps() {
           kind: 'action',
           ready: () => {
             if (!document.querySelector('.shop-sort-row')) { if (!shopKicked) { shopKicked = true; renderShop() }; return false }
+            // Same guard-spent-on-found fix as tap-emote-demo/tap-cook -
+            // otherwise this stays armed through the chef's first
+            // interaction with the shop and can misfire renderShop() later.
+            shopKicked = true
             return true
           },
+          // Pure, side-effect-free - lets the self-heal scan land here.
+          probe: () => !!document.querySelector('.shop-sort-row') && !!document.querySelector('[data-buy="waving"]'),
           getTarget: () => document.querySelector('[data-buy="waving"]'),
           text: `Buy the <b>Waving</b> emote to give your chef its first move!`,
+          // The card the tour targets may be well down a long shop list -
+          // tourPositionForStep's generic out-of-view scrollIntoView
+          // already handles bringing it on screen (applies to every step
+          // with a real getTarget()), so no extra scroll call is needed
+          // here.
           watch: () => { if (isOwned('waving')) tourAdvance() },
         },
-        // 10. Equip it. confirmBuy() already auto-equips right after a
-        // purchase, so this control will already read "✓ Equipped" by the
-        // time the chef gets here - it's still the real, only equip control
-        // for this card, and tapping it re-confirms the equip harmlessly.
-        {
-          id: 'equip-waving',
-          kind: 'action',
-          ready: () => !!document.querySelector('[data-equip="waving"]'),
-          getTarget: () => document.querySelector('[data-equip="waving"]'),
-          text: `Tap <b>Equip</b> to lock in your chef's new move!`,
-          enter: () => tourAdvanceOnRealClick('[data-equip="waving"]'),
-        },
+        // Step 10 (equip-waving) removed: confirmBuy() already auto-equips
+        // immediately after a purchase, so that step spotlit a control that
+        // already read "✓ Equipped" - it taught nothing and asked for a tap
+        // that did nothing. tap-emote-demo is now the step right after
+        // buy-waving.
         tapEmoteStep,
         addHomescreenStep,
       )
