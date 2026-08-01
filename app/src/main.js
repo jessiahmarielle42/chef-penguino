@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.4.0'
+const APP_VERSION = 'v2.4.4.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -585,11 +585,27 @@ function addSessionPizzas(minutes) {
   save()
 }
 
+// Tracks the id of whichever session entry was most recently logged, so
+// callers that need to reference "the session that was JUST created" (the
+// onboarding tour's swipe-row/tap-delete/confirm-delete steps) can read it
+// directly instead of guessing which log entry is newest after the fact -
+// a guess that's wrong whenever some other real entry happens to sort
+// newer, or an async re-fetch resolves before the new session has landed.
+// Set on BOTH write paths: here (guest/local), and in finalizeSession()'s
+// signed-in branch, where it's overwritten with the ACTUAL persisted
+// Supabase row id (which is server-generated, not the client's
+// crypto.randomUUID() - the two are never the same id for a signed-in
+// chef, since the local entry() below is written unconditionally by
+// finalizeSession() too, purely for symmetry/backward-compat, but isn't
+// what fetchLog() actually returns for a signed-in chef).
+let lastLoggedSessionId = null
+
 function logSession({ completedAt, minutes, pizzas, task, icon, type }) {
   const entry = { id: crypto.randomUUID(), completedAt, minutes, pizzas, task }
   if (icon) entry.icon = icon
   if (type) entry.type = type
   state.log.unshift(entry)
+  lastLoggedSessionId = entry.id
   save()
 }
 
@@ -635,15 +651,26 @@ async function finalizeSession(playAlarm) {
     if (t.type) row.type = t.type
     // Retry without `type` if the column doesn't exist yet (migration_task_types
     // .sql not run) so a session is never lost to a schema mismatch.
-    let { error } = await supabase.from('sessions').insert({ ...row, user_id: currentUser.id })
+    // .select('id').single() so lastLoggedSessionId can be overwritten with
+    // the ACTUAL persisted row id (server-generated, not the client-side
+    // crypto.randomUUID() the local logSession() call above assigned) - the
+    // two are never the same id for a signed-in chef, and it's the server
+    // id that fetchLog()/the day sheet actually renders.
+    let { data, error } = await supabase.from('sessions').insert({ ...row, user_id: currentUser.id }).select('id').single()
     if (error && t.type) {
       const { type, ...rowNoType } = row
-      ;({ error } = await supabase.from('sessions').insert({ ...rowNoType, user_id: currentUser.id }))
+      ;({ data, error } = await supabase.from('sessions').insert({ ...rowNoType, user_id: currentUser.id }).select('id').single())
       if (error) { state.pendingSessions.push(rowNoType); save() }
     } else if (error) {
       state.pendingSessions.push(row)
       save()
     }
+    // Neither the local guest-log id (meaningless here - fetchLog() never
+    // reads state.log for a signed-in chef) nor a stale id from some
+    // earlier session should survive an insert failure - null falls back
+    // to the onboarding tour's unqualified selectors rather than pointing
+    // at a session that was never actually written.
+    lastLoggedSessionId = !error && data?.id ? data.id : null
     // Optimistically reflect the new total so the coin chip updates right away,
     // even if the profile refresh below lags or fails; refreshProfile() then
     // reconciles against the authoritative DB value.
@@ -4084,20 +4111,30 @@ function wireLogSwipe(listEl) {
     // it stays correct under the app's dynamic (viewport-scaled) rem sizing.
     let startX = 0, startY = 0, dx = 0, active = false, decided = false, dragging = false
 
+    let onMove = null, onUp = null
+
     row.addEventListener('pointerdown', (e) => {
       active = true; decided = false; dragging = false; dx = 0
       startX = e.clientX; startY = e.clientY
       row.style.transition = 'none'
-      // Touch pointers get IMPLICIT capture from the browser - mouse
-      // pointers do not. Without this, as soon as the cursor leaves the
-      // row's box mid-drag (easy, since the row slides out from under it)
-      // pointermove stops firing and pointerup lands on some other
-      // element - the row freezes mid-transform, `open` never gets applied
-      // and openSwipeRow never gets set. Explicit capture makes mouse
-      // behave like touch. Guarded - throws if the pointer's already gone.
-      try { row.setPointerCapture(e.pointerId) } catch {}
+      // Mouse pointers (unlike touch, which gets implicit capture from the
+      // browser) stop delivering events to the row the instant the cursor
+      // leaves its box mid-drag - trivial here, since the row slides out
+      // from under the cursor on every drag. setPointerCapture() was tried
+      // and reverted: lostpointercapture fires whenever the captured
+      // element's own transform moves it out from under the pointer -
+      // which is every single pointermove on this row - so it kept ending
+      // the drag mid-gesture and the row could never be held open. Window-
+      // level listeners solve the same desktop problem (pointerup on
+      // window always fires, wherever the cursor ends up) with none of
+      // that. Attached fresh per gesture and removed in endDrag.
+      onMove = (e) => handleMove(e)
+      onUp = (e) => endDrag(e)
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+      window.addEventListener('pointercancel', onUp)
     })
-    row.addEventListener('pointermove', (e) => {
+    const handleMove = (e) => {
       if (!active) return
       const reveal = actionsEl ? actionsEl.offsetWidth : 112
       const deltaX = e.clientX - startX
@@ -4112,13 +4149,19 @@ function wireLogSwipe(listEl) {
       const base = row.classList.contains('open') ? -reveal : 0
       dx = Math.min(0, Math.max(-reveal, base + deltaX))
       row.style.transform = `translateX(${dx}px)`
-    })
-    const endDrag = (e) => {
+    }
+    const endDrag = () => {
+      // Idempotent - guarded on `active` so a double-fire (e.g. both
+      // pointerup and pointercancel landing for the same gesture) can't
+      // double-settle the row.
       if (!active) return
       active = false
       row.style.transition = ''
-      if (e && row.hasPointerCapture?.(e.pointerId)) {
-        try { row.releasePointerCapture(e.pointerId) } catch {}
+      if (onMove) { window.removeEventListener('pointermove', onMove); onMove = null }
+      if (onUp) {
+        window.removeEventListener('pointerup', onUp)
+        window.removeEventListener('pointercancel', onUp)
+        onUp = null
       }
       if (!dragging) return
       const reveal = actionsEl ? actionsEl.offsetWidth : 112
@@ -4132,14 +4175,17 @@ function wireLogSwipe(listEl) {
         if (openSwipeRow === row) openSwipeRow = null
       }
     }
-    row.addEventListener('pointerup', endDrag)
-    row.addEventListener('pointercancel', endDrag)
-    // Capture can be lost for reasons other than pointerup/pointercancel
-    // (e.g. certain OS/browser gestures reclaiming it) - settle the row
-    // into a valid open/closed state instead of leaving it mid-transform
-    // whenever that happens too.
-    row.addEventListener('lostpointercapture', endDrag)
+    // Tap-to-close, but NOT the synthetic click the browser fires at the end
+    // of a mouse drag. mousedown+mouseup on the same element always produces
+    // a click, so on desktop the drag that just opened the row would
+    // immediately close it again - the row could never be held open and the
+    // Delete button was unreachable. Touch doesn't hit this because browsers
+    // suppress the click after a touch drag, which is why it only ever
+    // reproduced on desktop.
+    let justDragged = false
+    row.addEventListener('pointerup', () => { if (dragging) justDragged = true })
     row.addEventListener('click', (e) => {
+      if (justDragged) { justDragged = false; e.preventDefault(); e.stopPropagation(); return }
       if (row.classList.contains('open')) { e.preventDefault(); closeOpenSwipe() }
     })
   })
@@ -8251,6 +8297,12 @@ function maybeAutoStartOnboardingTour() {
 // the whole tour from Welcome.
 function startOnboardingTour(resumeAfterId) {
   if (tour) return
+  // A replayed tour must re-arm its own capture from scratch - a stale id
+  // left over from a PREVIOUS run (e.g. Settings -> Tutorials -> Replay
+  // Tutorial after already having gone through it once) would let the
+  // results step read an id that has nothing to do with the NEW practice
+  // session about to be created.
+  lastLoggedSessionId = null
   const steps = buildOnboardingSteps()
   let startIndex = 0
   if (resumeAfterId) {
@@ -8633,16 +8685,26 @@ function tourClearBlockers() {
   document.querySelectorAll('.tour-block').forEach(b => { b.hidden = true; b.style.cssText = '' })
 }
 
-// No target (explain steps only): a single full-viewport, non-blocking dim -
-// still "dims the screen" for consistency, but never intercepts a tap since
-// explain steps must let the real underlying control still receive it.
+// No target (explain steps only, e.g. `welcome`): a single full-viewport
+// dim. NET RULE for the whole tour engine: at every point, exactly three
+// things are tappable on screen - the current step's real target (if it
+// has one), Skip Tutorial, and I'm a pro. Nothing else. This dim used to be
+// pointer-events:none "so explain steps let the real underlying control
+// still receive it" - that was the bug: with no target to protect, that
+// meant EVERYTHING behind the tour (Settings rows, tab bar, every button)
+// stayed live while the tour looked modal. Now pointer-events:auto - the
+// dim swallows the tap instead of passing it through. tourExplainClickHandler
+// is bound to `document`, not to this element, and nothing here calls
+// stopPropagation/preventDefault, so a tap on the dim still bubbles up to
+// document and still advances the tour exactly as before - only taps on
+// the REAL app underneath are now blocked.
 function tourDimFull() {
   const top = document.querySelector('.tour-block-t')
   document.querySelector('.tour-block-b').hidden = true
   document.querySelector('.tour-block-l').hidden = true
   document.querySelector('.tour-block-r').hidden = true
   top.hidden = false
-  top.style.cssText = 'left:0; top:0; width:100%; height:100%; pointer-events:none; background:rgba(8,5,3,0.5);'
+  top.style.cssText = 'left:0; top:0; width:100%; height:100%; pointer-events:auto; background:rgba(8,5,3,0.5);'
 }
 
 function tourPositionCard(card, rect, arrowBelow, vp, avoidRect) {
@@ -8841,15 +8903,28 @@ function tourPositionForStep(step) {
   // the button) instead.
   const modal = target.closest('.popup')
   const blockerRect = modal ? tourTargetRect(modal, vp) : rect
+  // NET RULE for the whole tour engine: at every point, exactly three
+  // things are tappable - the current step's real target, Skip Tutorial,
+  // and I'm a pro. Nothing else. Explain steps WITH a target (e.g.
+  // add-to-homescreen) used to skip blockers entirely on the theory that
+  // "explain steps let the real underlying control still receive it" -
+  // that left the ENTIRE rest of the app live behind the tour (Settings
+  // rows, the tab bar, everything), a real trap since a tap meant to
+  // dismiss the card could fire a real app action instead. Blockers now
+  // apply the same way for kind:'action' and kind:'explain' with a target -
+  // the real target stays reachable either way (a tap on it fires its own
+  // handler same as before; for explain steps the document-level
+  // tourExplainClickHandler ALSO still advances on that same tap, since
+  // it's not stopped/prevented), only the rest of the screen is blocked.
+  // A target-less explain step (e.g. `welcome`) has nothing to protect, so
+  // tourDimFull() above already blocks everything except tour-topright.
   if (modal) {
     tourClearBlockers()
-  } else if (step.kind === 'action') {
+  } else {
     // Blockers use the SAME uniform pad as the ring so the tappable hole
     // exactly matches what's visually lit - different pads would let the
     // hole and the highlight disagree.
     tourApplyBlockers(blockerRect, pad, vp)
-  } else {
-    tourClearBlockers()
   }
   let arrowBelow = false
   if (step.arrow) {
@@ -8883,17 +8958,48 @@ function tourPositionForStep(step) {
   }
 }
 
-// Wires a click on `selector` (queried fresh, since the real screen may have
-// just (re)mounted) to advance the tour, WITHOUT touching the real handler
-// already wired elsewhere for that element - both simply fire. Returns a
-// cleanup function, or null if the element isn't there (ready() should have
-// already guaranteed it is, but this stays defensive).
+// Wires a tap on `selector` to advance the tour, WITHOUT touching the real
+// handler already wired elsewhere for that element - both simply fire.
+// Delegated to `document` (queried fresh via e.target.closest() on every
+// click) rather than bound to the specific node that exists at enter()
+// time: several real screens (the calendar day cell -> day sheet is the
+// one that surfaced this) re-render the DOM between enter() and the
+// chef's actual tap, which leaves a node-bound listener attached to a
+// now-detached element while the visible one is a fresh node with no
+// listener at all. getTarget() re-queries every sync, so the RING still
+// looks perfectly correct while the advance is silently dead - exactly
+// why this was hard to spot. Delegation is immune to this: it only cares
+// whether the click's real target matches the selector, never which node
+// it was originally bound to.
 function tourAdvanceOnRealClick(selector) {
-  const el = document.querySelector(selector)
-  if (!el) return null
-  const onClick = () => tourAdvance()
-  el.addEventListener('click', onClick)
-  return () => el.removeEventListener('click', onClick)
+  if (!document.querySelector(selector)) return null
+  // Idempotent per step instance - a delegated document listener could
+  // otherwise double-fire (e.g. a click that somehow re-dispatches, or a
+  // lingering listener from a race with cleanup).
+  let advanced = false
+  const onClick = (e) => {
+    if (advanced) return
+    const t = e.target
+    if (!(t instanceof Element) || !t.closest(selector)) return
+    advanced = true
+    tourAdvance()
+  }
+  // Deferred by a tick, same hazard/guard as tourExplainClickHandler's
+  // deferred attach: if THIS step was entered as a consequence of a click
+  // (e.g. a previous step's own tourAdvanceOnRealClick firing tourAdvance()
+  // from inside a real click handler), that same click event is still
+  // bubbling when enter() runs synchronously - attaching immediately would
+  // let this new listener catch that same stale click and misfire. The
+  // setTimeout(...,0) pushes the attach past the current event's bubble
+  // phase; re-checking `tour.steps[tour.index] === step` (captured by
+  // reference now, before any async gap) means a fast subsequent step
+  // change can't attach a listener for a step that's already been left.
+  const step = tour ? tour.steps[tour.index] : null
+  const attachId = setTimeout(() => {
+    if (tour && tour.steps[tour.index] === step) document.addEventListener('click', onClick, true)
+  }, 0)
+  if (tour) tour.timers.push(attachId)
+  return () => document.removeEventListener('click', onClick, true)
 }
 
 function buildOnboardingSteps() {
@@ -8901,11 +9007,20 @@ function buildOnboardingSteps() {
   // Closure-scoped (fresh per tour run) so a replayed tour re-arms its own
   // 2-second "let the session actually run" delay from scratch.
   let pauseArmedAt = null
-  // Same pattern as shopKicked/homeKicked/settingsKicked below - a one-shot
-  // guard so replaying the tour from Settings -> Tutorials -> Replay Tutorial
+  // Guards pause-timer's advance so it can only ever fire once - it has
+  // TWO independent advance triggers (the click handler and watch()'s "the
+  // pause overlay is already open" check), same pattern/reason as
+  // confirmDeleteAdvanced below.
+  let pauseTimerAdvanced = false
+  // Same double-advance guard, shared between open-day's click-delegation
+  // path and its belt-and-braces watch() (see that step below).
+  let openDayAdvanced = false
+  // Index-scoped one-shot navigation guard (see shopKickedForIndex/
+  // homeKickedForIndex/settingsKickedForIndex below for the full rationale)
+  // so replaying the tour from Settings -> Tutorials -> Replay Tutorial
   // (background screen is Settings, not Home) navigates to Home once before
   // the Cook FAB step waits for its target.
-  let cookHomeKicked = false
+  let cookHomeKickedForIndex = -1
   // Captured in the results step's enter() once the practice session has
   // definitely been written - the specific entry the later swipe-row/
   // tap-delete/confirm-delete steps must target, so they can't drift onto
@@ -8933,17 +9048,20 @@ function buildOnboardingSteps() {
       kind: 'action',
       ready: () => {
         const btn = document.querySelector('.tab-fab[data-action="cook"]')
-        // The guard is spent the moment the FAB is FOUND, not only when it
-        // fires - otherwise it stays armed through the chef's first tap: the
-        // tour starts on Home (FAB already present, kicker never fires,
-        // flag stays false), the chef taps Cook, the picker mounts, the FAB
-        // disappears, ready() re-runs, sees no FAB, and misfires
-        // renderHome() - yanking the chef off the picker they just opened
-        // back to Home. Marking it spent on the FIRST evaluation (whether
-        // or not it had to navigate) means it can only ever fire once,
-        // before the chef has interacted with anything.
-        if (btn) { cookHomeKicked = true; return true }
-        if (!cookHomeKicked) { cookHomeKicked = true; renderHome() }
+        if (btn) return true
+        // Index-scoped, not a plain boolean: a one-shot-per-TOUR-RUN flag
+        // conflates "have I ever seen this target" with "have I already
+        // tried navigating for THIS visit to the step" - it's wrong the
+        // moment the target lives on a screen the tour could plausibly
+        // revisit later (see homeKicked/settingsKicked/shopKicked below,
+        // which hit exactly that). tap-cook's target never gets revisited
+        // after this step advances (tour.index moves on, so this ready()
+        // is never evaluated again), so a plain boolean happened to work
+        // here, but it's converted to the same index-scoped pattern for
+        // consistency: fires renderHome() at most once per visit to THIS
+        // step (tracked by tour.index), never leaves a stale flag that
+        // could suppress a legitimate future navigation.
+        if (cookHomeKickedForIndex !== tour.index) { cookHomeKickedForIndex = tour.index; renderHome() }
         return false
       },
       getTarget: () => document.querySelector('.tab-fab[data-action="cook"]'),
@@ -9008,9 +9126,21 @@ function buildOnboardingSteps() {
       // Waits until the real timer has actually been running for ~2s before
       // the spotlight appears, so it never fights the "Start Cooking!"
       // splash or shows up before there's anything worth pausing.
+      // ALSO requires the pause overlay not already be open (the chef
+      // paused on their own before the step armed - no click listener was
+      // attached yet, so the tour never saw that tap). Now that blockers
+      // apply properly to every action step, letting this spotlight the
+      // TIMER while the chef is actually looking at the pause overlay's
+      // Resume/Edit Time/End Early buttons would block all three and trap
+      // them with only Skip Tutorial reachable - spotlighting a control
+      // they've already used, with an instruction that's no longer true.
+      // Going not-ready here lets the forward self-heal scan (3-step
+      // lookahead) land on end-early instead, whose probe matches the
+      // overlay that's actually on screen - exactly where they should be.
       ready: () => {
         const el = document.querySelector('.timer-value')
         if (!el) { pauseArmedAt = null; return false }
+        if (document.querySelector('.pause-overlay:not([hidden])')) return false
         if (pauseArmedAt == null) {
           pauseArmedAt = Date.now()
           const id = setTimeout(tourSync, 2100)
@@ -9028,7 +9158,34 @@ function buildOnboardingSteps() {
       getTarget: () => document.querySelector('.timer-value'),
       arrow: true,
       text: `Tap the timer to pause your session.`,
-      enter: () => tourAdvanceOnRealClick('.timer-value'),
+      enter: () => {
+        // Reset on every fresh entry (a replayed tour re-runs this step
+        // from scratch).
+        pauseTimerAdvanced = false
+        const el = document.querySelector('.timer-value')
+        if (!el) return null
+        const onClick = () => {
+          if (pauseTimerAdvanced) return
+          pauseTimerAdvanced = true
+          tourAdvance()
+        }
+        el.addEventListener('click', onClick)
+        return () => el.removeEventListener('click', onClick)
+      },
+      // Covers the case where the step is already entered/armed and the
+      // chef pauses via any route the click listener above didn't catch
+      // (e.g. a route that doesn't dispatch a plain click on .timer-value).
+      // Guarded by the SAME pauseTimerAdvanced flag as the click handler -
+      // both are independent triggers for the same "the chef paused" event
+      // and either can fire first; without the shared guard, both firing
+      // double-advances the tour and skips end-early entirely.
+      watch: () => {
+        if (pauseTimerAdvanced) return
+        if (document.querySelector('.pause-overlay:not([hidden])')) {
+          pauseTimerAdvanced = true
+          tourAdvance()
+        }
+      },
     },
     {
       id: 'end-early',
@@ -9072,24 +9229,23 @@ function buildOnboardingSteps() {
         // specific entry: an unqualified "first row in the day sheet"
         // selector would, for a chef with prior sessions that day, demand
         // a REAL session be deleted once the practice one is gone (data-
-        // loss-adjacent) - see those steps below. Guests: state.log is the
-        // live, already-in-memory log, safe to read synchronously here.
-        // Signed-in: sessions live server-side, not in state.log, so a
-        // background fetch grabs the true newest entry's id - it resolves
-        // well before swipe-row (several taps/screens later) is reached.
-        // If capture fails either way, tourLogId stays null and those
-        // steps fall back to their original unqualified selectors (see
-        // comments there) rather than hard-stalling the tour.
-        const newestId = (log) => {
-          if (!log || !log.length) return null
-          let newest = log[0]
-          for (const e of log) { if (e.completedAt > newest.completedAt) newest = e }
-          return newest?.id || null
-        }
-        tourLogId = newestId(state.log)
-        if (currentUser) {
-          fetchLog(currentUser.id).then(log => { tourLogId = newestId(log) || tourLogId }).catch(() => {})
-        }
+        // loss-adjacent) - see those steps below.
+        //
+        // Reads lastLoggedSessionId (set at CREATION time, in logSession()/
+        // finalizeSession() - see those) rather than guessing which log
+        // entry is newest after the fact. The guess was wrong whenever any
+        // other real entry happened to sort newer than the practice
+        // session (entirely plausible - "newest" isn't guaranteed to mean
+        // "just created", e.g. a clock skew or a session logged with a
+        // manually-edited timestamp), and for signed-in chefs it also
+        // depended on a background fetchLog() racing the tour, which could
+        // resolve to the wrong id if it landed before the new session had
+        // actually reached the DB. Both failure modes are gone now: this
+        // is exactly the id that write actually produced. If it's null
+        // (capture failed) tourLogId stays null and the later steps fall
+        // back to their original unqualified selectors (see comments
+        // there) rather than hard-stalling the tour.
+        tourLogId = lastLoggedSessionId
         return tourAdvanceOnRealClick('.intro-start[data-intro-stage="results"] button')
       },
     },
@@ -9110,7 +9266,55 @@ function buildOnboardingSteps() {
       probe: () => !!document.querySelector(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
       getTarget: () => document.querySelector(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
       text: `Tap today's date to see your session.`,
-      enter: () => tourAdvanceOnRealClick(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
+      // Where the original stranding bug (the tour just stops here for a
+      // multi-session signed-in chef, while a one-session guest passes
+      // fine) was actually found and reproduced with the review harness:
+      // openDay() -> renderHistory() re-renders the WHOLE calendar screen
+      // between enter() and the tap, which used to leave a click listener
+      // bound to a node that no longer exists, silently dead, while
+      // getTarget() kept re-querying and drawing a perfectly correct ring
+      // over it - exactly why it was so hard to spot. Delegated to
+      // `document` here directly (same technique as
+      // tourAdvanceOnRealClick, inlined rather than reused so it can share
+      // openDayAdvanced with watch() below) rather than bound to the cell
+      // node, so a re-render in between can't leave it stranded.
+      enter: () => {
+        openDayAdvanced = false
+        const cellSelector = `.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`
+        if (!document.querySelector(cellSelector)) return null
+        const onClick = (e) => {
+          if (openDayAdvanced) return
+          const t = e.target
+          if (!(t instanceof Element) || !t.closest(cellSelector)) return
+          openDayAdvanced = true
+          tourAdvance()
+        }
+        // Deferred by a tick - same stale-click-still-bubbling hazard as
+        // tourExplainClickHandler/tourAdvanceOnRealClick.
+        const step = tour ? tour.steps[tour.index] : null
+        const attachId = setTimeout(() => {
+          if (tour && tour.steps[tour.index] === step) document.addEventListener('click', onClick, true)
+        }, 0)
+        if (tour) tour.timers.push(attachId)
+        return () => document.removeEventListener('click', onClick, true)
+      },
+      // Belt and braces: advances the moment the real day sheet is
+      // actually open, in case the click-delegation path above somehow
+      // missed it (e.g. the tap dispatched some other way that never
+      // bubbles a plain click). Shares openDayAdvanced with the click path
+      // above - whichever fires first wins, the other is a no-op, so this
+      // can never double-advance and skip swipe-row. #cal-sheet is
+      // ID-scoped (not just .cal-sheet) - the admin calendar leaderboard
+      // reuses the same .cal-sheet/.cal-sheet-list CLASSES for a totally
+      // different sheet (never open at the same time as this tour step,
+      // but the ID keeps this unambiguous regardless).
+      watch: () => {
+        if (openDayAdvanced) return
+        if (document.querySelector('#cal-sheet.show #cal-sheet-list')) {
+          openDayAdvanced = true
+          tourAdvance()
+        }
+      },
     },
     {
       id: 'swipe-row',
@@ -9138,8 +9342,20 @@ function buildOnboardingSteps() {
       kind: 'action',
       // Same tourLogId scoping as swipe-row above, with the same
       // unqualified fallback if capture failed.
-      ready: () => !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
-      probe: () => !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
+      //
+      // Gated on the row actually being SWIPED OPEN (`.log-row.open`), not
+      // merely on the Delete button existing. `.log-row-actions2` is
+      // absolutely positioned behind the row at z-index 0, so
+      // [data-action="delete-log"] is in the DOM even while the row is
+      // shut - without this gate the tour spotlights an invisible button,
+      // and a tap lands on the row (z-index 1), which closes the swipe and
+      // leaves the chef pointing at nothing with no way back. With the
+      // gate, closing the row makes this step not-ready and the backward
+      // self-heal scan drops back to `swipe-row`, which tells them to
+      // swipe again.
+      ready: () => !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] .log-row.open` : '.cal-sheet-list .log-row.open')
+        && !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
+      probe: () => !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] .log-row.open` : '.cal-sheet-list .log-row.open'),
       getTarget: () => document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
       text: `Tap <b>Delete</b> to remove this practice session - it doesn't count for anything.`,
       enter: () => tourAdvanceOnRealClick(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
@@ -9198,13 +9414,25 @@ function buildOnboardingSteps() {
   // skips 7-10 silently and picks straight back up at the emote demo (or
   // straight to Add to Homescreen if there's nothing to demo either).
   //
-  // Side-effecting `ready()` guards (shopKicked/homeKicked/settingsKicked)
-  // navigate to the right screen exactly once before waiting for its real
-  // DOM to show up - same pattern as `pauseArmedAt` above, just for a full
-  // screen swap instead of a timer delay.
-  let shopKicked = false
-  let homeKicked = false
-  let settingsKicked = false
+  // Side-effecting `ready()` guards navigate to the right screen before
+  // waiting for its real DOM to show up. Index-scoped (the step's OWN
+  // tour.index, not a plain per-tour-run boolean) - critical, not
+  // cosmetic: a plain boolean conflates "have I ever seen this target"
+  // with "have I already tried navigating for THIS visit to the step".
+  // tap-emote-demo's target (.hero-tap) and add-to-homescreen's target
+  // both live on screens (Home, Settings) the tour is ALREADY on earlier
+  // in the run (the tour starts on Home; Home is also where Cook is
+  // tapped from) - a plain boolean got spent then, on a DIFFERENT step's
+  // visit, and by the time these steps actually needed to navigate (e.g.
+  // after the delete flow leaves a signed-in chef on the History screen),
+  // the guard was already burned and never fired again, permanently
+  // stranding the tour with the target never appearing. Scoping the guard
+  // to `tour.index` means each step gets exactly one navigation attempt
+  // PER VISIT to that step, and can never be pre-spent by an earlier,
+  // unrelated step's evaluation.
+  let shopKickedForIndex = -1
+  let homeKickedForIndex = -1
+  let settingsKickedForIndex = -1
   // Tracks the coin/sign-in popups' own overlay element so their steps can
   // self-heal (watch()) if it ever disappears from the DOM out from under
   // them - e.g. a screen re-render elsewhere replacing app.innerHTML while
@@ -9221,12 +9449,12 @@ function buildOnboardingSteps() {
     kind: 'action',
     ready: () => {
       const btn = document.querySelector('.hero-tap[data-action="emote"]')
-      // Spend the guard the moment the target is FOUND, not only when it
-      // kicks - same fix as tap-cook's cookHomeKicked: otherwise it stays
-      // armed through the chef's first interaction and can misfire
-      // renderHome() later, yanking them off whatever they've moved on to.
-      if (btn) { homeKicked = true; return true }
-      if (!homeKicked) { homeKicked = true; renderHome() }
+      if (btn) return true
+      // Index-scoped - see the comment above shopKickedForIndex for why a
+      // plain boolean here stranded the tour (Home, this step's screen, is
+      // also where the tour starts, so a plain flag got burned long before
+      // this step ever needed to navigate).
+      if (homeKickedForIndex !== tour.index) { homeKickedForIndex = tour.index; renderHome() }
       return false
     },
     // Pure, side-effect-free - lets the self-heal scan land here.
@@ -9248,9 +9476,14 @@ function buildOnboardingSteps() {
     kind: 'explain',
     ready: () => {
       const el = document.querySelector('[data-action="add-to-homescreen"]')
-      // Same guard-spent-on-found fix as tap-emote-demo/tap-cook above.
-      if (el) { settingsKicked = true; return true }
-      if (!settingsKicked) { settingsKicked = true; renderSettings() }
+      if (el) return true
+      // Index-scoped - see the comment above shopKickedForIndex for why a
+      // plain boolean here stranded the tour on the History screen for a
+      // signed-in chef (Settings, this step's screen, may have been the
+      // background for an earlier step - e.g. a replayed tour - which
+      // would burn a plain flag long before this step ever needed to
+      // navigate).
+      if (settingsKickedForIndex !== tour.index) { settingsKickedForIndex = tour.index; renderSettings() }
       return false
     },
     // Pure, side-effect-free - lets the self-heal scan land here. This row
@@ -9340,12 +9573,15 @@ function buildOnboardingSteps() {
           id: 'buy-waving',
           kind: 'action',
           ready: () => {
-            if (!document.querySelector('.shop-sort-row')) { if (!shopKicked) { shopKicked = true; renderShop() }; return false }
-            // Same guard-spent-on-found fix as tap-emote-demo/tap-cook -
-            // otherwise this stays armed through the chef's first
-            // interaction with the shop and can misfire renderShop() later.
-            shopKicked = true
-            return true
+            if (document.querySelector('.shop-sort-row')) return true
+            // Index-scoped - see the comment above shopKickedForIndex's
+            // declaration for why a plain boolean here stranded the tour:
+            // this is the FIRST of the three navigating steps in the
+            // eligible branch, so it happened to be less exposed than
+            // tap-emote-demo/add-to-homescreen, but the same shape applies
+            // if the chef ever revisits Shop before reaching this step.
+            if (shopKickedForIndex !== tour.index) { shopKickedForIndex = tour.index; renderShop() }
+            return false
           },
           // Pure, side-effect-free - lets the self-heal scan land here.
           probe: () => !!document.querySelector('.shop-sort-row') && !!document.querySelector('[data-buy="waving"]'),

@@ -3054,7 +3054,7 @@ img.shop-image {
    .darken-overlay 5, .tabbar 3) but below .lore-player (999).
    ================================================================= */
 .tour-root { position: fixed; inset: 0; z-index: 90; pointer-events: none; }
-.tour-block { position: fixed; background: rgba(8,5,3,0.72); pointer-events: auto; }
+.tour-block { position: fixed; background: rgba(8,5,3,0.72); pointer-events: auto; z-index: 1; }
 .tour-block[hidden] { display: none; }
 .tour-ring {
   position: fixed; border-radius: 1rem; border: 3px solid var(--gold); pointer-events: none;
@@ -3091,6 +3091,13 @@ img.shop-image {
 .tour-topright {
   position: fixed; top: calc(env(safe-area-inset-top, 0px) + 0.875rem); right: 0.875rem;
   display: flex; flex-direction: column; align-items: flex-end; gap: 0.25rem; pointer-events: auto;
+  /* Skip Tutorial / I'm a pro must stay clickable above the blockers in
+     EVERY case (see the "exactly three things tappable" rule) - already
+     true by DOM order alone (tourMount() appends .tour-topright after the
+     .tour-block elements, so it paints on top with no z-index at all), but
+     given an explicit z-index above .tour-block's so it can't silently
+     regress if that markup order ever changes. */
+  z-index: 2;
 }
 .tour-skip-btn {
   border: 1px solid rgba(246,198,75,0.4); background: linear-gradient(180deg, #FFD873, var(--gold) 60%, var(--gold-deep));
