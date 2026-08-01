@@ -8394,6 +8394,20 @@ function tourSync() {
     if (tour.notReadyCount >= 2 && !tour.scanning) {
       tour.scanning = true
       try {
+        // A probe() match only means "this step's target exists on screen" -
+        // it is NOT a promise the step is ready to display. Some steps
+        // (pause-timer) have a ready() that gates on more than DOM
+        // existence - a deliberate ~2s arming delay so the spotlight
+        // doesn't fight the "Start Cooking!" splash. Forcing ready = true
+        // on a scan match rendered pause-timer instantly (a visible flash),
+        // only for the very next sync's honest ready() call to arm the
+        // delay and hide it again, before it reappeared correctly 2s later.
+        // So a match re-evaluates the candidate's OWN ready() honestly
+        // instead of assuming it - if that's false, this falls through to
+        // the existing hide-and-wait path below, and the 250ms retry tick
+        // picks it up the instant the step's own gate actually opens. This
+        // is structural, not a pause-timer special case: it protects any
+        // future step whose ready() gates on timing rather than DOM alone.
         const scanEnd = Math.min(tour.index + 3, tour.steps.length - 1)
         for (let i = tour.index + 1; i <= scanEnd; i++) {
           const candidate = tour.steps[i]
@@ -8402,7 +8416,7 @@ function tourSync() {
             tour.entered = -1
             tour.notReadyCount = 0
             step = candidate
-            ready = true
+            ready = step.ready ? step.ready() : true
             break
           }
         }
@@ -8416,7 +8430,7 @@ function tourSync() {
               tour.notReadyCount = 0
               tour.backJumps += 1
               step = candidate
-              ready = true
+              ready = step.ready ? step.ready() : true
               break
             }
           }
@@ -8663,8 +8677,13 @@ function tourPositionForStep(step) {
     target.scrollIntoView({ block: 'center', behavior: 'auto' })
     rect = tourTargetRect(target, vp)
   }
-  const pad = 8
-  const bottomPad = pad + 4 // extra clearance for pill buttons' raised bottom lip (box-shadow), which getBoundingClientRect() excludes
+  // Uniform pad on all four sides so the ring stays concentric with the
+  // target - an earlier asymmetric bottom pad (meant to cover buttons'
+  // raised 3D shadow lip) skewed the box off-center, which on a pill button
+  // read as the ring cutting through it rather than framing it. A slightly
+  // generous, perfectly concentric ring is correct even if the lip still
+  // peeks outside it; a tight skewed one is not.
+  const pad = 10
   ring.hidden = false
   const cs = getComputedStyle(target)
   const parsedRadius = parseFloat(cs.borderRadius) || 0
@@ -8673,7 +8692,10 @@ function tourPositionForStep(step) {
   // undershoot the button's actual rounding.
   const isPill = parsedRadius >= Math.min(rect.width, rect.height) / 2 - 1
   const ringRadius = isPill ? '999px' : `${parsedRadius + pad}px`
-  ring.style.cssText = `left:${vp.offsetLeft + rect.left - pad}px; top:${vp.offsetTop + rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad + bottomPad}px; border-radius:${ringRadius};`
+  ring.style.cssText = `left:${vp.offsetLeft + rect.left - pad}px; top:${vp.offsetTop + rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad * 2}px; border-radius:${ringRadius};`
+  // Blockers use the SAME uniform pad so the tappable hole exactly matches
+  // the visual ring - different pads would let the hole and the highlight
+  // disagree.
   if (step.kind === 'action') tourApplyBlockers(rect, pad, vp)
   else tourClearBlockers()
   let arrowBelow = false
@@ -8698,7 +8720,7 @@ function tourPositionForStep(step) {
   if (hint) {
     hint.hidden = !showHint
     if (showHint) {
-      const ringRect = { top: rect.top - pad, bottom: rect.bottom + bottomPad }
+      const ringRect = { top: rect.top - pad, bottom: rect.bottom + pad }
       tourPositionHint(hint, card, ringRect, vp)
     }
   }
