@@ -8625,6 +8625,32 @@ function tourPositionForStep(step) {
   }
   card.classList.remove('tour-card-center')
   const vp = tourViewport()
+  // With the iOS soft keyboard open, the visual viewport shrinks by however
+  // much the keyboard covers - computing a "correct" ring/card position in
+  // that state proved unreliable in practice for every step tried (not just
+  // the input-focused one: e.g. task-done's Done button also renders with
+  // the ring floating over the wrong content while the keyboard is up).
+  // Rather than keep chasing exact positioning against a viewport that's
+  // actively changing, drop the spotlight entirely while the keyboard is
+  // open and pin a plain instruction card to the top of the visual
+  // viewport instead - a card that's definitely readable beats a ring
+  // that's potentially in the wrong place. Normal ring+blockers behaviour
+  // resumes the instant the keyboard closes (the visualViewport resize
+  // listener re-syncs then).
+  const vv = window.visualViewport
+  const keyboardOpen = !!vv && (window.innerHeight - vv.height) > 150
+  if (keyboardOpen) {
+    ring.hidden = true
+    arrow.hidden = true
+    tourClearBlockers()
+    if (hint) hint.hidden = true
+    card.classList.remove('tour-card-center')
+    const cardW = Math.min(320, vp.width - 32)
+    const left = vp.offsetLeft + (vp.width - cardW) / 2
+    const top = vp.offsetTop + 12
+    card.style.cssText = `left:${left}px; top:${top}px; width:${cardW}px;`
+    return
+  }
   let rect = tourTargetRect(target, vp)
   // If the target is wholly or partly outside the visible (visual) viewport
   // - e.g. "See All Sessions" sitting below the fold on a real phone -
@@ -8709,8 +8735,8 @@ function buildOnboardingSteps() {
       kind: 'explain',
       getTarget: () => null,
       text: eligible
-        ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes real pizzas - one hour of focus makes one pizza. Finish this quick tour and earn a <b>FREE Penguino Coin</b>!`
-        : `<b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes real pizzas - one hour of focus makes one pizza. Let's take a quick look around.`,
+        ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes pizzas - one hour of focus makes one pizza. Finish this quick tour and earn a <b>FREE Penguino Coin</b>!`
+        : `<b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes pizzas - one hour of focus makes one pizza. Let's take a quick look around.`,
     },
     // ---------- 2. Point at the Cook button ----------
     {
@@ -8762,12 +8788,6 @@ function buildOnboardingSteps() {
         if (!el) return null
         const onInput = () => { if (el.value.trim().length > 0) tourAdvance() }
         el.addEventListener('input', onInput)
-        // The input is already focused by renderTaskPrompt(), which on iOS
-        // triggers the soft keyboard - scroll it into view so the card has
-        // room, then re-sync once the keyboard/visualViewport has settled.
-        el.scrollIntoView({ block: 'center' })
-        const id = setTimeout(tourSync, 350)
-        if (tour) tour.timers.push(id)
         return () => el.removeEventListener('input', onInput)
       },
     },
@@ -8780,21 +8800,9 @@ function buildOnboardingSteps() {
       text: `Tap <b>Done</b>.`,
       enter: () => tourAdvanceOnRealClick('.picker [data-done]'),
     },
-    {
-      id: 'task-type',
-      kind: 'action',
-      ready: () => !!document.querySelector('.picker .tt-type-list .tt-type-row'),
-      probe: () => !!document.querySelector('.picker .tt-type-list .tt-type-row'),
-      getTarget: () => document.querySelector('.picker .tt-type-list'),
-      text: `Pick any category.`,
-      enter: () => {
-        const list = document.querySelector('.picker .tt-type-list')
-        if (!list) return null
-        const onClick = (e) => { if (e.target.closest('.tt-type-row')) tourAdvance() }
-        list.addEventListener('click', onClick)
-        return () => list.removeEventListener('click', onClick)
-      },
-    },
+    // task-type step removed - Deep Work is already selected by default on
+    // this screen, so asking the chef to pick a category was a pointless
+    // extra tap. start-cook is now the active step here.
     {
       id: 'start-cook',
       kind: 'action',
