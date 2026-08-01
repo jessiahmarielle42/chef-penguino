@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.2.2'
+const APP_VERSION = 'v2.4.2.3'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -8212,6 +8212,9 @@ function startOnboardingTour(resumeAfterId) {
     obs: null,
     notReadyCount: 0,
     scanning: false,
+    backJumps: 0,
+    retryId: null,
+    retryCount: 0,
   }
   // Suppressed for the whole tour, not just the timer steps - simplest way
   // to guarantee the screen never auto-darkens mid-instruction. Restored to
@@ -8247,6 +8250,7 @@ function tourClearTimers() {
   if (!tour) return
   tour.timers.forEach(clearTimeout)
   tour.timers = []
+  tour.retryId = null
 }
 
 function endOnboardingTour(markDone) {
@@ -8376,6 +8380,17 @@ function tourSync() {
     // Home) act as a magnet - a spurious not-ready blip anywhere earlier in
     // the tour could jump 8 steps ahead to it and strand everything in
     // between with no way back.
+    // Forward scan finding nothing doesn't necessarily mean the tour is
+    // merely waiting on the next screen - the tour's index can also end up
+    // AHEAD of the screen the chef is actually on (e.g. replaying the tour
+    // signed-in and landing back on an earlier picker). A forward-only scan
+    // can never recover that case: it looks past the step that would
+    // match and finds nothing, stranding the tour with chrome still
+    // mounted. So a BACKWARD scan runs next, same probe-only rule, bounded
+    // both in range (index-1..index-3) and in total jumps for the whole
+    // tour run (tour.backJumps, capped at 3) - backward jumps are how a
+    // scan can start oscillating, so this keeps any back-and-forth to a
+    // handful of moves at most. Forward always runs first and wins a tie.
     if (tour.notReadyCount >= 2 && !tour.scanning) {
       tour.scanning = true
       try {
@@ -8391,6 +8406,21 @@ function tourSync() {
             break
           }
         }
+        if (!ready && tour.backJumps < 3) {
+          const backEnd = Math.max(tour.index - 3, 0)
+          for (let i = tour.index - 1; i >= backEnd; i--) {
+            const candidate = tour.steps[i]
+            if (candidate.probe && candidate.probe()) {
+              tour.index = i
+              tour.entered = -1
+              tour.notReadyCount = 0
+              tour.backJumps += 1
+              step = candidate
+              ready = true
+              break
+            }
+          }
+        }
       } finally {
         tour.scanning = false
       }
@@ -8400,9 +8430,30 @@ function tourSync() {
       if (tour.cleanupStep) { try { tour.cleanupStep() } catch {}; tour.cleanupStep = null }
       document.removeEventListener('click', tourExplainClickHandler)
       tour.entered = -1
+      // tourSync is otherwise purely event-driven (MutationObserver records,
+      // window resize/scroll) - if the current step's ready() is false at
+      // the moment of the last such event (the screen is mid-render, an
+      // async/late render, an image still settling), nothing re-checks it
+      // and the tour sits idle until some UNRELATED event happens to fire
+      // (which is why tapping the dead screen "fixes" it). Self-retry so it
+      // recovers without needing that. Goes through the normal tourSync
+      // path, so the forward/backward scans above still apply on each tick.
+      // Capped at ~40 consecutive not-ready retries (~10s) so it can't spin
+      // forever on a genuinely gone screen, after which it falls back to
+      // the existing hide-and-wait (still resumed by the next real event).
+      tour.retryCount = (tour.retryCount || 0) + 1
+      if (tour.retryCount <= 40 && tour.retryId == null) {
+        tour.retryId = setTimeout(() => {
+          if (!tour) return
+          tour.retryId = null
+          tourSync()
+        }, 250)
+        tour.timers.push(tour.retryId)
+      }
       return
     }
   }
+  tour.retryCount = 0
   tour.notReadyCount = 0
   tourSyncEnter(step)
 }
