@@ -23,6 +23,9 @@ dist-ssr
 *.sln
 *.sw?
 
-# Throwaway headless-review harness (fake admin/user + fixtures, Playwright
-# screenshot script) and its output - never shipped, never committed.
-review/
+# Headless-review harness (fake admin/user + fixtures, Playwright screenshot
+# script) - committed deliberately now (was previously gitignored wholesale,
+# which meant every container recycle destroyed it). Only its throwaway
+# output is ignored.
+review/shots/
+review/node_modules/
