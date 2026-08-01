@@ -21,11 +21,49 @@ function todayAt(hh, mm) {
   return d.toISOString()
 }
 
+// Mirrors main.js's SGT day-boundary math (fixed UTC+8, no DST) rather than
+// importing it, since this harness runs standalone under Node/Playwright,
+// outside the Vite app bundle. SGT midnight (UTC instant) for the SGT
+// calendar day containing `now`.
+const SGT_OFFSET_MS = 8 * 60 * 60 * 1000
+function sgtStartOfDayUTC(now = new Date()) {
+  const shifted = new Date(now.getTime() + SGT_OFFSET_MS)
+  const flooredShifted = Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate())
+  return new Date(flooredShifted - SGT_OFFSET_MS)
+}
+// `h` hours before "now", clamped to never cross back of today's SGT
+// midnight boundary. Used for fixture sessions that must be OLDER than the
+// practice session the tour creates during the run (which is always the
+// most recent, real-world-realistic) while still landing on TODAY's
+// calendar cell (the one the tour's open-day step targets).
+function hoursAgo(h) {
+  const target = Date.now() - h * 60 * 60 * 1000
+  const floor = sgtStartOfDayUTC().getTime()
+  return new Date(Math.max(target, floor)).toISOString()
+}
+
 function makeSessionRow(id, task, minutes, pizzas, hh, mm, extra = {}) {
   return {
     id,
     user_id: 'user-1',
     completed_at: todayAt(hh, mm),
+    minutes,
+    pizzas,
+    task,
+    icon: '🍕',
+    type: 'deep',
+    ...extra,
+  }
+}
+
+// Same shape as makeSessionRow, but timestamped relative to "now"
+// (hoursAgo) instead of a fixed clock time - for fixtures that must stay
+// realistically OLDER than a session the run itself creates live.
+function makeSessionRowAgo(id, task, minutes, pizzas, hoursAgoVal, extra = {}) {
+  return {
+    id,
+    user_id: 'user-1',
+    completed_at: hoursAgo(hoursAgoVal),
     minutes,
     pizzas,
     task,
@@ -84,14 +122,20 @@ const INELIGIBLE_PROFILE = {
   onboarding_coin_claimed: true,
 }
 
+// Relative to "now" (hoursAgo), not fixed clock times - a fixed 1:30pm etc.
+// could sort NEWER than the practice session the tour run creates live,
+// which is unrealistic (in reality the practice session is always the
+// most recent) and was exactly what made tourLogId's old "guess the
+// newest entry" resolution unreliable. All within a few hours of "now" so
+// they stay on today's SGT calendar cell (see hoursAgo's clamp).
 const INELIGIBLE_SESSIONS = [
-  makeSessionRow('s-1', 'replying tutors n stu', 38, 1, 9, 12),
-  makeSessionRow('s-2', 'test', 0, 0, 9, 51),
-  makeSessionRow('s-3', 'test', 0, 0, 9, 53),
-  makeSessionRow('s-4', 'test', 0, 0, 9, 55),
-  makeSessionRow('s-5', 'test', 0, 0, 10, 2),
-  makeSessionRow('s-6', 'lesson prep', 25, 1, 13, 30),
-  makeSessionRow('s-7', 'grading', 45, 1, 16, 4),
+  makeSessionRowAgo('s-1', 'replying tutors n stu', 38, 1, 1),
+  makeSessionRowAgo('s-2', 'test', 0, 0, 2),
+  makeSessionRowAgo('s-3', 'test', 0, 0, 3),
+  makeSessionRowAgo('s-4', 'test', 0, 0, 4),
+  makeSessionRowAgo('s-5', 'test', 0, 0, 5),
+  makeSessionRowAgo('s-6', 'lesson prep', 25, 1, 6),
+  makeSessionRowAgo('s-7', 'grading', 45, 1, 7),
 ]
 
 const PRESETS = {

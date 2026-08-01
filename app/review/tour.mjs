@@ -110,7 +110,12 @@ async function main() {
           ringRect = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }
         }
         const blockerCount = document.querySelectorAll('.tour-blocker, [class*="tour-block"]').length
-        const tourActive = cardVisible || (ring && !ring.hidden)
+        // Silent steps (guest-coin-prompt, coin-explainer) deliberately show
+        // NO tour card or ring - they hand off to a real app overlay and let
+        // that do the talking. Treat a visible overlay as the tour still
+        // being alive, or every silent step reads as a false strand.
+        const overlayVisible = !!document.querySelector('.overlay.show')
+        const tourActive = cardVisible || (ring && !ring.hidden) || overlayVisible
         return { cardText, ringRect, blockerCount, tourActive }
       })
 
@@ -166,6 +171,55 @@ async function main() {
         break
       }
 
+      // Swipe steps need a real pointer drag, not a click - the row reveals
+      // its Edit/Delete actions via pointerdown/move/up and only advances
+      // once it actually lands in the open state.
+      if (/swipe/i.test(info.cardText || '') && info.ringRect) {
+        const { x, y, w, h } = info.ringRect
+        const cy = y + h / 2
+        const startX = x + w - 30
+        await page.mouse.move(startX, cy)
+        await page.mouse.down()
+        for (let i = 1; i <= 10; i++) {
+          await page.mouse.move(startX - i * 14, cy)
+          await page.waitForTimeout(20)
+        }
+        await page.mouse.up()
+        await page.waitForTimeout(600)
+        step += 1
+        continue
+      }
+
+      // Silent step handing off to a real overlay (guest sign-in offer):
+      // dismiss it the way a chef would, via its real secondary button.
+      const overlayHandled = await page.evaluate(() => {
+        const o = document.querySelector('.overlay.show')
+        if (!o) return false
+        const card = document.getElementById('tour-card')
+        if (card && !card.hidden) return false
+        const btn = o.querySelector('[data-action="continue-guest"], [data-action="ok"]')
+        if (!btn) return false
+        btn.click()
+        return true
+      })
+      if (overlayHandled) { step += 1; await page.waitForTimeout(900); continue }
+
+      // Delete step: the revealed action buttons sit BEHIND the row in the
+      // stacking order, so elementFromPoint at the ring centre returns the
+      // row itself - clicking that closes the swipe instead of deleting.
+      // Target the revealed button directly.
+      if (/\bDelete\b/.test(info.cardText || '') && !/Yes, delete/i.test(info.cardText || '')) {
+        const hitDelete = await page.evaluate(() => {
+          const openRow = document.querySelector('.cal-sheet-list .log-row.open')
+          if (!openRow) return false
+          const btn = openRow.closest('.log-row-wrap')?.querySelector('[data-action="delete-log"]')
+          if (!btn) return false
+          btn.click()
+          return true
+        })
+        if (hitDelete) { step += 1; await page.waitForTimeout(600); continue }
+      }
+
       // Click the real spotlighted target, exactly the way a chef would tap
       // it - via document.querySelector(...).click() inside page.evaluate,
       // never Playwright's own force-click (see file header comment).
@@ -180,6 +234,12 @@ async function main() {
           const cy = r.y + r.height / 2
           const el = document.elementFromPoint(cx, cy)
           if (!el) return false
+          // The tour's own target is authoritative. elementFromPoint can
+          // return a sibling stacked above it (e.g. the swipe row sits at
+          // z-index 1 over its own action buttons), so prefer an actionable
+          // descendant/ancestor at that point when one exists.
+          const actionable = el.closest('[data-action], button, [role="button"]')
+          if (actionable) { actionable.click(); return true }
           // A text input advances its step on real typing, not on a click -
           // clicking it "succeeds" but never advances, which stalls the run.
           const input = el.matches('input, textarea') ? el : el.querySelector?.('input, textarea')

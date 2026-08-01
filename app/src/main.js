@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.4.0'
+const APP_VERSION = 'v2.4.4.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -585,11 +585,27 @@ function addSessionPizzas(minutes) {
   save()
 }
 
+// Tracks the id of whichever session entry was most recently logged, so
+// callers that need to reference "the session that was JUST created" (the
+// onboarding tour's swipe-row/tap-delete/confirm-delete steps) can read it
+// directly instead of guessing which log entry is newest after the fact -
+// a guess that's wrong whenever some other real entry happens to sort
+// newer, or an async re-fetch resolves before the new session has landed.
+// Set on BOTH write paths: here (guest/local), and in finalizeSession()'s
+// signed-in branch, where it's overwritten with the ACTUAL persisted
+// Supabase row id (which is server-generated, not the client's
+// crypto.randomUUID() - the two are never the same id for a signed-in
+// chef, since the local entry() below is written unconditionally by
+// finalizeSession() too, purely for symmetry/backward-compat, but isn't
+// what fetchLog() actually returns for a signed-in chef).
+let lastLoggedSessionId = null
+
 function logSession({ completedAt, minutes, pizzas, task, icon, type }) {
   const entry = { id: crypto.randomUUID(), completedAt, minutes, pizzas, task }
   if (icon) entry.icon = icon
   if (type) entry.type = type
   state.log.unshift(entry)
+  lastLoggedSessionId = entry.id
   save()
 }
 
@@ -635,15 +651,26 @@ async function finalizeSession(playAlarm) {
     if (t.type) row.type = t.type
     // Retry without `type` if the column doesn't exist yet (migration_task_types
     // .sql not run) so a session is never lost to a schema mismatch.
-    let { error } = await supabase.from('sessions').insert({ ...row, user_id: currentUser.id })
+    // .select('id').single() so lastLoggedSessionId can be overwritten with
+    // the ACTUAL persisted row id (server-generated, not the client-side
+    // crypto.randomUUID() the local logSession() call above assigned) - the
+    // two are never the same id for a signed-in chef, and it's the server
+    // id that fetchLog()/the day sheet actually renders.
+    let { data, error } = await supabase.from('sessions').insert({ ...row, user_id: currentUser.id }).select('id').single()
     if (error && t.type) {
       const { type, ...rowNoType } = row
-      ;({ error } = await supabase.from('sessions').insert({ ...rowNoType, user_id: currentUser.id }))
+      ;({ data, error } = await supabase.from('sessions').insert({ ...rowNoType, user_id: currentUser.id }).select('id').single())
       if (error) { state.pendingSessions.push(rowNoType); save() }
     } else if (error) {
       state.pendingSessions.push(row)
       save()
     }
+    // Neither the local guest-log id (meaningless here - fetchLog() never
+    // reads state.log for a signed-in chef) nor a stale id from some
+    // earlier session should survive an insert failure - null falls back
+    // to the onboarding tour's unqualified selectors rather than pointing
+    // at a session that was never actually written.
+    lastLoggedSessionId = !error && data?.id ? data.id : null
     // Optimistically reflect the new total so the coin chip updates right away,
     // even if the profile refresh below lags or fails; refreshProfile() then
     // reconciles against the authoritative DB value.
@@ -4148,7 +4175,17 @@ function wireLogSwipe(listEl) {
         if (openSwipeRow === row) openSwipeRow = null
       }
     }
+    // Tap-to-close, but NOT the synthetic click the browser fires at the end
+    // of a mouse drag. mousedown+mouseup on the same element always produces
+    // a click, so on desktop the drag that just opened the row would
+    // immediately close it again - the row could never be held open and the
+    // Delete button was unreachable. Touch doesn't hit this because browsers
+    // suppress the click after a touch drag, which is why it only ever
+    // reproduced on desktop.
+    let justDragged = false
+    row.addEventListener('pointerup', () => { if (dragging) justDragged = true })
     row.addEventListener('click', (e) => {
+      if (justDragged) { justDragged = false; e.preventDefault(); e.stopPropagation(); return }
       if (row.classList.contains('open')) { e.preventDefault(); closeOpenSwipe() }
     })
   })
@@ -8260,6 +8297,12 @@ function maybeAutoStartOnboardingTour() {
 // the whole tour from Welcome.
 function startOnboardingTour(resumeAfterId) {
   if (tour) return
+  // A replayed tour must re-arm its own capture from scratch - a stale id
+  // left over from a PREVIOUS run (e.g. Settings -> Tutorials -> Replay
+  // Tutorial after already having gone through it once) would let the
+  // results step read an id that has nothing to do with the NEW practice
+  // session about to be created.
+  lastLoggedSessionId = null
   const steps = buildOnboardingSteps()
   let startIndex = 0
   if (resumeAfterId) {
@@ -8915,17 +8958,48 @@ function tourPositionForStep(step) {
   }
 }
 
-// Wires a click on `selector` (queried fresh, since the real screen may have
-// just (re)mounted) to advance the tour, WITHOUT touching the real handler
-// already wired elsewhere for that element - both simply fire. Returns a
-// cleanup function, or null if the element isn't there (ready() should have
-// already guaranteed it is, but this stays defensive).
+// Wires a tap on `selector` to advance the tour, WITHOUT touching the real
+// handler already wired elsewhere for that element - both simply fire.
+// Delegated to `document` (queried fresh via e.target.closest() on every
+// click) rather than bound to the specific node that exists at enter()
+// time: several real screens (the calendar day cell -> day sheet is the
+// one that surfaced this) re-render the DOM between enter() and the
+// chef's actual tap, which leaves a node-bound listener attached to a
+// now-detached element while the visible one is a fresh node with no
+// listener at all. getTarget() re-queries every sync, so the RING still
+// looks perfectly correct while the advance is silently dead - exactly
+// why this was hard to spot. Delegation is immune to this: it only cares
+// whether the click's real target matches the selector, never which node
+// it was originally bound to.
 function tourAdvanceOnRealClick(selector) {
-  const el = document.querySelector(selector)
-  if (!el) return null
-  const onClick = () => tourAdvance()
-  el.addEventListener('click', onClick)
-  return () => el.removeEventListener('click', onClick)
+  if (!document.querySelector(selector)) return null
+  // Idempotent per step instance - a delegated document listener could
+  // otherwise double-fire (e.g. a click that somehow re-dispatches, or a
+  // lingering listener from a race with cleanup).
+  let advanced = false
+  const onClick = (e) => {
+    if (advanced) return
+    const t = e.target
+    if (!(t instanceof Element) || !t.closest(selector)) return
+    advanced = true
+    tourAdvance()
+  }
+  // Deferred by a tick, same hazard/guard as tourExplainClickHandler's
+  // deferred attach: if THIS step was entered as a consequence of a click
+  // (e.g. a previous step's own tourAdvanceOnRealClick firing tourAdvance()
+  // from inside a real click handler), that same click event is still
+  // bubbling when enter() runs synchronously - attaching immediately would
+  // let this new listener catch that same stale click and misfire. The
+  // setTimeout(...,0) pushes the attach past the current event's bubble
+  // phase; re-checking `tour.steps[tour.index] === step` (captured by
+  // reference now, before any async gap) means a fast subsequent step
+  // change can't attach a listener for a step that's already been left.
+  const step = tour ? tour.steps[tour.index] : null
+  const attachId = setTimeout(() => {
+    if (tour && tour.steps[tour.index] === step) document.addEventListener('click', onClick, true)
+  }, 0)
+  if (tour) tour.timers.push(attachId)
+  return () => document.removeEventListener('click', onClick, true)
 }
 
 function buildOnboardingSteps() {
@@ -8938,6 +9012,9 @@ function buildOnboardingSteps() {
   // pause overlay is already open" check), same pattern/reason as
   // confirmDeleteAdvanced below.
   let pauseTimerAdvanced = false
+  // Same double-advance guard, shared between open-day's click-delegation
+  // path and its belt-and-braces watch() (see that step below).
+  let openDayAdvanced = false
   // Index-scoped one-shot navigation guard (see shopKickedForIndex/
   // homeKickedForIndex/settingsKickedForIndex below for the full rationale)
   // so replaying the tour from Settings -> Tutorials -> Replay Tutorial
@@ -9152,24 +9229,23 @@ function buildOnboardingSteps() {
         // specific entry: an unqualified "first row in the day sheet"
         // selector would, for a chef with prior sessions that day, demand
         // a REAL session be deleted once the practice one is gone (data-
-        // loss-adjacent) - see those steps below. Guests: state.log is the
-        // live, already-in-memory log, safe to read synchronously here.
-        // Signed-in: sessions live server-side, not in state.log, so a
-        // background fetch grabs the true newest entry's id - it resolves
-        // well before swipe-row (several taps/screens later) is reached.
-        // If capture fails either way, tourLogId stays null and those
-        // steps fall back to their original unqualified selectors (see
-        // comments there) rather than hard-stalling the tour.
-        const newestId = (log) => {
-          if (!log || !log.length) return null
-          let newest = log[0]
-          for (const e of log) { if (e.completedAt > newest.completedAt) newest = e }
-          return newest?.id || null
-        }
-        tourLogId = newestId(state.log)
-        if (currentUser) {
-          fetchLog(currentUser.id).then(log => { tourLogId = newestId(log) || tourLogId }).catch(() => {})
-        }
+        // loss-adjacent) - see those steps below.
+        //
+        // Reads lastLoggedSessionId (set at CREATION time, in logSession()/
+        // finalizeSession() - see those) rather than guessing which log
+        // entry is newest after the fact. The guess was wrong whenever any
+        // other real entry happened to sort newer than the practice
+        // session (entirely plausible - "newest" isn't guaranteed to mean
+        // "just created", e.g. a clock skew or a session logged with a
+        // manually-edited timestamp), and for signed-in chefs it also
+        // depended on a background fetchLog() racing the tour, which could
+        // resolve to the wrong id if it landed before the new session had
+        // actually reached the DB. Both failure modes are gone now: this
+        // is exactly the id that write actually produced. If it's null
+        // (capture failed) tourLogId stays null and the later steps fall
+        // back to their original unqualified selectors (see comments
+        // there) rather than hard-stalling the tour.
+        tourLogId = lastLoggedSessionId
         return tourAdvanceOnRealClick('.intro-start[data-intro-stage="results"] button')
       },
     },
@@ -9190,7 +9266,55 @@ function buildOnboardingSteps() {
       probe: () => !!document.querySelector(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
       getTarget: () => document.querySelector(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
       text: `Tap today's date to see your session.`,
-      enter: () => tourAdvanceOnRealClick(`.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`),
+      // Where the original stranding bug (the tour just stops here for a
+      // multi-session signed-in chef, while a one-session guest passes
+      // fine) was actually found and reproduced with the review harness:
+      // openDay() -> renderHistory() re-renders the WHOLE calendar screen
+      // between enter() and the tap, which used to leave a click listener
+      // bound to a node that no longer exists, silently dead, while
+      // getTarget() kept re-querying and drawing a perfectly correct ring
+      // over it - exactly why it was so hard to spot. Delegated to
+      // `document` here directly (same technique as
+      // tourAdvanceOnRealClick, inlined rather than reused so it can share
+      // openDayAdvanced with watch() below) rather than bound to the cell
+      // node, so a re-render in between can't leave it stranded.
+      enter: () => {
+        openDayAdvanced = false
+        const cellSelector = `.cal-cell.cal-has[data-day="${calKeyFromTs(Date.now())}"]`
+        if (!document.querySelector(cellSelector)) return null
+        const onClick = (e) => {
+          if (openDayAdvanced) return
+          const t = e.target
+          if (!(t instanceof Element) || !t.closest(cellSelector)) return
+          openDayAdvanced = true
+          tourAdvance()
+        }
+        // Deferred by a tick - same stale-click-still-bubbling hazard as
+        // tourExplainClickHandler/tourAdvanceOnRealClick.
+        const step = tour ? tour.steps[tour.index] : null
+        const attachId = setTimeout(() => {
+          if (tour && tour.steps[tour.index] === step) document.addEventListener('click', onClick, true)
+        }, 0)
+        if (tour) tour.timers.push(attachId)
+        return () => document.removeEventListener('click', onClick, true)
+      },
+      // Belt and braces: advances the moment the real day sheet is
+      // actually open, in case the click-delegation path above somehow
+      // missed it (e.g. the tap dispatched some other way that never
+      // bubbles a plain click). Shares openDayAdvanced with the click path
+      // above - whichever fires first wins, the other is a no-op, so this
+      // can never double-advance and skip swipe-row. #cal-sheet is
+      // ID-scoped (not just .cal-sheet) - the admin calendar leaderboard
+      // reuses the same .cal-sheet/.cal-sheet-list CLASSES for a totally
+      // different sheet (never open at the same time as this tour step,
+      // but the ID keeps this unambiguous regardless).
+      watch: () => {
+        if (openDayAdvanced) return
+        if (document.querySelector('#cal-sheet.show #cal-sheet-list')) {
+          openDayAdvanced = true
+          tourAdvance()
+        }
+      },
     },
     {
       id: 'swipe-row',
@@ -9218,8 +9342,20 @@ function buildOnboardingSteps() {
       kind: 'action',
       // Same tourLogId scoping as swipe-row above, with the same
       // unqualified fallback if capture failed.
-      ready: () => !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
-      probe: () => !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
+      //
+      // Gated on the row actually being SWIPED OPEN (`.log-row.open`), not
+      // merely on the Delete button existing. `.log-row-actions2` is
+      // absolutely positioned behind the row at z-index 0, so
+      // [data-action="delete-log"] is in the DOM even while the row is
+      // shut - without this gate the tour spotlights an invisible button,
+      // and a tap lands on the row (z-index 1), which closes the swipe and
+      // leaves the chef pointing at nothing with no way back. With the
+      // gate, closing the row makes this step not-ready and the backward
+      // self-heal scan drops back to `swipe-row`, which tells them to
+      // swipe again.
+      ready: () => !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] .log-row.open` : '.cal-sheet-list .log-row.open')
+        && !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
+      probe: () => !!document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] .log-row.open` : '.cal-sheet-list .log-row.open'),
       getTarget: () => document.querySelector(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
       text: `Tap <b>Delete</b> to remove this practice session - it doesn't count for anything.`,
       enter: () => tourAdvanceOnRealClick(tourLogId ? `.cal-sheet-list .log-row-wrap[data-log-id="${tourLogId}"] [data-action="delete-log"]` : '.cal-sheet-list [data-action="delete-log"]'),
