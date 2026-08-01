@@ -8500,7 +8500,40 @@ function tourSyncEnter(step) {
     // to show at all) drive their own advance from enter(); the generic
     // tap-anywhere handler would just be a second, redundant way to dismiss.
     if (step.kind === 'explain' && !step.silent) document.addEventListener('click', tourExplainClickHandler)
-    tour.cleanupStep = step.enter ? step.enter() : null
+    const enterCleanup = step.enter ? step.enter() : null
+
+    // Modal cards animate in with a scale transform - `.popup`'s `pop`
+    // keyframes and `.pause-content`'s springy content-pop-in - and
+    // getBoundingClientRect() taken right now (the instant the step is
+    // entered) can measure the target mid-animation: still scaled down, or
+    // overshooting on the springy cubic-bezier. The ring/card were
+    // positioned from that transitional rect and then never re-measured,
+    // since the retry tick only fires while a step is NOT ready - once
+    // ready, the engine goes idle until an external event. Re-measure a
+    // few times on a fixed schedule as the animation settles; tourSync()
+    // on an already-entered, still-ready step is a cheap no-op (just
+    // re-runs tourPositionForStep, which is idempotent) when nothing moved.
+    const retimer = (ms) => { const id = setTimeout(() => { if (tour) tourSync() }, ms); tour.timers.push(id); return id }
+    retimer(120); retimer(300); retimer(500)
+
+    // Belt and braces: a one-shot `animationend` listener on the modal
+    // container itself (not purely time-based), guarded so it can't leak
+    // across steps - removed via tour.cleanupStep below, which every next
+    // step's entry (and endOnboardingTour) already calls before doing
+    // anything else.
+    let animCleanup = null
+    const target = step.getTarget ? step.getTarget() : null
+    const modalEl = target ? (target.closest('.popup') || target.closest('.pause-content')) : null
+    if (modalEl) {
+      const onAnimEnd = () => { if (tour) tourSync() }
+      modalEl.addEventListener('animationend', onAnimEnd, { once: true })
+      animCleanup = () => modalEl.removeEventListener('animationend', onAnimEnd)
+    }
+
+    tour.cleanupStep = () => {
+      if (enterCleanup) { try { enterCleanup() } catch {} }
+      if (animCleanup) { try { animCleanup() } catch {} }
+    }
   }
   tourPositionForStep(step)
   // Runs on every sync (not just on entering the step), so a step can watch
