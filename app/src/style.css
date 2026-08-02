@@ -3193,3 +3193,123 @@ img.shop-image {
   font-size:0.75rem; line-height:1.5; color: var(--muted-2);
   margin:0 0 1.25rem; text-align: center;
 }
+
+/* ============================================================
+   BACKGROUND MUSIC PICKER (Settings -> Background Music)
+   z-index 40: above .tabbar (3) and normal content, below .overlay (70) and
+   #bug-fab (65) - a popup or the bug FAB should always win over the mini-
+   player if they ever overlap.
+   ============================================================ */
+.st-sub { margin:0.125rem 0.25rem 0.875rem; }
+
+/* Sticky so the Save button stays reachable while the track list scrolls -
+   this page can get taller than one screen once more presets ship. */
+.st-savebar {
+  position: sticky; top:0; z-index: 1;
+  margin:0 -0.25rem 0.625rem; padding:0.625rem 0.25rem 0.75rem;
+  background: var(--card-2); border-bottom:1px solid var(--line);
+}
+.st-save {
+  width:100%; padding:0.8125rem; border:none; border-radius:0.875rem;
+  font-family: inherit; font-weight:800; font-size:0.9375rem; cursor:pointer;
+  /* Literal ink like .btn-buy / .popup button - var(--gold-ink) is gold
+     itself in dark theme, which would be gold-on-gold here. */
+  color: #4d360a;
+  background: linear-gradient(180deg,#FFD873,var(--gold) 60%,var(--gold-deep));
+}
+.st-save:disabled { background: var(--soft-fill); color: var(--muted-2); cursor: default; }
+
+.st-list { display:flex; flex-direction:column; }
+.st-row {
+  width:100%; display:flex; align-items:center; gap:0.75rem;
+  padding:0.625rem; border:1px solid transparent; border-radius:0.875rem;
+  background:none; font-family:inherit; color:inherit; text-align:left; cursor:pointer;
+}
+.st-row + .st-row { margin-top:0.125rem; }
+.st-art {
+  width:3.125rem; height:3.125rem; border-radius:0.75rem; object-fit:cover; flex:none;
+  border:1px solid var(--line);
+  /* box-shadow, never filter:drop-shadow - iOS rasterises drop-shadow to the
+     image's bounding box and paints a visible grey square behind it. */
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+.st-def {
+  font-style: normal; font-size:0.625rem; font-weight:800; letter-spacing:0.04em;
+  text-transform: uppercase; color: var(--muted); border:1px solid var(--line);
+  padding:0.125rem 0.375rem; border-radius:62rem; margin-left:0.4375rem; vertical-align:2%;
+}
+.st-title {
+  flex:1; min-width:0; font-weight:700; font-size:0.9375rem;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.st-row .st-tick { display:none; color: var(--gold); font-weight:800; font-size:1.0625rem; flex:none; }
+.st-row.is-selected { background: rgba(246,198,75,0.10); border-color: rgba(246,198,75,0.35); }
+.st-row.is-selected .st-tick { display:block; }
+.st-row .st-bars { display:none; align-items:flex-end; gap:2px; height:0.875rem; flex:none; }
+.st-row.is-playing .st-bars { display:flex; }
+.st-row.is-playing .st-title { color: var(--fire); }
+.st-bars i { width:3px; background: var(--fire); border-radius:2px; animation: st-eq 0.9s ease-in-out infinite; }
+.st-bars i:nth-child(1) { height:40%; animation-delay:-0.2s; }
+.st-bars i:nth-child(2) { height:100%; animation-delay:-0.5s; }
+.st-bars i:nth-child(3) { height:65%; }
+@keyframes st-eq { 0%, 100% { transform: scaleY(0.45); } 50% { transform: scaleY(1); } }
+.st-row.paused .st-bars i { animation-play-state: paused; }
+
+/* Floats above the tab bar while the picker is mounted - lives outside #app
+   (see renderSoundtrackPicker) so it survives that screen repainting after
+   Save without needing to be re-created. */
+.st-mini {
+  position: fixed; left:0; right:0; margin:0 auto; width:100%; max-width:460px;
+  bottom: calc(7.1rem + env(safe-area-inset-bottom, 0px));
+  z-index: 40; box-sizing: border-box;
+  background: var(--card-2); border-top:1px solid var(--line); border-radius:0.875rem 0.875rem 0 0;
+  box-shadow: 0 -8px 24px -12px rgba(0,0,0,0.4);
+  padding:0.6875rem 1rem 0.75rem;
+  transform: translateY(110%); max-height:0; overflow:hidden;
+  transition: transform 0.25s ease, max-height 0.25s ease;
+  pointer-events: none;
+}
+.st-mini.show { transform: none; max-height:9rem; pointer-events: auto; }
+.st-mini-row { display:flex; align-items:center; gap:0.6875rem; }
+.st-mini-art { width:2.375rem; height:2.375rem; border-radius:0.5rem; flex:none; object-fit:cover; border:1px solid var(--line); }
+.st-mini-title { font-weight:700; font-size:0.875rem; color: var(--cream); }
+.st-mini-sub { font-size:0.6875rem; color: var(--muted); margin-top:1px; }
+.st-playbtn {
+  margin-left:auto; width:2.375rem; height:2.375rem; border-radius:50%; border:none; flex:none;
+  background: linear-gradient(180deg, #FFB25E, var(--fire) 55%, var(--fire-deep));
+  color:#fff; font-size:0.8125rem; display:grid; place-items:center; cursor:pointer;
+}
+/* Loading state: hide the glyph and show a small spinning ring instead of a
+   play/pause icon while the freshly-picked track buffers (see the 'waiting'
+   listener in renderSoundtrackPicker). */
+.st-playbtn.loading::after {
+  content:""; width:0.9rem; height:0.9rem; border-radius:50%;
+  border:2px solid rgba(255,255,255,0.45); border-top-color:#fff;
+  animation: st-spin 0.7s linear infinite;
+}
+@keyframes st-spin { to { transform: rotate(360deg); } }
+.st-scrub { margin-top:0.5625rem; height:1.125rem; display:flex; align-items:center; cursor:pointer; touch-action:none; }
+.st-track { position:relative; height:0.25rem; border-radius:62rem; background: var(--soft-fill); flex:1; }
+.st-fill { position:absolute; left:0; top:0; bottom:0; width:0%; background: linear-gradient(90deg, var(--gold), var(--gold-deep)); border-radius:62rem; }
+/* var(--cream), not literal #F7EDDF - the token flips to dark ink on the
+   light theme, where a hardcoded cream knob would vanish into the track. */
+.st-knob { position:absolute; left:0%; top:50%; transform: translate(-50%,-50%); width:0.6875rem; height:0.6875rem; border-radius:50%; background: var(--cream); }
+.st-times { display:flex; justify-content:space-between; font-size:0.65rem; color: var(--muted); margin-top:0.125rem; font-variant-numeric: tabular-nums; }
+
+/* While the mini-player is showing, lift the bug FAB and toast clear of it -
+   both would otherwise sit underneath/behind it. 5.75rem = the mini-player's
+   real rendered height (~5.6rem) plus a touch of air; NOT its 9rem
+   max-height, which is only a transition cap and would strand both floating
+   mid-screen. */
+body.soundtrack-mini-open #bug-fab {
+  bottom: calc(7.1rem + 5.75rem + env(safe-area-inset-bottom, 0px));
+}
+body.soundtrack-mini-open .toast {
+  bottom: calc(7.25rem + 5.75rem);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .st-bars i { animation: none; }
+  .st-mini { transition: none; }
+  .st-playbtn.loading::after { animation: none; }
+}
