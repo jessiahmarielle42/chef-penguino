@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.6.1'
+const APP_VERSION = 'v2.4.6.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -9608,10 +9608,12 @@ function buildOnboardingSteps() {
       if (document.querySelector('[data-action="add-to-homescreen"]')) return false
       return true
     },
-    probe: () => {
-      const tab = document.querySelector('.tab[data-tab="settings"]')
-      return !!tab && !document.querySelector('[data-action="add-to-homescreen"]')
-    },
+    // No probe: the Settings tab exists on every screen (the tabbar is
+    // omnipresent), so a probe here would make this step a scan magnet -
+    // the forward self-heal scan would vault straight to it from anywhere,
+    // silently skipping the silent, probe-less steps just before it (e.g.
+    // guest-coin-prompt's sign-in/coin popup) that a real device would
+    // otherwise land on. This step must only ever be reached sequentially.
     getTarget: () => document.querySelector('.tab[data-tab="settings"]'),
     text: `Tap <b>Settings</b> - one last thing!`,
     enter: () => tourAdvanceOnRealClick('.tab[data-tab="settings"]'),

@@ -135,28 +135,6 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* iOS black-translucent (index.html) forces white status-bar text with no
-   background of its own - this fixed strip guarantees the notch area reads
-   as deliberate chrome in BOTH themes. Backed by --page-bg (same token the
-   body gradient itself starts from) rather than a hardcoded dark hex, so it
-   follows the chef's light/dark toggle instantly instead of always reading
-   dark in light mode. Collapses to 0 height in normal browser tabs, where
-   the safe-area inset is 0. z-index 40 is a deliberate middle ground from a
-   survey of the existing scale: above ordinary app content (.tabbar 3, .app
-   2) so it isn't overdrawn by anything a chef scrolls under, but below
-   every overlay/popup/toast/tour layer that should still paint over the
-   notch itself (.toast 45, .cal-scrim 50, .cal-sheet 60, #bug-fab 65, .overlay
-   70, .tour-root 90). */
-body::before {
-  content: '';
-  position: fixed;
-  top: 0; left: 0; right: 0;
-  height: env(safe-area-inset-top, 0px);
-  background: var(--page-bg);
-  z-index: 40;
-  pointer-events: none;
-}
-
 #app {
   /* Cascade, weakest to strongest: 100vh (ancient fallback) -> WebKit's
      -webkit-fill-available (the real fix - see below) -> 100dvh (modern
@@ -2625,6 +2603,23 @@ img.shop-image {
 .tt-type-title { font-family: var(--font-display); font-weight: 800; font-size:0.9375rem; color: var(--cream); }
 .tt-type-desc { font-size:0.75rem; color: var(--muted-2); margin-top:0.125rem; }
 .tt-type-row.selected .tt-type-title { color: var(--fire); }
+/* Full variant only (not .tt-type-list-compact): centre the title/desc on
+   the row's FULL width, not just the space left after the emoji - flex
+   centring in the emoji-then-text row put every title visibly right of
+   the button's true centre. Take the emoji out of flow (absolutely
+   positioned against the row's own left padding, same visual spot as
+   before) so .tt-type-txt can span edge-to-edge and centre against the
+   true row centre. Equal left/right padding on .tt-type-txt (matching the
+   emoji+gap zone) keeps long custom titles from overlapping the emoji and
+   keeps the centring symmetric. Row height/padding/emoji size/position are
+   unchanged - only the text block's centring changes. */
+.tt-type-list:not(.tt-type-list-compact) .tt-type-row { position: relative; }
+.tt-type-list:not(.tt-type-list-compact) .tt-type-emoji {
+  position: absolute; left:0.9375rem; top:50%; transform: translateY(-50%);
+}
+.tt-type-list:not(.tt-type-list-compact) .tt-type-txt {
+  flex: 1; width: 100%; text-align: center; padding: 0 2.75rem;
+}
 
 /* ---- timer screen: selected-type chip near the caption ---- */
 .tt-timer-chip {
@@ -3112,15 +3107,16 @@ img.shop-image {
    .darken-overlay 5, .tabbar 3) but below .lore-player (999).
    ================================================================= */
 .tour-root { position: fixed; inset: 0; z-index: 90; pointer-events: none; }
-/* Transparent by design: these exist to SWALLOW TAPS, not to dim. They used
-   to apply only to action steps; once they applied to every step, their old
-   0.72 scrim washed out the app's own headings and body copy on screens
-   that had never been dimmed (pickers, the pause screen, confirms) and made
-   important text hard to read. The gold ring, its glow and the opaque card
-   carry the focus on their own. The one deliberate exception is the
-   no-target welcome step, where tourDimFull() sets a lighter scrim inline
-   on .tour-block-t. */
-.tour-block { position: fixed; background: transparent; pointer-events: auto; z-index: 1; }
+/* Classic coach-mark dim: everything greyed out except the spotlit target
+   (the hole cut between blocks), the instruction card and Skip Tutorial.
+   This used to be transparent because of a stacking bug where the card/
+   ring/hint sat under these full-screen blocks, so the scrim washed them
+   out on every step. That's fixed now - card/ring/hint are z-index 2 and
+   .tour-topright is z-index 3, both above .tour-block's z-index 1 - so the
+   dim is safe: it darkens the screen without ever covering the tour's own
+   chrome. The no-target welcome step still layers its own lighter inline
+   scrim via tourDimFull() on top of this for extra emphasis. */
+.tour-block { position: fixed; background: rgba(8,5,3,0.62); pointer-events: auto; z-index: 1; }
 .tour-block[hidden] { display: none; }
 .tour-ring {
   position: fixed; border-radius: 1rem; border: 3px solid var(--gold); pointer-events: none;
