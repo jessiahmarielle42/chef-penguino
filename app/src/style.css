@@ -127,6 +127,7 @@ html { font-size: calc(min(100vw, 460px) / 390 * 16); }
 html, body {
   margin: 0;
   height: 100%;
+  height: -webkit-fill-available; /* pairs with #app's own fallback below */
   overflow: hidden;
   font-family: var(--font-body);
   background: linear-gradient(180deg, var(--page-bg), var(--page-bg-2));
@@ -135,27 +136,52 @@ html, body {
 }
 
 /* iOS black-translucent (index.html) forces white status-bar text with no
-   background of its own - this fixed strip guarantees contrast in BOTH
-   themes (in light mode it reads as a deliberate dark notch bar) and
-   collapses to 0 height in normal browser tabs, where the safe-area inset
-   is 0. z-index 40 is a deliberate middle ground from a survey of the
-   existing scale: above ordinary app content (.tabbar 3, .app 2) so it
-   isn't overdrawn by anything a chef scrolls under, but below every
-   overlay/popup/toast/tour layer that should still paint over the notch
-   itself (.toast 45, .cal-scrim 50, .cal-sheet 60, #bug-fab 65, .overlay
+   background of its own - this fixed strip guarantees the notch area reads
+   as deliberate chrome in BOTH themes. Backed by --page-bg (same token the
+   body gradient itself starts from) rather than a hardcoded dark hex, so it
+   follows the chef's light/dark toggle instantly instead of always reading
+   dark in light mode. Collapses to 0 height in normal browser tabs, where
+   the safe-area inset is 0. z-index 40 is a deliberate middle ground from a
+   survey of the existing scale: above ordinary app content (.tabbar 3, .app
+   2) so it isn't overdrawn by anything a chef scrolls under, but below
+   every overlay/popup/toast/tour layer that should still paint over the
+   notch itself (.toast 45, .cal-scrim 50, .cal-sheet 60, #bug-fab 65, .overlay
    70, .tour-root 90). */
 body::before {
   content: '';
   position: fixed;
   top: 0; left: 0; right: 0;
   height: env(safe-area-inset-top, 0px);
-  background: #120c09;
+  background: var(--page-bg);
   z-index: 40;
   pointer-events: none;
 }
 
 #app {
+  /* Cascade, weakest to strongest: 100vh (ancient fallback) -> WebKit's
+     -webkit-fill-available (the real fix - see below) -> 100dvh (modern
+     dynamic viewport, wins wherever both it and fill-available exist).
+     AUDIT: grepped style.css/main.js for every safe-area-inset-bottom /
+     100vh / innerHeight use in the tabbar's ancestor chain (html, body,
+     #app, .app, .scroll) - .tabbar is the ONLY real consumer of
+     safe-area-inset-bottom there (its own calc(0.5rem + inset) padding,
+     correct, untouched), and no wrapper in the chain adds a second
+     bottom-inset padding/margin - so the letterboxing isn't a double
+     application of the inset in THIS codebase. It's iOS Safari's own
+     documented standalone-mode bug: 100dvh (and 100vh before it) can
+     conservatively reserve room for a browser toolbar that doesn't exist
+     once installed to the homescreen, under-reporting the real available
+     height by roughly the home-indicator's worth of pixels - #app renders
+     shorter than the true fullscreen webview, and the tab bar (correctly
+     sized) ends up floating above a dead band of body background rather
+     than flush with the bottom edge. -webkit-fill-available reports the
+     ACTUAL available space with no such reservation, which is the
+     standard mitigation for this exact symptom - it can't be demonstrated
+     in Chromium (only WebKit has the reservation bug this works around),
+     so this is shipped on the strength of the well-documented real-device
+     issue, not a reproduced-here regression. */
   height: 100vh;
+  height: -webkit-fill-available;
   height: 100dvh;
   width: 100%;
   max-width:460px;      /* keep the phone-app column on tablet/desktop */
@@ -1414,6 +1440,14 @@ img.avatar-circle {
   box-shadow: 0 2px 0 #b56e00, 0 4px 10px rgba(0,0,0,.4);
 }
 
+/* Separate rule (not folded into the shared .start-btn, .custom-go block
+   above) so .custom-go - a small "Go" button sharing a row with two number
+   inputs - is NOT forced to this width. Matches .tt-type-list's width
+   above so the type-row list and Start cooking button share one edge-to-
+   edge column on the type picker. .home-btn-col .start-btn's own
+   width:100% (below) still wins there via specificity - unaffected. */
+.start-btn { width: min(100%, 21rem); margin: 0 auto; }
+
 .home-btn-col {
   display: flex;
   flex-direction: column;
@@ -2571,7 +2605,11 @@ img.shop-image {
 /* ============ Task Types (task-type tagging + calendar filter) ============ */
 
 /* ---- start-flow: type picker rows ---- */
-.tt-type-list { display: flex; flex-direction: column; gap:0.625rem; margin-bottom:1.25rem; }
+/* width: min(100%, 21rem) is the app's existing content-width token (see
+   .home-btn-col/.tour-card-center.popup, both 21rem) - shared here with
+   .start-btn below so the type-row list and the Start cooking button read
+   as one aligned column instead of two different auto-sized widths. */
+.tt-type-list { display: flex; flex-direction: column; gap:0.625rem; width: min(100%, 21rem); margin:0 auto 1.25rem; }
 .tt-type-row {
   display: flex; align-items: center; gap:0.75rem; cursor: pointer;
   background: var(--card); border: 1px solid var(--line); border-radius:1rem;
@@ -3115,12 +3153,16 @@ img.shop-image {
   text-align: left; pointer-events: none; animation: none;
   z-index: 2;
 }
-.tour-card.popup p { margin: 0; font-size: 0.875rem; line-height: 1.45; color: var(--cream); text-align: center; }
+.tour-card.popup p { margin: 0; font-size: 1rem; line-height: 1.45; color: var(--cream); text-align: center; }
 .tour-card[hidden] { display: none; }
+/* True centre (not bottom-anchored) for target-less explain steps (welcome) -
+   the biggest, most important card in the tour, so it gets the room a
+   bottom-anchored 7.5rem offset never gave it. */
 .tour-card-center.popup {
-  left: 50%; right: auto; bottom: 7.5rem; top: auto; transform: translateX(-50%);
+  left: 50%; top: 50%; right: auto; bottom: auto; transform: translate(-50%, -50%);
   text-align: center; max-width: 21rem; width: calc(100% - 2.5rem);
 }
+.tour-card-center.popup p { font-size: 1.0625rem; }
 .tour-topright {
   position: fixed; top: calc(env(safe-area-inset-top, 0px) + 0.875rem); right: 0.875rem;
   display: flex; flex-direction: column; align-items: flex-end; gap: 0.25rem; pointer-events: auto;
