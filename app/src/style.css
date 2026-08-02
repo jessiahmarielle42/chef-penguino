@@ -3054,7 +3054,15 @@ img.shop-image {
    .darken-overlay 5, .tabbar 3) but below .lore-player (999).
    ================================================================= */
 .tour-root { position: fixed; inset: 0; z-index: 90; pointer-events: none; }
-.tour-block { position: fixed; background: rgba(8,5,3,0.72); pointer-events: auto; z-index: 1; }
+/* Transparent by design: these exist to SWALLOW TAPS, not to dim. They used
+   to apply only to action steps; once they applied to every step, their old
+   0.72 scrim washed out the app's own headings and body copy on screens
+   that had never been dimmed (pickers, the pause screen, confirms) and made
+   important text hard to read. The gold ring, its glow and the opaque card
+   carry the focus on their own. The one deliberate exception is the
+   no-target welcome step, where tourDimFull() sets a lighter scrim inline
+   on .tour-block-t. */
+.tour-block { position: fixed; background: transparent; pointer-events: auto; z-index: 1; }
 .tour-block[hidden] { display: none; }
 .tour-ring {
   position: fixed; border-radius: 1rem; border: 3px solid var(--gold); pointer-events: none;
