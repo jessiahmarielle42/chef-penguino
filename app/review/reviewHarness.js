@@ -163,6 +163,11 @@ const PRESETS = {
     user: null,
     profile: GUEST_PROFILE,
     sessions: [],
+    // A truly fresh guest: captureGuestWavingFreeIfNeeded() would have run
+    // at boot with no prior activity, so this is false - nothing owned,
+    // nothing equipped, must buy waving with the tour coin like a new
+    // signed-in signup.
+    guestState: { pizzas: 0, ownedEmotes: [], guestWavingFree: false },
   },
   'guest-earned-coin': {
     user: null,
@@ -170,8 +175,9 @@ const PRESETS = {
     sessions: GUEST_EARNED_SESSIONS,
     // Guest state (pizzas/ownedEmotes) lives in main.js's localStorage-backed
     // `state`, not in the fixture profile/sessions tables - applyPreset's
-    // guestState passthrough (below) seeds it directly.
-    guestState: { pizzas: 14, ownedEmotes: [] },
+    // guestState passthrough (below) seeds it directly. Legacy guest (had
+    // activity before the guestWavingFree flag existed) - keeps free waving.
+    guestState: { pizzas: 14, ownedEmotes: [], guestWavingFree: true },
   },
   'signed-in-eligible': {
     user: { id: 'user-1', email: 'keefe@example.com' },
@@ -387,6 +393,11 @@ function applyPreset(name) {
   if (installedState) {
     installedState.pizzas = preset.guestState?.pizzas ?? 0
     installedState.ownedEmotes = preset.guestState?.ownedEmotes ? preset.guestState.ownedEmotes.slice() : []
+    // Overrides the real boot-time capture (already ran before the fixture
+    // preset was applied) so each preset can pin the exact guest shape it's
+    // meant to represent, regardless of what the harness's own empty
+    // pre-fixture localStorage would have captured.
+    installedState.guestWavingFree = preset.guestState?.guestWavingFree ?? false
     installedState.log = preset.sessions.map(s => ({
       id: s.id, task: s.task, minutes: s.minutes, pizzas: s.pizzas,
       icon: s.icon, type: s.type, completed_at: s.completed_at,

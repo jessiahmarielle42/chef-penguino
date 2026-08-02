@@ -158,6 +158,46 @@ async function main() {
       console.log(JSON.stringify(log[log.length - 1]))
       await shot(page, `${String(step).padStart(2, '0')}-${slug(info.cardText)}`)
 
+      // Fix 1 numeric check: on the first ORDINARY action step (excludes the
+      // welcome step's own .tour-block-t, which deliberately carries a
+      // lighter INLINE override via tourDimFull() - checked separately
+      // below), confirm the plain blocker's real dim color and that the
+      // card's stacking context (z-index) sits above the blocker's. Note:
+      // .tour-card has pointer-events:none by design (taps must pass
+      // through to the target/blocker beneath it), so document.elementsFrom
+      // Point at the card's centre does NOT include the card at all - that
+      // is expected, not a stacking bug, hence the z-index comparison
+      // instead of a hit-test here.
+      if (!global.__blockerChecked && info.blockerCount > 0) {
+        const check = await page.evaluate(() => {
+          const block = document.querySelector('.tour-block:not(.tour-block-t):not([hidden])')
+          const card = document.getElementById('tour-card')
+          if (!block || !card || card.hidden) return null
+          const bg = getComputedStyle(block).backgroundColor
+          const blockZ = getComputedStyle(block).zIndex
+          const cardZ = getComputedStyle(card).zIndex
+          return { bg, blockZ, cardZ, cardAboveBlock: Number(cardZ) > Number(blockZ) }
+        })
+        if (check) {
+          global.__blockerChecked = true
+          console.log('[FIX1 CHECK action-step] blocker background + z-index stacking:', JSON.stringify(check))
+        }
+      }
+      // Fix 1 welcome-step check: confirm tourDimFull()'s own lighter inline
+      // scrim on .tour-block-t is still what's actually painted (not the
+      // new CSS default), i.e. the welcome step keeps its distinct look.
+      if (!global.__welcomeBlockerChecked) {
+        const wCheck = await page.evaluate(() => {
+          const block = document.querySelector('.tour-block-t:not([hidden])')
+          if (!block) return null
+          return { bg: getComputedStyle(block).backgroundColor, inlineBg: block.style.background || null }
+        })
+        if (wCheck) {
+          global.__welcomeBlockerChecked = true
+          console.log('[FIX1 CHECK welcome-step] tour-block-t dim:', JSON.stringify(wCheck))
+        }
+      }
+
       if (info.cardText === lastCardText) {
         stalledCount += 1
       } else {

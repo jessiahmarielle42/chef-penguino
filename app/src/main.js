@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.6.2'
+const APP_VERSION = 'v2.4.7.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -130,6 +130,17 @@ async function migrateLocalDataIfNeeded() {
       task: e.task || '',
     }))
     await supabase.from('sessions').insert(rows)
+  }
+  // Carry a grandfathered guest's free waving into the new profile.
+  // profiles.waving_free defaults to false server-side (new economy: fresh
+  // signups buy waving with the tour coin), which is exactly right for a
+  // guest whose captureGuestWavingFreeIfNeeded() flag came back false - no
+  // write needed, they simply arrive not owning it, same as any new signup.
+  // Only a LEGACY guest (flag true - had activity before this flag existed)
+  // needs an explicit write here, once, on this first-ever migration, or
+  // they'd silently lose the free waving they already had.
+  if (state.guestWavingFree) {
+    await supabase.from('profiles').update({ waving_free: true }).eq('id', currentUser.id)
   }
   state.cloudSynced = true
   save()
@@ -388,6 +399,23 @@ async function saveTaskTypeLabels(overrides) {
 
 const state = load()
 
+// Grandfathers waving-emote ownership for GUESTS the same way
+// maybeAutoStartOnboardingTour() grandfathers onboardingDone: captured ONCE,
+// at boot, before any tour/purchase activity this session can touch it, so
+// it can never be flipped true later by tour steps or test runs. A guest
+// with prior activity (pizzas baked or a session logged) already had free
+// waving under the old blanket-grandfather rule and keeps it; a genuinely
+// fresh install gets false and must buy waving with the tour coin like any
+// new signed-in signup. Runs unconditionally at load (not gated on guest
+// status) - it's about this device's local save, not the current session's
+// auth state, and a later sign-in reads it via the guest branch below.
+function captureGuestWavingFreeIfNeeded() {
+  if (state.guestWavingFree !== undefined) return
+  state.guestWavingFree = displayPizzas() > 0 || (state.log && state.log.length > 0)
+  save()
+}
+captureGuestWavingFreeIfNeeded()
+
 function load() {
   const defaults = {
     pizzas: 0, muted: false, volume: 0.5, lastVolume: 0.5, darkenLevel: 1, autoDarken: true,
@@ -396,6 +424,10 @@ function load() {
     lightMode: false, taskTypeLabels: {}, deleteAnimations: true, onboardingDone: false,
     onboardingResumeStep: null,
     lastHomescreenPromptAt: null, homescreenPromptDismissedForever: false,
+    // Undefined until captureGuestWavingFreeCaptured() runs once at boot -
+    // NOT defaulted true/false here so that helper can tell "never captured
+    // yet" apart from an already-decided false.
+    guestWavingFree: undefined,
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -902,13 +934,16 @@ function ownedEmotes() {
   return (currentProfile ? currentProfile.owned_emotes : state.ownedEmotes) || []
 }
 // Waving is free (without ever being added to owned_emotes - see coinBalance
-// comment above) for: guests (not signed in yet, so not a "new signup"), and
-// signed-in users grandfathered via profiles.waving_free. Guard the column
-// read with `?.` and treat undefined as free: pre-migration the column
-// doesn't exist yet, and the safe default is "everyone keeps waving free"
-// until the migration lands, so nothing breaks in the interim.
+// comment above) for: guests grandfathered via state.guestWavingFree (see
+// captureGuestWavingFreeIfNeeded() - false for a genuinely fresh guest, so
+// they must buy it like any new signup), and signed-in users grandfathered
+// via profiles.waving_free. Guard the column read with `?.` and treat
+// undefined as free: pre-migration the column doesn't exist yet, and the
+// safe default is "everyone keeps waving free" until the migration lands,
+// so nothing breaks in the interim.
 function wavingFreeForCurrentUser() {
-  return !isSignedIn() || currentProfile?.waving_free !== false
+  if (!isSignedIn()) return !!state.guestWavingFree
+  return currentProfile?.waving_free !== false
 }
 function isOwned(id) {
   if (id === 'waving') return wavingFreeForCurrentUser() || ownedEmotes().includes(id)
