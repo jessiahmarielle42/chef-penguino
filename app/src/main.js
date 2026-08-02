@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.6.0'
+const APP_VERSION = 'v2.4.6.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -4945,19 +4945,25 @@ function ensureBugFab() {
     bugFabEl.id = 'bug-fab'
     bugFabEl.type = 'button'
     bugFabEl.setAttribute('aria-label', 'Report a bug or suggestion')
+    // SOLID bug silhouette, matching the reference the user supplied: a
+    // filled rounded body with the seam and the two dots knocked OUT of it
+    // (fill-rule evenodd), plus stroked antennae and three legs a side.
+    // An all-stroke outline version was tried first and read as a spidery
+    // scribble at FAB size - at ~21px the body has to be a solid mass for
+    // the shape to be legible as a bug at a glance.
     bugFabEl.innerHTML = `
-      <svg viewBox="0 0 24 24" width="1.35rem" height="1.35rem" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M9 5.5a3 3 0 0 1 6 0v1.5" />
-        <path d="M8 9.5h8a4 4 0 0 1 4 4v1a7 7 0 0 1-7 7h-2a7 7 0 0 1-7-7v-1a4 4 0 0 1 4-4Z" />
-        <path d="M12 9.5v12" />
-        <path d="M4.5 12h3.5" />
-        <path d="M16 12h3.5" />
-        <path d="M4.8 16.5 8 15.5" />
-        <path d="M16 15.5l3.2 1" />
-        <path d="M5.3 21l2.9-2" />
-        <path d="M18.7 21l-2.9-2" />
-        <path d="M7 7l-2-2" />
-        <path d="M17 7l2-2" />
+      <svg viewBox="0 0 24 24" width="1.4rem" height="1.4rem" aria-hidden="true">
+        <g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+          <path d="M8.4 4.2 6.6 2.4" />
+          <path d="M15.6 4.2 17.4 2.4" />
+          <path d="M5.2 10.4H2.6" />
+          <path d="M18.8 10.4h2.6" />
+          <path d="M5.2 14.6 2.8 15.8" />
+          <path d="M18.8 14.6 21.2 15.8" />
+          <path d="M6.6 18.4 5 20.4" />
+          <path d="M17.4 18.4 19 20.4" />
+        </g>
+        <path fill="currentColor" fill-rule="evenodd" d="M12 3.1c2.06 0 3.78 1.4 4.35 3.28A6.3 6.3 0 0 1 18.5 11v3.1c0 3.7-2.91 6.7-6.5 6.7s-6.5-3-6.5-6.7V11c0-1.76.72-3.35 1.87-4.49A4.54 4.54 0 0 1 12 3.1Zm-.95 4.7v10.9a.95.95 0 0 0 1.9 0V7.8a.95.95 0 0 0-1.9 0Zm.95 2.06a1.35 1.35 0 1 0 0-2.7 1.35 1.35 0 0 0 0 2.7Z" />
       </svg>
     `
     bugFabEl.addEventListener('click', openBugReport)
