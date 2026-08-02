@@ -81,6 +81,13 @@ const PRESET_AVATARS = [
 
 const GUEST_PROFILE = null
 
+// waving_free defaults to false for a genuinely new signup (see
+// supabase/migration_onboarding.sql: `default false`, only backfilled to
+// true for pre-migration grandfathered accounts) - true here would make
+// isOwned('waving') report the emote as already "owned" via the free-grant
+// path and permanently fail isEligibleForOnboardingCoin()'s `if
+// (isOwned('waving')) return false` check, so this preset would silently
+// never actually be eligible despite its name.
 const ELIGIBLE_PROFILE = {
   id: 'user-1',
   display_name: 'Keefe',
@@ -92,7 +99,7 @@ const ELIGIBLE_PROFILE = {
   coin_adjustment: 0,
   task_type_labels: null,
   level_seen: 1,
-  waving_free: true,
+  waving_free: false,
   onboarding_done: false,
   onboarding_coin_claimed: false,
 }
@@ -138,11 +145,33 @@ const INELIGIBLE_SESSIONS = [
   makeSessionRowAgo('s-7', 'grading', 45, 1, 7),
 ]
 
+// S2: a guest who already earned a coin locally (coinsEarned() = floor(14/12)
+// = 1 >= 1), so guestWouldQualify() is false and the tour must NOT promise a
+// coin it can't grant after sign-in. A few same-day sessions so the day
+// sheet/delete-flow steps have real rows to work with, same as the other
+// non-empty presets. Does not own waving (guest waving is always "free"
+// visually, but ownedEmotes doesn't include it, matching a real guest who
+// hasn't purchased it).
+const GUEST_EARNED_SESSIONS = [
+  makeSessionRowAgo('gs-1', 'reading', 40, 1, 1),
+  makeSessionRowAgo('gs-2', 'writing', 25, 1, 2),
+  makeSessionRowAgo('gs-3', 'test', 0, 0, 3),
+]
+
 const PRESETS = {
   guest: {
     user: null,
     profile: GUEST_PROFILE,
     sessions: [],
+  },
+  'guest-earned-coin': {
+    user: null,
+    profile: GUEST_PROFILE,
+    sessions: GUEST_EARNED_SESSIONS,
+    // Guest state (pizzas/ownedEmotes) lives in main.js's localStorage-backed
+    // `state`, not in the fixture profile/sessions tables - applyPreset's
+    // guestState passthrough (below) seeds it directly.
+    guestState: { pizzas: 14, ownedEmotes: [] },
   },
   'signed-in-eligible': {
     user: { id: 'user-1', email: 'keefe@example.com' },
@@ -294,8 +323,31 @@ function fakeFrom(table) {
 }
 
 function fakeRpc(name, args) {
-  // No RPC behaviour is required by the current renderers list; resolve
-  // benignly so any incidental call doesn't throw and stall a screen.
+  // claim_onboarding_coin needs REAL behaviour, not a benign no-op: the
+  // onboarding tour's buy-waving step reads coinBalance() (derived from the
+  // profile's coin_adjustment) to decide whether the forced purchase is
+  // affordable. Mirrors supabase/migration_onboarding.sql's function
+  // exactly - same refusal conditions, same +1 coin_adjustment grant on
+  // success - so the fixture layer models the coin actually landing.
+  if (name === 'claim_onboarding_coin') {
+    const me = tables.profiles[0]
+    if (!me) return Promise.resolve({ data: false, error: { message: 'No profile' } })
+    const alreadyDisqualified = me.onboarding_coin_claimed
+      || Math.floor(Math.floor(me.pizzas || 0) / 12) >= 1
+      || (me.coin_adjustment || 0) !== 0
+      || (me.owned_emotes || []).includes('waving')
+      || me.waving_free
+    if (alreadyDisqualified) {
+      me.onboarding_coin_claimed = true
+      return Promise.resolve({ data: false, error: null })
+    }
+    me.coin_adjustment = (me.coin_adjustment || 0) + 1
+    me.onboarding_coin_claimed = true
+    return Promise.resolve({ data: true, error: null })
+  }
+  // No other RPC behaviour is required by the current renderers list;
+  // resolve benignly so any incidental call doesn't throw and stall a
+  // screen.
   return Promise.resolve({ data: null, error: null })
 }
 
@@ -315,6 +367,7 @@ function fakeChannel() {
 let installedSupabase = null
 let installedSetUser = null
 let installedRenderers = null
+let installedState = null
 
 function applyPreset(name) {
   const preset = PRESETS[name]
@@ -326,12 +379,26 @@ function applyPreset(name) {
   window.__reviewFixtures.user = preset.user ? clone(preset.user) : null
   window.__reviewFixtures.profile = preset.profile ? clone(preset.profile) : null
   window.__reviewFixtures.sessions = tables.sessions.slice()
+  // Guest-only local state (pizzas/ownedEmotes/log) lives in main.js's
+  // module-level `state` object, not in the fixture profile/sessions
+  // tables - those only model what a SIGNED-IN chef's data looks like.
+  // Presets that need to seed a guest's coinsEarned()/ownedEmotes() (e.g.
+  // guest-earned-coin) mutate it directly here.
+  if (installedState) {
+    installedState.pizzas = preset.guestState?.pizzas ?? 0
+    installedState.ownedEmotes = preset.guestState?.ownedEmotes ? preset.guestState.ownedEmotes.slice() : []
+    installedState.log = preset.sessions.map(s => ({
+      id: s.id, task: s.task, minutes: s.minutes, pizzas: s.pizzas,
+      icon: s.icon, type: s.type, completed_at: s.completed_at,
+    }))
+  }
 }
 
-export function installReviewHarness({ supabase, setUser, renderers }) {
+export function installReviewHarness({ supabase, setUser, renderers, state }) {
   installedSupabase = supabase
   installedSetUser = setUser
   installedRenderers = renderers
+  installedState = state || null
 
   supabase.from = fakeFrom
   supabase.rpc = fakeRpc

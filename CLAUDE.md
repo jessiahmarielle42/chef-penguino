@@ -55,13 +55,19 @@ branches of the onboarding tour entirely, so a clean guest run proves
 almost nothing about a signed-in report.
 
 Before claiming anything is fixed, run the fixture preset that matches the
-reporter:
-- `guest` — not signed in, empty log.
-- `signed-in-eligible` — brand-new signup, qualifies for the onboarding coin.
-- `signed-in-ineligible-many-sessions` — the admin's real account shape:
-  Lv 10, already holds coins (so `isEligibleForOnboardingCoin()` is false,
-  which SKIPS several tour steps), and ~7 sessions dated today so the day
-  sheet has many rows.
+reporter. Four personas cover the onboarding tour's real branch points, and
+**every onboarding change must pass all four end-to-end before shipping**:
+- `guest` (S1) — brand-new guest, not signed in, empty log, would qualify
+  for the onboarding coin once they sign in (`guestWouldQualify()` true).
+- `guest-earned-coin` (S2) — guest replaying who already earned a coin
+  locally (`guestWouldQualify()` false) — must NOT be promised a coin the
+  post-signin merge would refuse to grant.
+- `signed-in-eligible` (S4) — brand-new signup, qualifies for the
+  onboarding coin (`isEligibleForOnboardingCoin()` true).
+- `signed-in-ineligible-many-sessions` (S3) — the admin's real account
+  shape: Lv 10, already holds coins (`isEligibleForOnboardingCoin()` is
+  false, which SKIPS several tour steps), and ~7 sessions dated today so
+  the day sheet has many rows.
 
 Drive the full flow with `node app/review/tour.mjs <preset>` and read the
 per-step log + screenshots. If a report is about a signed-in user, a guest

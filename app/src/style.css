@@ -134,6 +134,26 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* iOS black-translucent (index.html) forces white status-bar text with no
+   background of its own - this fixed strip guarantees contrast in BOTH
+   themes (in light mode it reads as a deliberate dark notch bar) and
+   collapses to 0 height in normal browser tabs, where the safe-area inset
+   is 0. z-index 40 is a deliberate middle ground from a survey of the
+   existing scale: above ordinary app content (.tabbar 3, .app 2) so it
+   isn't overdrawn by anything a chef scrolls under, but below every
+   overlay/popup/toast/tour layer that should still paint over the notch
+   itself (.toast 45, .cal-scrim 50, .cal-sheet 60, #bug-fab 65, .overlay
+   70, .tour-root 90). */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: env(safe-area-inset-top, 0px);
+  background: #120c09;
+  z-index: 40;
+  pointer-events: none;
+}
+
 #app {
   height: 100vh;
   height: 100dvh;
@@ -3060,6 +3080,9 @@ img.shop-image {
   position: fixed; border-radius: 1rem; border: 3px solid var(--gold); pointer-events: none;
   box-shadow: 0 0 0 4px rgba(246,198,75,0.25), 0 0 22px rgba(246,198,75,0.55);
   animation: tourPulse 1.6s ease-in-out infinite;
+  /* Above .tour-block's full-screen scrim (z-index 1) so the ring/card/hint
+     chrome never gets dimmed by the welcome step's own overlay. */
+  z-index: 2;
 }
 .tour-ring[hidden] { display: none; }
 @keyframes tourPulse {
@@ -3069,6 +3092,7 @@ img.shop-image {
 .tour-arrow {
   position: fixed; font-size: 1.75rem; pointer-events: none; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
   animation: tourBounce 1.1s ease-in-out infinite;
+  z-index: 2;
 }
 .tour-arrow[hidden] { display: none; }
 @keyframes tourBounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(6px); } }
@@ -3081,6 +3105,7 @@ img.shop-image {
 .tour-card.popup {
   position: fixed; margin: 0; max-width: none; padding: 1rem 1.125rem;
   text-align: left; pointer-events: none; animation: none;
+  z-index: 2;
 }
 .tour-card.popup p { margin: 0; font-size: 0.875rem; line-height: 1.45; color: var(--cream); text-align: center; }
 .tour-card[hidden] { display: none; }
@@ -3097,7 +3122,7 @@ img.shop-image {
      .tour-block elements, so it paints on top with no z-index at all), but
      given an explicit z-index above .tour-block's so it can't silently
      regress if that markup order ever changes. */
-  z-index: 2;
+  z-index: 3;
 }
 .tour-skip-btn {
   border: 1px solid rgba(246,198,75,0.4); background: linear-gradient(180deg, #FFD873, var(--gold) 60%, var(--gold-deep));
@@ -3111,6 +3136,7 @@ img.shop-image {
 .tour-hint {
   position: fixed; text-align: center;
   color: var(--cream); opacity: 0.85; font-size: 0.75rem; font-weight: 700; pointer-events: none;
+  z-index: 2;
 }
 .tour-hint[hidden] { display: none; }
 
