@@ -4945,25 +4945,23 @@ function ensureBugFab() {
     bugFabEl.id = 'bug-fab'
     bugFabEl.type = 'button'
     bugFabEl.setAttribute('aria-label', 'Report a bug or suggestion')
-    // SOLID bug silhouette, matching the reference the user supplied: a
-    // filled rounded body with the seam and the two dots knocked OUT of it
-    // (fill-rule evenodd), plus stroked antennae and three legs a side.
-    // An all-stroke outline version was tried first and read as a spidery
-    // scribble at FAB size - at ~21px the body has to be a solid mass for
-    // the shape to be legible as a bug at a glance.
+    // Lucide "bug" icon, verbatim from the reference the user supplied -
+    // all-stroke, no fills. Do not substitute a solid silhouette: an
+    // earlier "more legible at small size" redraw was rejected outright.
     bugFabEl.innerHTML = `
-      <svg viewBox="0 0 24 24" width="1.4rem" height="1.4rem" aria-hidden="true">
-        <g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
-          <path d="M8.4 4.2 6.6 2.4" />
-          <path d="M15.6 4.2 17.4 2.4" />
-          <path d="M5.2 10.4H2.6" />
-          <path d="M18.8 10.4h2.6" />
-          <path d="M5.2 14.6 2.8 15.8" />
-          <path d="M18.8 14.6 21.2 15.8" />
-          <path d="M6.6 18.4 5 20.4" />
-          <path d="M17.4 18.4 19 20.4" />
-        </g>
-        <path fill="currentColor" fill-rule="evenodd" d="M12 3.1c2.06 0 3.78 1.4 4.35 3.28A6.3 6.3 0 0 1 18.5 11v3.1c0 3.7-2.91 6.7-6.5 6.7s-6.5-3-6.5-6.7V11c0-1.76.72-3.35 1.87-4.49A4.54 4.54 0 0 1 12 3.1Zm-.95 4.7v10.9a.95.95 0 0 0 1.9 0V7.8a.95.95 0 0 0-1.9 0Zm.95 2.06a1.35 1.35 0 1 0 0-2.7 1.35 1.35 0 0 0 0 2.7Z" />
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="1.4rem" height="1.4rem" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="m8 2 1.88 1.88"/>
+        <path d="M14.12 3.88 16 2"/>
+        <path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"/>
+        <path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"/>
+        <path d="M12 20v-9"/>
+        <path d="M6.53 9C4.6 8.8 3 7.1 3 5"/>
+        <path d="M6 13H2"/>
+        <path d="M3 21c0-2.1 1.7-3.9 3.8-4"/>
+        <path d="M20.97 5c0 2.1-1.6 3.8-3.5 4"/>
+        <path d="M22 13h-4"/>
+        <path d="M17.2 17c2.1.1 3.8 1.9 3.8 4"/>
       </svg>
     `
     bugFabEl.addEventListener('click', openBugReport)
@@ -9650,7 +9648,7 @@ function buildOnboardingSteps() {
     // applies to every step with a real getTarget().
     probe: () => !!document.querySelector('[data-action="add-to-homescreen"]'),
     getTarget: () => document.querySelector('[data-action="add-to-homescreen"]'),
-    text: `<b>Add to Homescreen</b> installs Chef Penguino like a real app!`,
+    text: `<b>Add to Homescreen</b> installs Chef Penguino like a real app!<br>That's it, happy cooking!`,
     // Tapping the spotlighted row navigates to the guide subpage, which
     // makes the target vanish - ready() then goes false forever (this is
     // the LAST step) and would otherwise leave #tour-root (Skip Tutorial)
