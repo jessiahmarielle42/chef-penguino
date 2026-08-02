@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.4.1'
+const APP_VERSION = 'v2.4.4.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -439,12 +439,16 @@ function applyTheme() {
 function syncThemeColorMeta() {
   const bg = getComputedStyle(document.documentElement).getPropertyValue('--page-bg').trim()
   if (!bg) return
-  // Targets the UNCONDITIONAL (no `media` attribute) theme-color meta -
-  // index.html also ships a light/dark `prefers-color-scheme`-scoped pair
-  // for the very first paint, before this script has even run. This plain
-  // one is appended after them in the DOM, so it's the LAST matching meta
-  // (which wins) and becomes the single source of truth for every in-app
-  // theme change from here on, independent of the OS-level scheme.
+  // index.html ships a light/dark `prefers-color-scheme`-scoped theme-color
+  // pair so the very first paint is right before this script runs. Those
+  // MUST be removed the moment we take over: the browser uses the FIRST
+  // theme-color meta whose media matches, not the last. With the OS in dark
+  // mode, the media="(prefers-color-scheme: dark)" tag matched and won
+  // outright, so an in-app switch to light mode never reached the status
+  // bar - it tracked the OS setting forever. Dropping them leaves exactly
+  // one unconditional meta as the single source of truth, which is what the
+  // in-app toggle needs to drive.
+  document.querySelectorAll('meta[name="theme-color"][media]').forEach(m => m.remove())
   let meta = document.querySelector('meta[name="theme-color"]:not([media])')
   if (!meta) {
     meta = document.createElement('meta')
