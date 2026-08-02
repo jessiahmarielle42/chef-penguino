@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.4.2'
+const APP_VERSION = 'v2.4.5.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -759,6 +759,7 @@ async function boot() {
 if (import.meta.env.VITE_REVIEW) {
   import('../review/reviewHarness.js').then((mod) => mod.installReviewHarness({
     supabase,
+    state,
     setUser: (user, profile) => { currentUser = user; currentProfile = profile },
     renderers: {
       renderAdminDashboard, renderModerationCenter, renderSystemNotifications,
@@ -8257,6 +8258,23 @@ function isEligibleForOnboardingCoin() {
   return true
 }
 
+// Predicts whether a GUEST would receive the onboarding coin after signing
+// in and merging - mirrors isEligibleForOnboardingCoin() minus the
+// signed-in-profile-only checks (onboarding_coin_claimed doesn't exist for
+// a guest yet). Deliberately checks ownedEmotes().includes('waving')
+// directly rather than isOwned('waving')/wavingFreeForCurrentUser() - that
+// helper always reports waving as "owned" for a guest (it's free until
+// sign-in), which would make this permanently false; what matters here is
+// whether the guest has actually PURCHASED waving (persisted in
+// state.ownedEmotes), the same thing the server checks post-merge.
+function guestWouldQualify() {
+  if (isSignedIn()) return false
+  if (coinsEarned() >= 1) return false
+  if (coinAdjustment() !== 0) return false
+  if (ownedEmotes().includes('waving')) return false
+  return true
+}
+
 function onboardingDoneForCurrentUser() {
   return isSignedIn() ? currentProfile?.onboarding_done === true : !!state.onboardingDone
 }
@@ -8329,6 +8347,7 @@ function startOnboardingTour(resumeAfterId) {
     backJumps: 0,
     retryId: null,
     maxIndexReached: startIndex,
+    lastOcclusionCheckAt: 0,
   }
   // Suppressed for the whole tour, not just the timer steps - simplest way
   // to guarantee the screen never auto-darkens mid-instruction. Restored to
@@ -8464,6 +8483,16 @@ function tourSync() {
   let ready = step.ready ? step.ready() : true
   if (!ready) {
     tour.notReadyCount = (tour.notReadyCount || 0) + 1
+    // Generic backstop for the LAST step only: if it's the final step (e.g.
+    // add-to-homescreen, whose target vanishes once the chef taps through to
+    // the guide subpage) and it's stayed not-ready for ~5s of retries (20 *
+    // 250ms), the tour would otherwise hide its chrome but leave #tour-root
+    // (and the Skip Tutorial button) mounted forever with nothing left to
+    // recover it. End the tour instead of waiting indefinitely.
+    if (tour.index === tour.steps.length - 1 && tour.notReadyCount >= 20) {
+      endOnboardingTour(true)
+      return
+    }
     // Self-healing: if the real screen has moved on faster than the tour
     // card was tapped, the current step's ready() can go permanently
     // false (e.g. mid-tour the chef already advanced past this screen).
@@ -8870,6 +8899,28 @@ function tourPositionForStep(step) {
     target.scrollIntoView({ block: 'center', behavior: 'auto' })
     rect = tourTargetRect(target, vp)
   }
+  // Occlusion check: a target can sit fully inside the visual viewport (the
+  // outOfView guard above finds nothing wrong) yet still be hidden behind
+  // fixed chrome like .tabbar - e.g. "See All Sessions" spotlighted while
+  // sitting behind the tab bar. Blockers then swallow scroll gestures, so
+  // the chef can't rescue it manually. Probe the target's centre point with
+  // elementFromPoint; if something else is on top, scroll the target into
+  // view and re-measure. Modal targets never scroll, so skip there. Rate
+  // limited to once per 800ms per step-entry so it can't fight re-syncs.
+  if (target && !target.closest('.popup')) {
+    const now = Date.now()
+    if (!tour.lastOcclusionCheckAt || now - tour.lastOcclusionCheckAt > 800) {
+      tour.lastOcclusionCheckAt = now
+      const cx = vp.offsetLeft + rect.left + rect.width / 2
+      const cy = vp.offsetTop + rect.top + rect.height / 2
+      const topEl = document.elementFromPoint(cx, cy)
+      const occluded = topEl && topEl !== target && !target.contains(topEl) && !topEl.contains(target)
+      if (occluded) {
+        target.scrollIntoView({ block: 'center', behavior: 'auto' })
+        rect = tourTargetRect(target, vp)
+      }
+    }
+  }
   // Uniform pad on all four sides so the ring stays concentric with the
   // target - an earlier asymmetric bottom pad (meant to cover buttons'
   // raised 3D shadow lip) skewed the box off-center, which on a pill button
@@ -9008,6 +9059,10 @@ function tourAdvanceOnRealClick(selector) {
 
 function buildOnboardingSteps() {
   const eligible = isEligibleForOnboardingCoin()
+  // Computed once here (same as `eligible`) so the welcome step's promise
+  // and the guest-coin-prompt tail popup can never disagree with each other
+  // mid-run.
+  const guestQualifies = guestWouldQualify()
   // Closure-scoped (fresh per tour run) so a replayed tour re-arms its own
   // 2-second "let the session actually run" delay from scratch.
   let pauseArmedAt = null
@@ -9016,15 +9071,23 @@ function buildOnboardingSteps() {
   // pause overlay is already open" check), same pattern/reason as
   // confirmDeleteAdvanced below.
   let pauseTimerAdvanced = false
+  // Guards buy-waving's zero-balance skip so it can only ever fire once -
+  // watch() re-evaluates every sync, and coinBalance() < 1 stays true for
+  // as long as the chef hasn't bought anything, which without this flag
+  // would call tourAdvance() on every single sync and race past several
+  // later steps instead of advancing exactly one.
+  let buyWavingSkipped = false
   // Same double-advance guard, shared between open-day's click-delegation
   // path and its belt-and-braces watch() (see that step below).
   let openDayAdvanced = false
-  // Index-scoped one-shot navigation guard (see shopKickedForIndex/
-  // homeKickedForIndex/settingsKickedForIndex below for the full rationale)
-  // so replaying the tour from Settings -> Tutorials -> Replay Tutorial
-  // (background screen is Settings, not Home) navigates to Home once before
-  // the Cook FAB step waits for its target.
-  let cookHomeKickedForIndex = -1
+  // Rate-limited (not index-scoped one-shot) re-kick: on real network
+  // latency an async delete's late re-render (afterLogChange) can clobber a
+  // screen kicked via renderHome()/renderSettings()/renderShop() AFTER the
+  // kick already ran, stranding the tour since a one-shot guard is spent.
+  // The 250ms retry tick keeps calling ready(), so a floor of 1200ms between
+  // kicks recovers from any late clobber while preventing render-loop
+  // thrash. See tap-cook/tap-emote-demo/add-to-homescreen/buy-waving below.
+  let cookHomeLastKickAt = 0
   // Captured in the results step's enter() once the practice session has
   // definitely been written - the specific entry the later swipe-row/
   // tap-delete/confirm-delete steps must target, so they can't drift onto
@@ -9042,9 +9105,15 @@ function buildOnboardingSteps() {
       id: 'welcome',
       kind: 'explain',
       getTarget: () => null,
+      // Signed-in eligible (S4): coin-promise. Signed-in ineligible (S3):
+      // plain. Guest who would qualify after signing in (S1): coin-promise
+      // worded for the sign-in-later reality. Guest who wouldn't (S2):
+      // plain, same as S3 - no promise the tail popup can't back up.
       text: eligible
         ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes pizzas - one hour of focus makes one pizza. Finish this quick tour and earn a <b>FREE Penguino Coin</b>!`
-        : `<b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes pizzas - one hour of focus makes one pizza. Let's take a quick look around.`,
+        : (!isSignedIn() && guestQualifies)
+          ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes pizzas - one hour of focus makes one pizza. Finish this quick tour and sign in to earn a <b>FREE Penguino Coin</b>!`
+          : `<b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes pizzas - one hour of focus makes one pizza. Let's take a quick look around.`,
     },
     // ---------- 2. Point at the Cook button ----------
     {
@@ -9053,19 +9122,9 @@ function buildOnboardingSteps() {
       ready: () => {
         const btn = document.querySelector('.tab-fab[data-action="cook"]')
         if (btn) return true
-        // Index-scoped, not a plain boolean: a one-shot-per-TOUR-RUN flag
-        // conflates "have I ever seen this target" with "have I already
-        // tried navigating for THIS visit to the step" - it's wrong the
-        // moment the target lives on a screen the tour could plausibly
-        // revisit later (see homeKicked/settingsKicked/shopKicked below,
-        // which hit exactly that). tap-cook's target never gets revisited
-        // after this step advances (tour.index moves on, so this ready()
-        // is never evaluated again), so a plain boolean happened to work
-        // here, but it's converted to the same index-scoped pattern for
-        // consistency: fires renderHome() at most once per visit to THIS
-        // step (tracked by tour.index), never leaves a stale flag that
-        // could suppress a legitimate future navigation.
-        if (cookHomeKickedForIndex !== tour.index) { cookHomeKickedForIndex = tour.index; renderHome() }
+        // Rate-limited re-kick (see cookHomeLastKickAt above): recovers even
+        // if a late async re-render clobbers the Home screen after the kick.
+        if (Date.now() - cookHomeLastKickAt > 1200) { cookHomeLastKickAt = Date.now(); renderHome() }
         return false
       },
       getTarget: () => document.querySelector('.tab-fab[data-action="cook"]'),
@@ -9419,24 +9478,14 @@ function buildOnboardingSteps() {
   // straight to Add to Homescreen if there's nothing to demo either).
   //
   // Side-effecting `ready()` guards navigate to the right screen before
-  // waiting for its real DOM to show up. Index-scoped (the step's OWN
-  // tour.index, not a plain per-tour-run boolean) - critical, not
-  // cosmetic: a plain boolean conflates "have I ever seen this target"
-  // with "have I already tried navigating for THIS visit to the step".
-  // tap-emote-demo's target (.hero-tap) and add-to-homescreen's target
-  // both live on screens (Home, Settings) the tour is ALREADY on earlier
-  // in the run (the tour starts on Home; Home is also where Cook is
-  // tapped from) - a plain boolean got spent then, on a DIFFERENT step's
-  // visit, and by the time these steps actually needed to navigate (e.g.
-  // after the delete flow leaves a signed-in chef on the History screen),
-  // the guard was already burned and never fired again, permanently
-  // stranding the tour with the target never appearing. Scoping the guard
-  // to `tour.index` means each step gets exactly one navigation attempt
-  // PER VISIT to that step, and can never be pre-spent by an earlier,
-  // unrelated step's evaluation.
-  let shopKickedForIndex = -1
-  let homeKickedForIndex = -1
-  let settingsKickedForIndex = -1
+  // waiting for its real DOM to show up.
+  // Rate-limited re-kicks (see cookHomeLastKickAt above for the full
+  // rationale) - replaces the old index-scoped one-shot machinery, which a
+  // late async re-render (e.g. afterLogChange firing after the kick already
+  // ran, on real network latency) could clobber with no way to recover.
+  let shopLastKickAt = 0
+  let homeLastKickAt = 0
+  let settingsLastKickAt = 0
   // Tracks the coin/sign-in popups' own overlay element so their steps can
   // self-heal (watch()) if it ever disappears from the DOM out from under
   // them - e.g. a screen re-render elsewhere replacing app.innerHTML while
@@ -9454,11 +9503,7 @@ function buildOnboardingSteps() {
     ready: () => {
       const btn = document.querySelector('.hero-tap[data-action="emote"]')
       if (btn) return true
-      // Index-scoped - see the comment above shopKickedForIndex for why a
-      // plain boolean here stranded the tour (Home, this step's screen, is
-      // also where the tour starts, so a plain flag got burned long before
-      // this step ever needed to navigate).
-      if (homeKickedForIndex !== tour.index) { homeKickedForIndex = tour.index; renderHome() }
+      if (Date.now() - homeLastKickAt > 1200) { homeLastKickAt = Date.now(); renderHome() }
       return false
     },
     // Pure, side-effect-free - lets the self-heal scan land here.
@@ -9481,13 +9526,7 @@ function buildOnboardingSteps() {
     ready: () => {
       const el = document.querySelector('[data-action="add-to-homescreen"]')
       if (el) return true
-      // Index-scoped - see the comment above shopKickedForIndex for why a
-      // plain boolean here stranded the tour on the History screen for a
-      // signed-in chef (Settings, this step's screen, may have been the
-      // background for an earlier step - e.g. a replayed tour - which
-      // would burn a plain flag long before this step ever needed to
-      // navigate).
-      if (settingsKickedForIndex !== tour.index) { settingsKickedForIndex = tour.index; renderSettings() }
+      if (Date.now() - settingsLastKickAt > 1200) { settingsLastKickAt = Date.now(); renderSettings() }
       return false
     },
     // Pure, side-effect-free - lets the self-heal scan land here. This row
@@ -9499,6 +9538,29 @@ function buildOnboardingSteps() {
     probe: () => !!document.querySelector('[data-action="add-to-homescreen"]'),
     getTarget: () => document.querySelector('[data-action="add-to-homescreen"]'),
     text: `<b>Add to Homescreen</b> installs Chef Penguino like a real app!`,
+    // Tapping the spotlighted row navigates to the guide subpage, which
+    // makes the target vanish - ready() then goes false forever (this is
+    // the LAST step) and would otherwise leave #tour-root (Skip Tutorial)
+    // mounted with nothing to end it. End the tour on that same tap instead
+    // of waiting on the generic explain-step dismiss. Deliberately does NOT
+    // preventDefault/stopPropagation - the row's real handler must still
+    // fire and open the guide; this only ALSO ends the tour alongside it.
+    // Same deferred-by-a-tick + still-on-this-step guard as
+    // tourAdvanceOnRealClick, so a click that entered this step doesn't get
+    // caught by this listener before it's even attached.
+    enter: () => {
+      const step = tour ? tour.steps[tour.index] : null
+      const onClick = (e) => {
+        const t = e.target
+        if (!(t instanceof Element) || !t.closest('[data-action="add-to-homescreen"]')) return
+        endOnboardingTour(true)
+      }
+      const attachId = setTimeout(() => {
+        if (tour && tour.steps[tour.index] === step) document.addEventListener('click', onClick, true)
+      }, 0)
+      if (tour) tour.timers.push(attachId)
+      return () => document.removeEventListener('click', onClick, true)
+    },
   }
 
   if (isSignedIn()) {
@@ -9578,13 +9640,7 @@ function buildOnboardingSteps() {
           kind: 'action',
           ready: () => {
             if (document.querySelector('.shop-sort-row')) return true
-            // Index-scoped - see the comment above shopKickedForIndex's
-            // declaration for why a plain boolean here stranded the tour:
-            // this is the FIRST of the three navigating steps in the
-            // eligible branch, so it happened to be less exposed than
-            // tap-emote-demo/add-to-homescreen, but the same shape applies
-            // if the chef ever revisits Shop before reaching this step.
-            if (shopKickedForIndex !== tour.index) { shopKickedForIndex = tour.index; renderShop() }
+            if (Date.now() - shopLastKickAt > 1200) { shopLastKickAt = Date.now(); renderShop() }
             return false
           },
           // Pure, side-effect-free - lets the self-heal scan land here.
@@ -9596,7 +9652,15 @@ function buildOnboardingSteps() {
           // already handles bringing it on screen (applies to every step
           // with a real getTarget()), so no extra scroll call is needed
           // here.
-          watch: () => { if (isOwned('waving')) tourAdvance() },
+          watch: () => {
+            if (isOwned('waving')) { tourAdvance(); return }
+            // Grant-coin's RPC may have failed (network, RLS, etc.), or the
+            // balance may have been consumed elsewhere between grant and
+            // here - either way, never hold the tour hostage on a forced
+            // purchase the chef can't afford. Skip past it instead of
+            // stranding them with Skip Tutorial as the only way out.
+            if (!buyWavingSkipped && coinBalance() < 1) { buyWavingSkipped = true; tourAdvance() }
+          },
         },
         // Step 10 (equip-waving) removed: confirmBuy() already auto-equips
         // immediately after a purchase, so that step spotlit a control that
@@ -9636,11 +9700,22 @@ function buildOnboardingSteps() {
         getTarget: () => null,
         text: '',
         enter: () => {
-          const o = overlay(`
+          // Qualifying guest (S1) keeps the coin-redeem pitch with the coin
+          // image. A guest who wouldn't get a coin (S2 - already earned one
+          // locally) gets the same popup shape/buttons but no coin promise -
+          // sign-in is pitched purely on saving progress, so it never
+          // implies a coin the merge would then refuse to grant.
+          const o = overlay(guestQualifies ? `
             <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
             ${coinImg('xl')}
             <h3>Sign in to redeem your free coin</h3>
             <p>Free coin only applies if you've never earned one before. Either way, signing in saves your progress, pizzas and coins.</p>
+            ${googleBtn()}
+            <button type="button" class="btn-secondary" style="margin-top:10px" data-action="continue-guest">Continue without signing in</button>
+          ` : `
+            <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
+            <h3>Sign in to save your progress</h3>
+            <p>Your pizzas and coins sync to your account, so you'll never lose them.</p>
             ${googleBtn()}
             <button type="button" class="btn-secondary" style="margin-top:10px" data-action="continue-guest">Continue without signing in</button>
           `, { popupClass: 'popup-wide', dismissable: false })

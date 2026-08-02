@@ -204,6 +204,18 @@ async function main() {
       })
       if (overlayHandled) { step += 1; await page.waitForTimeout(900); continue }
 
+      // confirmBuy()'s "Yes, unlock it?" popup (buy-waving step, S4 branch)
+      // pops up OVER a still-visible tour card/ring (buy-waving isn't a
+      // silent step), so it needs its own check independent of the
+      // card-hidden guard above. Real confirm tap via data-action="yes".
+      const confirmBuyHandled = await page.evaluate(() => {
+        const btn = document.querySelector('.overlay.show [data-action="yes"]')
+        if (!btn) return false
+        btn.click()
+        return true
+      })
+      if (confirmBuyHandled) { step += 1; await page.waitForTimeout(900); continue }
+
       // Delete step: the revealed action buttons sit BEHIND the row in the
       // stacking order, so elementFromPoint at the ring centre returns the
       // row itself - clicking that closes the swipe instead of deleting.

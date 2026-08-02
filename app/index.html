@@ -20,14 +20,15 @@
          independent of the OS-level scheme these two only cover pre-JS). -->
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F4ECE0" />
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#120c09" />
-    <!-- `default` (not `black`, and NOT `black-translucent`) lets iOS pick
-         legible status bar text against whatever theme-color is currently
-         set, instead of forcing permanently-light text that's unreadable
-         against the light theme (black-translucent) or always rendering a
-         plain white strip regardless of the app's theme (the previous
-         `black` value here, and the default no-meta-at-all behaviour). -->
+    <!-- `default` renders an opaque WHITE bar on iOS standalone (the webview
+         starts BELOW it; no meta/manifest colour ever reaches that bar) -
+         black-translucent is the only mode where the webview goes fullscreen
+         and the app's own background paints under the clock. viewport-fit=
+         cover and .statusbar's safe-area padding are already in place to
+         handle the fullscreen webview; body::before (style.css) covers the
+         status text's own legibility now that theme-color can't reach it. -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <!-- viewport-fit=cover is required for env(safe-area-inset-*) to report real
          values on iOS; without it they resolve to 0, which is why the header
          padded with a hardcoded guess and the tab bar's bottom inset never
