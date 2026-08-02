@@ -209,10 +209,14 @@ async function main() {
         if (card && !card.hidden) return false
         const btn = o.querySelector('[data-action="continue-guest"], [data-action="ok"]')
         if (!btn) return false
+        const heading = o.querySelector('h2,h3,.overlay-title')?.textContent?.trim() || null
         btn.click()
-        return true
+        return { heading }
       })
-      if (overlayHandled) { step += 1; await page.waitForTimeout(900); continue }
+      if (overlayHandled) {
+        console.log(`  [overlay] dismissed - heading: "${overlayHandled.heading}"`)
+        step += 1; await page.waitForTimeout(900); continue
+      }
 
       // confirmBuy()'s "Yes, unlock it?" popup (buy-waving step, S4 branch)
       // pops up OVER a still-visible tour card/ring (buy-waving isn't a
