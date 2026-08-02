@@ -158,6 +158,29 @@ async function main() {
       console.log(JSON.stringify(log[log.length - 1]))
       await shot(page, `${String(step).padStart(2, '0')}-${slug(info.cardText)}`)
 
+      // Fix 1 numeric check: on the first action step with a visible blocker
+      // and card, confirm the blocker's real dim color and that the card
+      // sits ABOVE the blocker in the stacking order at its own centre.
+      if (!global.__blockerChecked && info.blockerCount > 0) {
+        const check = await page.evaluate(() => {
+          const block = document.querySelector('.tour-block:not([hidden])')
+          const card = document.getElementById('tour-card')
+          if (!block || !card || card.hidden) return null
+          const bg = getComputedStyle(block).backgroundColor
+          const r = card.getBoundingClientRect()
+          const cx = r.left + r.width / 2, cy = r.top + r.height / 2
+          const stack = document.elementsFromPoint(cx, cy).map(el => el.id || el.className || el.tagName)
+          const cardIdx = stack.findIndex(s => String(s).includes('tour-card') || el_is_card(s))
+          function el_is_card(s) { return s === 'tour-card' }
+          const blockIdx = stack.findIndex(s => String(s).includes('tour-block'))
+          return { bg, stack, cardBeforeBlock: cardIdx !== -1 && (blockIdx === -1 || cardIdx < blockIdx) }
+        })
+        if (check) {
+          global.__blockerChecked = true
+          console.log('[FIX1 CHECK] blocker background + stacking:', JSON.stringify(check))
+        }
+      }
+
       if (info.cardText === lastCardText) {
         stalledCount += 1
       } else {
