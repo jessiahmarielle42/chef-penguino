@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.5.0'
+const APP_VERSION = 'v2.4.6.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -4945,7 +4945,21 @@ function ensureBugFab() {
     bugFabEl.id = 'bug-fab'
     bugFabEl.type = 'button'
     bugFabEl.setAttribute('aria-label', 'Report a bug or suggestion')
-    bugFabEl.textContent = '!'
+    bugFabEl.innerHTML = `
+      <svg viewBox="0 0 24 24" width="1.35rem" height="1.35rem" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 5.5a3 3 0 0 1 6 0v1.5" />
+        <path d="M8 9.5h8a4 4 0 0 1 4 4v1a7 7 0 0 1-7 7h-2a7 7 0 0 1-7-7v-1a4 4 0 0 1 4-4Z" />
+        <path d="M12 9.5v12" />
+        <path d="M4.5 12h3.5" />
+        <path d="M16 12h3.5" />
+        <path d="M4.8 16.5 8 15.5" />
+        <path d="M16 15.5l3.2 1" />
+        <path d="M5.3 21l2.9-2" />
+        <path d="M18.7 21l-2.9-2" />
+        <path d="M7 7l-2-2" />
+        <path d="M17 7l2-2" />
+      </svg>
+    `
     bugFabEl.addEventListener('click', openBugReport)
     document.body.appendChild(bugFabEl)
     new MutationObserver(updateBugFabVisibility).observe(app, { childList: true, subtree: true })
@@ -9110,10 +9124,10 @@ function buildOnboardingSteps() {
       // worded for the sign-in-later reality. Guest who wouldn't (S2):
       // plain, same as S3 - no promise the tail popup can't back up.
       text: eligible
-        ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes pizzas - one hour of focus makes one pizza. Finish this quick tour and earn a <b>FREE Penguino Coin</b>!`
+        ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b><br>Every minute you focus, your penguin bakes pizzas. Finish this quick tour and earn a <b>FREE Penguino Coin</b>!`
         : (!isSignedIn() && guestQualifies)
-          ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes pizzas - one hour of focus makes one pizza. Finish this quick tour and sign in to earn a <b>FREE Penguino Coin</b>!`
-          : `<b>Welcome to Chef Penguino!</b> Every minute you focus, your penguin chef bakes pizzas - one hour of focus makes one pizza. Let's take a quick look around.`,
+          ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b><br>Every minute you focus, your penguin bakes pizzas. Finish this quick tour and sign in to earn a <b>FREE Penguino Coin</b>!`
+          : `<b>Welcome to Chef Penguino!</b><br>Every minute you focus, your penguin bakes pizzas. Let's take a quick look around.`,
     },
     // ---------- 2. Point at the Cook button ----------
     {
@@ -9497,6 +9511,11 @@ function buildOnboardingSteps() {
   // reused. Owning literally nothing (equippedEmote() null - a signed-in
   // chef who never had waving_free and hasn't bought anything) means there's
   // no clip to demo, so callers below skip pushing this at all in that case.
+  // Per-visit state for the emote demo's own advance logic (reset in
+  // enter(), not shared across replays of this step).
+  let emoteTappedAt = null
+  let emoteSawVideo = false
+  let emoteDemoAdvanced = false
   const tapEmoteStep = {
     id: 'tap-emote-demo',
     kind: 'action',
@@ -9510,22 +9529,110 @@ function buildOnboardingSteps() {
     probe: () => !!document.querySelector('.hero-tap[data-action="emote"]'),
     getTarget: () => document.querySelector('.hero-tap[data-action="emote"]'),
     text: `Tap <b>Tap to emote</b> to see your chef's new move!`,
-    enter: () => tourAdvanceOnRealClick('.hero-tap[data-action="emote"]'),
+    // Deliberately does NOT advance on the real tap (unlike
+    // tourAdvanceOnRealClick) - the tap only starts the clip
+    // (playEmoteInto() swaps the hero <img> for a <video>, see ~line 1110);
+    // advancing here would cut the demo off before the chef ever sees it
+    // play. watch() below is what actually advances, once the clip has
+    // genuinely played out.
+    enter: () => {
+      emoteTappedAt = null
+      emoteSawVideo = false
+      emoteDemoAdvanced = false
+      const step = tour ? tour.steps[tour.index] : null
+      const onClick = (e) => {
+        const t = e.target
+        if (!(t instanceof Element) || !t.closest('.hero-tap[data-action="emote"]')) return
+        if (emoteTappedAt != null) return
+        emoteTappedAt = Date.now()
+        // Belt-and-braces: guarantees watch() gets re-evaluated at the 8s
+        // cap even if nothing else (DOM mutation, resize, scroll) happens
+        // to trigger a resync in the meantime - e.g. play().catch's revert
+        // already fires fast via a mutation in the normal case, but a
+        // stuck/hung decode with no further DOM change wouldn't otherwise
+        // ever get rechecked.
+        const id = setTimeout(() => { if (tour) tourSync() }, 8100)
+        if (tour) tour.timers.push(id)
+      }
+      const attachId = setTimeout(() => {
+        if (tour && tour.steps[tour.index] === step) document.addEventListener('click', onClick, true)
+      }, 0)
+      if (tour) tour.timers.push(attachId)
+      return () => document.removeEventListener('click', onClick, true)
+    },
+    watch: () => {
+      if (emoteDemoAdvanced || emoteTappedAt == null) return
+      // #hero-card is the hero container both renderHome() and
+      // renderFriendHome() use; playEmoteInto() swaps its .hero-still
+      // <img> for a shared <video> node (same class/id) while playing, and
+      // swaps it back to an <img> on 'ended' (or immediately via
+      // play().catch on a decode failure - the common case headless).
+      const hasVideo = !!document.querySelector('#hero-card video')
+      if (hasVideo) emoteSawVideo = true
+      const playedAndReverted = emoteSawVideo && !hasVideo
+      const timedOut = Date.now() - emoteTappedAt > 8000
+      if (playedAndReverted || timedOut) {
+        emoteDemoAdvanced = true
+        tourAdvance()
+      }
+    },
+  }
+
+  // Step 11.5 - between tap-emote-demo and add-to-homescreen for EVERY
+  // persona (built once, reused across all three branches below like
+  // tapEmoteStep/addHomescreenStep). Guides the chef to tap the real
+  // Settings tab themselves rather than the tour silently teleporting them
+  // there - the old renderSettings() kick used to fire the instant
+  // add-to-homescreen became current, which could preempt/clobber a tap
+  // already in flight. ready()/probe() deliberately do NOT kick to
+  // Settings themselves - while this step is current, nothing may
+  // navigate ahead of the chef's own tap (see addHomescreenStep's kick,
+  // which only ever fires once THIS step's target - the add-to-homescreen
+  // row - is what's current).
+  const goSettingsStep = {
+    id: 'go-settings',
+    kind: 'action',
+    ready: () => {
+      const tab = document.querySelector('.tab[data-tab="settings"]')
+      // Not-ready (rather than advancing here) if the add-to-homescreen
+      // row is ALREADY visible - i.e. we're already on Settings, most
+      // likely because a replayed/resumed tour landed mid-flow. Lets the
+      // forward self-heal scan (tourSync) land directly on
+      // add-to-homescreen instead of this step demanding a redundant tap
+      // on a tab the chef is already sitting on.
+      if (!tab) return false
+      if (document.querySelector('[data-action="add-to-homescreen"]')) return false
+      return true
+    },
+    probe: () => {
+      const tab = document.querySelector('.tab[data-tab="settings"]')
+      return !!tab && !document.querySelector('[data-action="add-to-homescreen"]')
+    },
+    getTarget: () => document.querySelector('.tab[data-tab="settings"]'),
+    text: `Tap <b>Settings</b> - one last thing!`,
+    enter: () => tourAdvanceOnRealClick('.tab[data-tab="settings"]'),
   }
 
   // Step 12 - the final step for EVERY branch (signed-in eligible/
   // ineligible, and guest). tourAdvance() past it already calls
   // endOnboardingTour(true) with no extra code needed here.
-  // Explain-style (not action) - dismissable with a tap anywhere, so a chef
-  // who already has the app installed isn't forced to tap this row. Still
-  // spotlights the real row via getTarget; a real tap on it works too since
-  // explain steps never block the underlying element.
+  // Action-style (not explain) - blockers apply and it can't be dismissed by
+  // tapping elsewhere; go-settings above already got the chef to Settings
+  // deliberately, so the final step should ask for one more deliberate tap,
+  // not silently accept a stray tap anywhere on the screen. Still
+  // spotlights the real row via getTarget; a real tap on it opens the guide
+  // AND ends the tour (see the delegated listener in enter() below).
   const addHomescreenStep = {
     id: 'add-to-homescreen',
-    kind: 'explain',
+    kind: 'action',
     ready: () => {
       const el = document.querySelector('[data-action="add-to-homescreen"]')
       if (el) return true
+      // Rate-limited re-kick as a clobber backstop only - this step is only
+      // ever CURRENT after go-settings has already gotten the chef to
+      // Settings via their own real tap, so this just recovers from a late
+      // async re-render clobbering that screen (see cookHomeLastKickAt's
+      // rationale above), it never preempts the chef's own navigation.
       if (Date.now() - settingsLastKickAt > 1200) { settingsLastKickAt = Date.now(); renderSettings() }
       return false
     },
@@ -9668,12 +9775,14 @@ function buildOnboardingSteps() {
         // that did nothing. tap-emote-demo is now the step right after
         // buy-waving.
         tapEmoteStep,
+        goSettingsStep,
         addHomescreenStep,
       )
     } else {
       // Not eligible: skip 7-10 entirely and silently, straight to the
       // emote demo (if there's anything to demo) or Add to Homescreen.
       if (equippedEmote()) steps.push(tapEmoteStep)
+      steps.push(goSettingsStep)
       steps.push(addHomescreenStep)
     }
   } else {
@@ -9731,7 +9840,11 @@ function buildOnboardingSteps() {
           o.querySelector('[data-action="continue-guest"]').addEventListener('click', () => {
             o.remove()
             guestCoinOverlayEl = null
-            const idx = tour.steps.findIndex(s => s.id === 'add-to-homescreen')
+            // Jump to go-settings (not straight to add-to-homescreen) - the
+            // guest tail has no emote demo to skip past, but go-settings
+            // still belongs in the sequence for every persona so the chef
+            // navigates to Settings themselves instead of being teleported.
+            const idx = tour.steps.findIndex(s => s.id === 'go-settings')
             if (idx >= 0) { tour.index = idx; tour.entered = -1; tourSync() } else tourAdvance()
           })
           return () => { o.remove(); guestCoinOverlayEl = null }
@@ -9749,6 +9862,7 @@ function buildOnboardingSteps() {
           }
         },
       },
+      goSettingsStep,
       addHomescreenStep,
     )
   }

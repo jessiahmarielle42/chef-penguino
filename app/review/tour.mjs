@@ -165,7 +165,17 @@ async function main() {
       }
       lastCardText = info.cardText
 
-      if (stalledCount >= 6) {
+      // tap-emote-demo (main.js) deliberately does NOT advance on the real
+      // tap any more - it waits for the clip to actually play out (watch()'s
+      // sawVideo-then-reverted check) or an 8s cap, whichever comes first.
+      // Muted+playsInline autoplay generally succeeds even headless (a real
+      // click is a user gesture, and mute alone already satisfies most
+      // autoplay policies), so the card can legitimately sit unchanged for
+      // the clip's real duration - give this step a much higher stall
+      // tolerance (~10.5s of polling) than every other step's ~2.1s, rather
+      // than the fixed cap declaring a false STRANDED mid-clip.
+      const stallLimit = /Tap to emote/i.test(info.cardText || '') ? 30 : 6
+      if (stalledCount >= stallLimit) {
         log.push({ step, note: `STALLED on same card text for ${stalledCount} polls - reporting as stranded` })
         console.log(JSON.stringify(log[log.length - 1]))
         break
