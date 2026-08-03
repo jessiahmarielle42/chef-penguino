@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.7.1'
+const APP_VERSION = 'v2.5.0.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -146,6 +146,24 @@ async function migrateLocalDataIfNeeded() {
   // they'd silently lose the free waving they already had.
   if (state.guestWavingFree) {
     await supabase.from('profiles').update({ waving_free: true }).eq('id', currentUser.id)
+  }
+  // Carry a guest's completed onboarding-tour purchase (completeOnboardingPurchase())
+  // into the new profile - a guest who bought waving with the tour's free
+  // coin locally must arrive server-side owning it at the SAME net-zero
+  // (owned_emotes + a matching coin_adjustment), not lose it on sign-in.
+  // Guarded by state.onboardingCoinClaimed exactly like
+  // completeOnboardingPurchase() itself is, so this can't double-grant even
+  // if migrateLocalDataIfNeeded() somehow ran twice. Assumes a genuinely
+  // fresh profile row here (owned_emotes/coin_adjustment both start at
+  // their column defaults - empty/0 - for a brand-new signup), so a direct
+  // set is safe rather than an array_append/increment.
+  if (state.onboardingCoinClaimed && state.ownedEmotes?.includes('waving') && (state.coinAdjustment || 0) > 0) {
+    await supabase.from('profiles').update({
+      owned_emotes: ['waving'],
+      coin_adjustment: state.coinAdjustment,
+      equipped_emote: 'waving',
+      onboarding_coin_claimed: true,
+    }).eq('id', currentUser.id)
   }
   state.cloudSynced = true
   save()
@@ -427,12 +445,17 @@ function load() {
     timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null,
     pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', lastSeenCoins: null,
     lightMode: false, taskTypeLabels: {}, deleteAnimations: true, onboardingDone: false,
-    onboardingResumeStep: null,
     lastHomescreenPromptAt: null, homescreenPromptDismissedForever: false,
     // Undefined until captureGuestWavingFreeCaptured() runs once at boot -
     // NOT defaulted true/false here so that helper can tell "never captured
     // yet" apart from an already-decided false.
     guestWavingFree: undefined,
+    // Guest-side mirror of profiles.coin_adjustment (see coinAdjustment())
+    // and profiles.onboarding_coin_claimed (see completeOnboardingPurchase())
+    // - lets a guest's tour purchase stay net-zero on the local derived
+    // balance and idempotent across a re-run, exactly like the signed-in RPC.
+    coinAdjustment: 0,
+    onboardingCoinClaimed: false,
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -796,7 +819,6 @@ async function boot() {
   if (data.session?.user) {
     await handleSignedIn(data.session.user)
     checkLevelUp()
-    maybeResumeOnboardingTour()
   }
 
   supabase.auth.onAuthStateChange((event, session) => {
@@ -808,7 +830,6 @@ async function boot() {
         checkPendingCoinGifts()
         checkPendingWarnings()
         ensureBugFab()
-        maybeResumeOnboardingTour()
       })
     } else if (event === 'SIGNED_OUT') {
       unsubscribeFromSocial()
@@ -859,6 +880,14 @@ if (import.meta.env.VITE_REVIEW) {
     supabase,
     state,
     setUser: (user, profile) => { currentUser = user; currentProfile = profile },
+    // Numeric test hooks for tour.mjs's onboarding-economics assertions
+    // (displayed balance +1 after coin-popup, back to base after purchase,
+    // owned state unchanged if the run is killed before purchase) - reading
+    // coinBalance()/isOwned() straight off the module rather than scraping
+    // rendered DOM text, since not every value that needs asserting (e.g.
+    // ownership) has an on-screen number to scrape.
+    getCoinBalance: coinBalance,
+    getIsOwned: isOwned,
     renderers: {
       renderAdminDashboard, renderModerationCenter, renderSystemNotifications,
       renderComposeNotification, renderSettings, renderFriends,
@@ -1017,10 +1046,26 @@ function isOwned(id) {
   return ownedEmotes().includes(id)
 }
 function coinsEarned() { return Math.floor(Math.floor(displayPizzas()) / 12) }
-// coin_adjustment is the net of coins gifted away (-) and received (+); it
-// only exists for signed-in profiles. Guests can't gift, so it's 0 for them.
-function coinAdjustment() { return currentProfile ? (currentProfile.coin_adjustment || 0) : 0 }
-function coinBalance() { return Math.max(0, coinsEarned() - ownedEmotes().length + coinAdjustment()) }
+// coin_adjustment is the net of coins gifted away (-) and received (+), PLUS
+// the +1 the onboarding tour's free coin credits when it grants waving (see
+// completeOnboardingPurchase()) - guests can't gift, so state.coinAdjustment
+// only ever moves via that one write, kept as the local mirror of the same
+// profiles.coin_adjustment column a signed-in chef has.
+function coinAdjustment() { return currentProfile ? (currentProfile.coin_adjustment || 0) : (state.coinAdjustment || 0) }
+// While the tour is active and has shown the coin-popup but not yet
+// completed the purchase, the DISPLAYED balance reads +1 for EVERYONE
+// (owners included - see coin-popup's enter()) - a render-time illusion
+// only, never written anywhere. Disappears the instant the real purchase
+// lands (tour.wavingPurchased): for someone who didn't already own waving,
+// the real balance by then already reflects the net-zero write and needs
+// no illusion; for an existing owner, the real balance never actually
+// changed (completeOnboardingPurchase()'s no-coin/no-array-change branch),
+// so the +1 was purely a teaching moment, not a promise.
+function coinBalance() {
+  const base = Math.max(0, coinsEarned() - ownedEmotes().length + coinAdjustment())
+  if (tour && tour.coinBonusShown && !tour.wavingPurchased) return base + 1
+  return base
+}
 function stashCount() { return Math.floor(displayPizzas()) % 12 }
 
 // =================================================================
@@ -2348,7 +2393,11 @@ function openTypeMenu() {
 }
 
 async function renderShop(scrollTop) {
-  if (!isSignedIn()) {
+  // The onboarding tour's buy-waving step walks a GUEST through the shop too
+  // (unified flow - see buildOnboardingSteps()) using buyEmote()/
+  // equipEmote()'s existing guest-local branches; only the sign-in gate
+  // below needs to step aside for that, never permanently.
+  if (!isSignedIn() && !tour) {
     const content = `
       <div class="friends-gate" style="display:block">
         <img src="${myAvatar()}" alt="" />
@@ -2369,9 +2418,17 @@ async function renderShop(scrollTop) {
 
   const thumb = `${BASE}assets/display-case/shop-preview.jpg`
   const shopList = sortedShopEmotes()
+  // Render-time override, never persisted: while the tour is active and
+  // hasn't completed the waving purchase yet, Waving renders Locked/buyable
+  // for EVERYONE, existing owners included - the tour always walks the same
+  // real shop tap regardless of what's actually owned underneath. The
+  // instant tour.wavingPurchased flips true, this stops overriding and the
+  // card reflects real ownership again (which, for an owner, was never
+  // touched - see completeOnboardingPurchase()).
   const cards = shopList.length ? shopList.map(e => {
-    const owned = isOwned(e.id)
-    const equipped = equippedEmote() === e.id
+    const tourLocked = !!(tour && e.id === 'waving' && !tour.wavingPurchased)
+    const owned = tourLocked ? false : isOwned(e.id)
+    const equipped = tourLocked ? false : equippedEmote() === e.id
 
     let badge
     if (equipped) badge = `<button class="badge badge-equip equipped" type="button" data-equip="${e.id}">✓ Equipped</button>`
@@ -2436,7 +2493,10 @@ async function renderShop(scrollTop) {
     })
 
     app.querySelectorAll('[data-buy]').forEach(btn => {
-      btn.addEventListener('click', () => confirmBuy(btn.dataset.buy))
+      // Tour spotlights only [data-buy="waving"] (blockers make every other
+      // buy button unreachable while it's active), but gating on `tour`
+      // alone rather than the id keeps this correct even if that changes.
+      btn.addEventListener('click', () => (tour ? confirmBuyTour : confirmBuy)(btn.dataset.buy))
     })
     app.querySelectorAll('[data-equip]').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -2468,6 +2528,72 @@ function confirmBuy(id) {
     renderShop()
     toast(`Unlocked! ${coinImg('toast-coin')} −1`)
   })
+}
+
+// Tour-mode variant of confirmBuy(), used ONLY while the onboarding tour is
+// active (see renderShop's [data-buy] wiring) - never changes normal shop
+// behaviour. Differences from confirmBuy(): no Cancel button (the tour has
+// no back-out path except Skip Tutorial - see the buy-waving step), no
+// affordability gate (the tour's own display-only +1 already covers it, and
+// an existing owner needs no coin at all - see completeOnboardingPurchase()),
+// and the write goes through completeOnboardingPurchase() instead of
+// buyEmote()/equipEmote() directly, so it's a single atomic, idempotent
+// operation server-side rather than two separate client writes.
+function confirmBuyTour(id) {
+  const e = EMOTE_BY_ID[id]
+  const o = overlay(`
+    <h3>Unlock ${escapeHtml(emoteName(e))}?</h3>
+    <p>This will spend 1 Penguino Coin.</p>
+    <div class="home-btn-col">
+      <button type="button" data-action="yes">Yes, unlock it</button>
+    </div>
+  `)
+  o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
+    o.remove()
+    await completeOnboardingPurchase()
+    shopSort = 'owned'
+    renderShop()
+    toast(`Unlocked! ${coinImg('toast-coin')} −1`)
+  })
+  return o
+}
+
+// Write-once-atomically purchase for the onboarding tour's free coin (see
+// buildOnboardingSteps()'s coin-popup/buy-waving steps). NOTHING is written
+// anywhere before this runs - the tour's "+1" balance and the shop's
+// "Locked" card for Waving are both pure render-time illusions until this
+// actually fires, on the real "Yes, unlock it" tap.
+//
+// SIGNED-IN: a single SECURITY DEFINER RPC (complete_onboarding_purchase(),
+// see supabase/migration_onboarding_v2.sql - NOT run by Claude, paste it
+// into the SQL editor yourself) does the whole thing in one transaction,
+// guarded by profiles.onboarding_coin_claimed so a retry/re-run can never
+// double-grant. Pre-migration (RPC missing) or any other RPC failure: skip
+// the write entirely and let the tour continue anyway - no toast, no
+// fallback to the old claim+client mechanics, per the brief. The chef keeps
+// touring; a real grant just doesn't happen until the migration is live.
+//
+// GUEST: purely local, same net-zero shape (owned_emotes + a matching
+// coin_adjustment) and the same claimed-flag idempotency guard
+// (state.onboardingCoinClaimed), so a guest who completes the tour arrives
+// server-side owning waving at net-zero once migrateLocalDataIfNeeded()
+// carries it over on their first sign-in (see that function).
+async function completeOnboardingPurchase() {
+  if (isSignedIn() && currentUser) {
+    try {
+      const { error } = await supabase.rpc('complete_onboarding_purchase')
+      if (!error) await refreshProfile()
+    } catch {}
+  } else if (!state.onboardingCoinClaimed) {
+    if (!isOwned('waving')) {
+      state.ownedEmotes = [...ownedEmotes(), 'waving']
+      state.coinAdjustment = (state.coinAdjustment || 0) + 1
+    }
+    state.equippedEmote = 'waving'
+    state.onboardingCoinClaimed = true
+    save()
+  }
+  if (tour) tour.wavingPurchased = true
 }
 
 // =================================================================
@@ -8154,9 +8280,9 @@ function openRenamePopup() {
 
 function showNotSignedInWarning() {
   // Mid-tour, this popup is an unguided dead-end the tutorial never
-  // mentions, and it duplicates the tour's own dedicated sign-in moment
-  // (guest-coin-prompt, later in the flow) - skip straight to what "I'll
-  // risk it" does instead of showing it.
+  // mentions (the unified tour never offers sign-in mid-run at all any
+  // more - see buildOnboardingSteps()) - skip straight to what "I'll risk
+  // it" does instead of showing it.
   if (tour) { renderDurationPicker(); return }
   const o = overlay(`
     <h3>Not signed in</h3>
@@ -8631,39 +8757,6 @@ function renderTimerLoop(justStarted) {
 
 let tour = null // non-null while active: { steps, index, entered, timers, savedAutoDarken, cleanupStep, obs }
 
-// ---- eligibility: single source of truth (step 7's coin-claim reuses this) ----
-// Mirrors supabase/migration_onboarding.sql's claim_onboarding_coin() refusal
-// conditions exactly, so the client never promises a coin the server would
-// then refuse to grant. Guests are never eligible - the coin is a signed-in
-// profile column. Every profile column read is optional-chained so this
-// stays safe pre-migration (refreshProfile() already falls back to a
-// pre-migration column set when these columns don't exist yet).
-function isEligibleForOnboardingCoin() {
-  if (!isSignedIn()) return false
-  if (currentProfile?.onboarding_coin_claimed) return false
-  if (coinsEarned() >= 1) return false
-  if (coinAdjustment() !== 0) return false
-  if (isOwned('waving')) return false
-  return true
-}
-
-// Predicts whether a GUEST would receive the onboarding coin after signing
-// in and merging - mirrors isEligibleForOnboardingCoin() minus the
-// signed-in-profile-only checks (onboarding_coin_claimed doesn't exist for
-// a guest yet). Deliberately checks ownedEmotes().includes('waving')
-// directly rather than isOwned('waving')/wavingFreeForCurrentUser() - that
-// helper always reports waving as "owned" for a guest (it's free until
-// sign-in), which would make this permanently false; what matters here is
-// whether the guest has actually PURCHASED waving (persisted in
-// state.ownedEmotes), the same thing the server checks post-merge.
-function guestWouldQualify() {
-  if (isSignedIn()) return false
-  if (coinsEarned() >= 1) return false
-  if (coinAdjustment() !== 0) return false
-  if (ownedEmotes().includes('waving')) return false
-  return true
-}
-
 function onboardingDoneForCurrentUser() {
   return isSignedIn() ? currentProfile?.onboarding_done === true : !!state.onboardingDone
 }
@@ -8699,14 +8792,11 @@ function maybeAutoStartOnboardingTour() {
   startOnboardingTour()
 }
 
-// `resumeAfterId`, when passed, starts the tour at that step's index instead
-// of the beginning - used to resume at the coin-claim steps after a Google
-// OAuth round trip (see maybeResumeOnboardingTour()). Falls back through a
-// short candidate list if that exact step isn't in this run's array (e.g. the
-// chef became ineligible for the coin between opening the sign-in prompt and
-// finishing sign-in), so it always lands somewhere sane instead of restarting
-// the whole tour from Welcome.
-function startOnboardingTour(resumeAfterId) {
+// One unified step list, identical for signed-in or guest, owner or not -
+// there is no more resume seam: the tour never spans a redirect (nothing in
+// it triggers one - Google sign-in isn't offered mid-tour any more), so it
+// always starts fresh at Welcome.
+function startOnboardingTour() {
   if (tour) return
   // A replayed tour must re-arm its own capture from scratch - a stale id
   // left over from a PREVIOUS run (e.g. Settings -> Tutorials -> Replay
@@ -8715,17 +8805,9 @@ function startOnboardingTour(resumeAfterId) {
   // session about to be created.
   lastLoggedSessionId = null
   const steps = buildOnboardingSteps()
-  let startIndex = 0
-  if (resumeAfterId) {
-    const candidates = [resumeAfterId, 'tap-emote-demo', 'add-to-homescreen']
-    for (const id of candidates) {
-      const idx = steps.findIndex(s => s.id === id)
-      if (idx >= 0) { startIndex = idx; break }
-    }
-  }
   tour = {
     steps,
-    index: startIndex,
+    index: 0,
     entered: -1,
     timers: [],
     cleanupStep: null,
@@ -8735,8 +8817,15 @@ function startOnboardingTour(resumeAfterId) {
     scanning: false,
     backJumps: 0,
     retryId: null,
-    maxIndexReached: startIndex,
+    maxIndexReached: 0,
     lastOcclusionCheckAt: 0,
+    // Economics (see coinBalance()/renderShop()/completeOnboardingPurchase()):
+    // coinBonusShown flips true once the coin-popup step is dismissed (never
+    // for an existing owner - see that step's enter()); wavingPurchased
+    // flips true once the real purchase actually lands. Nothing is written
+    // to either profile/state until wavingPurchased does.
+    coinBonusShown: false,
+    wavingPurchased: false,
   }
   // Suppressed for the whole tour, not just the timer steps - simplest way
   // to guarantee the screen never auto-darkens mid-instruction. Restored to
@@ -8748,24 +8837,16 @@ function startOnboardingTour(resumeAfterId) {
   tourSync()
 }
 
-// Consumes the OAuth-resume marker at most once (cleared immediately on
-// read, before it's acted on) so a stale/bad marker can never trap the chef
-// in a resume loop. Called from both boot() paths (initial getSession() and
-// the SIGNED_IN auth-state-change branch) since either can be the one that
-// observes the post-redirect session first.
-function maybeResumeOnboardingTour() {
-  const resumeId = state.onboardingResumeStep
-  if (!resumeId) return
-  state.onboardingResumeStep = null
-  save()
-  if (!isSignedIn() || tour) return
-  startOnboardingTour(resumeId)
-}
-
 // Navigating away from the app entirely (backgrounding, switching tabs) ends
-// the tour silently rather than trying to resume it later.
+// the tour silently - and, now that nothing is written server/state-side
+// until the purchase actually completes (see completeOnboardingPurchase()),
+// an INCOMPLETE tour must NOT mark onboarding done: markDone=false here so
+// it simply restarts from Welcome next time Home loads. Abandoning forfeits
+// nothing (nothing was granted yet) and grants nothing (nothing was
+// written). Any practice session already logged during the abandoned run is
+// left as-is - not cleaned up.
 function onTourVisibilityChange() {
-  if (document.hidden && tour) endOnboardingTour(true)
+  if (document.hidden && tour) endOnboardingTour(false)
 }
 
 function tourClearTimers() {
@@ -8789,9 +8870,6 @@ function endOnboardingTour(markDone) {
     window.visualViewport.removeEventListener('scroll', tourReposition)
   }
   state.autoDarken = tour.savedAutoDarken
-  // Defensive: any tour end clears a pending OAuth-resume marker too, so one
-  // can never survive to trap a later tour run in a loop.
-  state.onboardingResumeStep = null
   save()
   document.getElementById('tour-root')?.remove()
   tour = null
@@ -8892,18 +8970,17 @@ function tourSync() {
     // momentarily false (e.g. pause-timer's 2s arming window) isn't
     // mistaken for "the chef skipped ahead".
     //
-    // Deliberately does NOT call ready() in the scan: several steps have
-    // no ready() at all (welcome, coin-explainer, grant-coin,
-    // guest-coin-prompt) and `candidate.ready ? candidate.ready() : true`
-    // would treat those as unconditionally ready, teleporting the tour to
-    // the end. Only steps that opt in with an explicit `probe` are ever
-    // considered a match; every other step (including side-effecting
-    // ready()s like pause-timer's timer-arm or the shopKicked/homeKicked/
-    // settingsKicked screen kickers) is skipped by the scan entirely.
-    // Re-entrancy guard (tour.scanning) is scoped ONLY to the scan loop
-    // below, not the render/enter path further down, so a step's enter()
-    // that synchronously calls tourAdvance() (e.g. coin-explainer's
-    // fallback) can still recurse into tourSync() and render normally.
+    // Deliberately does NOT call ready() in the scan: several steps have no
+    // ready() at all (welcome, coin-popup) and `candidate.ready ?
+    // candidate.ready() : true` would treat those as unconditionally ready,
+    // teleporting the tour to the end. Only steps that opt in with an
+    // explicit `probe` are ever considered a match; every other step
+    // (including side-effecting ready()s like pause-timer's timer-arm or
+    // the shopKicked/homeKicked/settingsKicked screen kickers) is skipped
+    // by the scan entirely. Re-entrancy guard (tour.scanning) is scoped
+    // ONLY to the scan loop below, not the render/enter path further down,
+    // so a step's enter() that synchronously calls tourAdvance() can still
+    // recurse into tourSync() and render normally.
     //
     // The lookahead window is capped at 3 steps, not scanned to the end of
     // the array: this scan is meant to recover across ONE screen
@@ -9235,6 +9312,9 @@ function tourPositionForStep(step) {
   }
   card.querySelector('p').innerHTML = step.text
   const showHint = step.kind === 'explain' && !step.silent
+  // Per-step override (e.g. equipped-shown's "Tap anywhere to dismiss") -
+  // falls back to the original universal copy for every other explain step.
+  if (hint) hint.textContent = step.hintText || 'Tap anywhere to continue'
   const target = step.getTarget ? step.getTarget() : null
   if (!target) {
     ring.hidden = true
@@ -9447,11 +9527,13 @@ function tourAdvanceOnRealClick(selector) {
 }
 
 function buildOnboardingSteps() {
-  const eligible = isEligibleForOnboardingCoin()
-  // Computed once here (same as `eligible`) so the welcome step's promise
-  // and the guest-coin-prompt tail popup can never disagree with each other
-  // mid-run.
-  const guestQualifies = guestWouldQualify()
+  // One unified step list, identical for signed-in or guest, owner or not -
+  // see the "ONE step list" note at the top of this section. No more
+  // eligible/guestQualifies branching: everyone sees the same welcome copy,
+  // walks the same coin-popup/buy-waving/equipped-shown sequence, and the
+  // economics (who actually gets a coin) are decided entirely inside
+  // completeOnboardingPurchase() at purchase time, never here.
+  //
   // Closure-scoped (fresh per tour run) so a replayed tour re-arms its own
   // 2-second "let the session actually run" delay from scratch.
   let pauseArmedAt = null
@@ -9460,12 +9542,6 @@ function buildOnboardingSteps() {
   // pause overlay is already open" check), same pattern/reason as
   // confirmDeleteAdvanced below.
   let pauseTimerAdvanced = false
-  // Guards buy-waving's zero-balance skip so it can only ever fire once -
-  // watch() re-evaluates every sync, and coinBalance() < 1 stays true for
-  // as long as the chef hasn't bought anything, which without this flag
-  // would call tourAdvance() on every single sync and race past several
-  // later steps instead of advancing exactly one.
-  let buyWavingSkipped = false
   // Same double-advance guard, shared between open-day's click-delegation
   // path and its belt-and-braces watch() (see that step below).
   let openDayAdvanced = false
@@ -9487,6 +9563,21 @@ function buildOnboardingSteps() {
   // "the row is actually gone" check) that can both fire for the same
   // delete, which without this double-advances past the following step.
   let confirmDeleteAdvanced = false
+  // Rate-limited re-kicks (see cookHomeLastKickAt above for the full
+  // rationale) for the tail steps' own screens.
+  let shopLastKickAt = 0
+  let homeLastKickAt = 0
+  let settingsLastKickAt = 0
+  // Tracks the coin popup's own overlay element so its step can self-heal
+  // (watch()) if it ever disappears from the DOM out from under it - e.g. a
+  // screen re-render elsewhere replacing app.innerHTML while the overlay
+  // was appended to the old .app wrapper.
+  let coinPopupOverlayEl = null
+  // Per-visit state for tap-emote-demo's own advance logic (reset in
+  // enter(), not shared across replays of that step).
+  let emoteTappedAt = null
+  let emoteSawVideo = false
+  let emoteDemoAdvanced = false
 
   const steps = [
     // ---------- 1. Welcome ----------
@@ -9494,15 +9585,9 @@ function buildOnboardingSteps() {
       id: 'welcome',
       kind: 'explain',
       getTarget: () => null,
-      // Signed-in eligible (S4): coin-promise. Signed-in ineligible (S3):
-      // plain. Guest who would qualify after signing in (S1): coin-promise
-      // worded for the sign-in-later reality. Guest who wouldn't (S2):
-      // plain, same as S3 - no promise the tail popup can't back up.
-      text: eligible
-        ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b><br>Every minute you focus, your penguin bakes pizzas. Finish this quick tour and earn a <b>FREE Penguino Coin</b>!`
-        : (!isSignedIn() && guestQualifies)
-          ? `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b><br>Every minute you focus, your penguin bakes pizzas. Finish this quick tour and sign in to earn a <b>FREE Penguino Coin</b>!`
-          : `<b>Welcome to Chef Penguino!</b><br>Every minute you focus, your penguin bakes pizzas. Let's take a quick look around.`,
+      // One promise for everyone - the actual grant (or not, for an
+      // existing owner) is decided at purchase time, not here.
+      text: `${coinImg('lg')}<br><b>Welcome to Chef Penguino!</b><br>Every minute you focus, your penguin bakes pizzas. Finish this quick tour and earn a <b>FREE Penguino Coin</b>!`,
     },
     // ---------- 2. Point at the Cook button ----------
     {
@@ -9856,393 +9941,278 @@ function buildOnboardingSteps() {
         }
       },
     },
-  ]
-
-  // ---------- 7-12: coin claim, forced waving purchase, equip, tap-to-emote
-  // demo, Add to Homescreen. `eligible` (isEligibleForOnboardingCoin(),
-  // computed above) is the single source of truth for whether the coin/
-  // waving-purchase steps run at all - an ineligible signed-in chef (already
-  // claimed, already owns waving, or already earned a coin the honest way)
-  // skips 7-10 silently and picks straight back up at the emote demo (or
-  // straight to Add to Homescreen if there's nothing to demo either).
-  //
-  // Side-effecting `ready()` guards navigate to the right screen before
-  // waiting for its real DOM to show up.
-  // Rate-limited re-kicks (see cookHomeLastKickAt above for the full
-  // rationale) - replaces the old index-scoped one-shot machinery, which a
-  // late async re-render (e.g. afterLogChange firing after the kick already
-  // ran, on real network latency) could clobber with no way to recover.
-  let shopLastKickAt = 0
-  let homeLastKickAt = 0
-  let settingsLastKickAt = 0
-  // Tracks the coin/sign-in popups' own overlay element so their steps can
-  // self-heal (watch()) if it ever disappears from the DOM out from under
-  // them - e.g. a screen re-render elsewhere replacing app.innerHTML while
-  // the overlay was appended to the old .app wrapper.
-  let coinExplainerOverlayEl = null
-  let guestCoinOverlayEl = null
-
-  // Step 11 - always reachable from either branch below, so built once and
-  // reused. Owning literally nothing (equippedEmote() null - a signed-in
-  // chef who never had waving_free and hasn't bought anything) means there's
-  // no clip to demo, so callers below skip pushing this at all in that case.
-  // Per-visit state for the emote demo's own advance logic (reset in
-  // enter(), not shared across replays of this step).
-  let emoteTappedAt = null
-  let emoteSawVideo = false
-  let emoteDemoAdvanced = false
-  const tapEmoteStep = {
-    id: 'tap-emote-demo',
-    kind: 'action',
-    ready: () => {
-      const btn = document.querySelector('.hero-tap[data-action="emote"]')
-      if (btn) return true
-      if (Date.now() - homeLastKickAt > 1200) { homeLastKickAt = Date.now(); renderHome() }
-      return false
-    },
-    // Pure, side-effect-free - lets the self-heal scan land here.
-    probe: () => !!document.querySelector('.hero-tap[data-action="emote"]'),
-    getTarget: () => document.querySelector('.hero-tap[data-action="emote"]'),
-    text: `Tap <b>Tap to emote</b> to see your chef's new move!`,
-    // Deliberately does NOT advance on the real tap (unlike
-    // tourAdvanceOnRealClick) - the tap only starts the clip
-    // (playEmoteInto() swaps the hero <img> for a <video>, see ~line 1110);
-    // advancing here would cut the demo off before the chef ever sees it
-    // play. watch() below is what actually advances, once the clip has
-    // genuinely played out.
-    enter: () => {
-      emoteTappedAt = null
-      emoteSawVideo = false
-      emoteDemoAdvanced = false
-      const step = tour ? tour.steps[tour.index] : null
-      const onClick = (e) => {
-        const t = e.target
-        if (!(t instanceof Element) || !t.closest('.hero-tap[data-action="emote"]')) return
-        if (emoteTappedAt != null) return
-        emoteTappedAt = Date.now()
-        // Belt-and-braces: guarantees watch() gets re-evaluated at the 8s
-        // cap even if nothing else (DOM mutation, resize, scroll) happens
-        // to trigger a resync in the meantime - e.g. play().catch's revert
-        // already fires fast via a mutation in the normal case, but a
-        // stuck/hung decode with no further DOM change wouldn't otherwise
-        // ever get rechecked.
-        const id = setTimeout(() => { if (tour) tourSync() }, 8100)
-        if (tour) tour.timers.push(id)
-      }
-      const attachId = setTimeout(() => {
-        if (tour && tour.steps[tour.index] === step) document.addEventListener('click', onClick, true)
-      }, 0)
-      if (tour) tour.timers.push(attachId)
-      return () => document.removeEventListener('click', onClick, true)
-    },
-    watch: () => {
-      if (emoteDemoAdvanced || emoteTappedAt == null) return
-      // #hero-card is the hero container both renderHome() and
-      // renderFriendHome() use; playEmoteInto() swaps its .hero-still
-      // <img> for a shared <video> node (same class/id) while playing, and
-      // swaps it back to an <img> on 'ended' (or immediately via
-      // play().catch on a decode failure - the common case headless).
-      const hasVideo = !!document.querySelector('#hero-card video')
-      if (hasVideo) emoteSawVideo = true
-      const playedAndReverted = emoteSawVideo && !hasVideo
-      const timedOut = Date.now() - emoteTappedAt > 8000
-      if (playedAndReverted || timedOut) {
-        emoteDemoAdvanced = true
-        tourAdvance()
-      }
-    },
-  }
-
-  // Step 11.5 - between tap-emote-demo and add-to-homescreen for EVERY
-  // persona (built once, reused across all three branches below like
-  // tapEmoteStep/addHomescreenStep). Guides the chef to tap the real
-  // Settings tab themselves rather than the tour silently teleporting them
-  // there - the old renderSettings() kick used to fire the instant
-  // add-to-homescreen became current, which could preempt/clobber a tap
-  // already in flight. ready()/probe() deliberately do NOT kick to
-  // Settings themselves - while this step is current, nothing may
-  // navigate ahead of the chef's own tap (see addHomescreenStep's kick,
-  // which only ever fires once THIS step's target - the add-to-homescreen
-  // row - is what's current).
-  const goSettingsStep = {
-    id: 'go-settings',
-    kind: 'action',
-    ready: () => {
-      const tab = document.querySelector('.tab[data-tab="settings"]')
-      // Not-ready (rather than advancing here) if the add-to-homescreen
-      // row is ALREADY visible - i.e. we're already on Settings, most
-      // likely because a replayed/resumed tour landed mid-flow. Lets the
-      // forward self-heal scan (tourSync) land directly on
-      // add-to-homescreen instead of this step demanding a redundant tap
-      // on a tab the chef is already sitting on.
-      if (!tab) return false
-      if (document.querySelector('[data-action="add-to-homescreen"]')) return false
-      return true
-    },
-    // No probe: the Settings tab exists on every screen (the tabbar is
-    // omnipresent), so a probe here would make this step a scan magnet -
-    // the forward self-heal scan would vault straight to it from anywhere,
-    // silently skipping the silent, probe-less steps just before it (e.g.
-    // guest-coin-prompt's sign-in/coin popup) that a real device would
-    // otherwise land on. This step must only ever be reached sequentially.
-    getTarget: () => document.querySelector('.tab[data-tab="settings"]'),
-    text: `Tap <b>Settings</b> - one last thing!`,
-    enter: () => tourAdvanceOnRealClick('.tab[data-tab="settings"]'),
-  }
-
-  // Step 12 - the final step for EVERY branch (signed-in eligible/
-  // ineligible, and guest). tourAdvance() past it already calls
-  // endOnboardingTour(true) with no extra code needed here.
-  // Action-style (not explain) - blockers apply and it can't be dismissed by
-  // tapping elsewhere; go-settings above already got the chef to Settings
-  // deliberately, so the final step should ask for one more deliberate tap,
-  // not silently accept a stray tap anywhere on the screen. Still
-  // spotlights the real row via getTarget; a real tap on it opens the guide
-  // AND ends the tour (see the delegated listener in enter() below).
-  const addHomescreenStep = {
-    id: 'add-to-homescreen',
-    kind: 'action',
-    ready: () => {
-      const el = document.querySelector('[data-action="add-to-homescreen"]')
-      if (el) return true
-      // Rate-limited re-kick as a clobber backstop only - this step is only
-      // ever CURRENT after go-settings has already gotten the chef to
-      // Settings via their own real tap, so this just recovers from a late
-      // async re-render clobbering that screen (see cookHomeLastKickAt's
-      // rationale above), it never preempts the chef's own navigation.
-      if (Date.now() - settingsLastKickAt > 1200) { settingsLastKickAt = Date.now(); renderSettings() }
-      return false
-    },
-    // Pure, side-effect-free - lets the self-heal scan land here. This row
-    // sits below the fold in Settings' Tutorials section (same row fixed
-    // for the non-tour recurring popup in bug report 89b30c3b) -
-    // tourPositionForStep's generic out-of-view scrollIntoView already
-    // handles bringing it on screen for the tour path too, since it
-    // applies to every step with a real getTarget().
-    probe: () => !!document.querySelector('[data-action="add-to-homescreen"]'),
-    getTarget: () => document.querySelector('[data-action="add-to-homescreen"]'),
-    text: `<b>Add to Homescreen</b> installs Chef Penguino like a real app!<br>That's it, happy cooking!`,
-    // Tapping the spotlighted row navigates to the guide subpage, which
-    // makes the target vanish - ready() then goes false forever (this is
-    // the LAST step) and would otherwise leave #tour-root (Skip Tutorial)
-    // mounted with nothing to end it. End the tour on that same tap instead
-    // of waiting on the generic explain-step dismiss. Deliberately does NOT
-    // preventDefault/stopPropagation - the row's real handler must still
-    // fire and open the guide; this only ALSO ends the tour alongside it.
-    // Same deferred-by-a-tick + still-on-this-step guard as
-    // tourAdvanceOnRealClick, so a click that entered this step doesn't get
-    // caught by this listener before it's even attached.
-    enter: () => {
-      const step = tour ? tour.steps[tour.index] : null
-      const onClick = (e) => {
-        const t = e.target
-        if (!(t instanceof Element) || !t.closest('[data-action="add-to-homescreen"]')) return
-        endOnboardingTour(true)
-      }
-      const attachId = setTimeout(() => {
-        if (tour && tour.steps[tour.index] === step) document.addEventListener('click', onClick, true)
-      }, 0)
-      if (tour) tour.timers.push(attachId)
-      return () => document.removeEventListener('click', onClick, true)
-    },
-  }
-
-  if (isSignedIn()) {
-    if (eligible) {
-      steps.push(
-        // 7. Coin explainer - reuses the EXISTING coin-info popup (the same
-        // one the (i) coin chip opens) rather than a bespoke tour card, so
-        // it's `silent` (see tourPositionForStep/tourSync) - all the tour
-        // engine does here is get out of the way and wait for "Got it".
-        {
-          id: 'coin-explainer',
-          kind: 'explain',
-          silent: true,
-          // Gate on the barrel-explosion delete clip (playDeleteClip(),
-          // wrapper class `.delete-clip`) not being on screen. This step
-          // has no ready() of its own, so without this its enter() would
-          // fire the instant the tour advances onto it - including into a
-          // transient full-screen clip still playing, opening (or losing)
-          // the popup underneath/behind it with nothing to reveal that
-          // anything went wrong (it's silent).
-          ready: () => !document.querySelector('.delete-clip'),
-          getTarget: () => null,
-          text: '',
-          enter: () => {
-            openCoinInfo()
-            const wrap = document.querySelector('.overlay.show')
-            coinExplainerOverlayEl = wrap || null
-            const okBtn = wrap?.querySelector('[data-action="ok"]')
-            if (!okBtn) { tourAdvance(); return null }
-            okBtn.addEventListener('click', () => tourAdvance())
-            // Tapping the dim backdrop also closes openCoinInfo()'s popup
-            // (overlay()'s default dismissable behavior) - advance there too
-            // so the tour can't get stranded showing nothing.
-            wrap.addEventListener('click', (e) => { if (e.target === wrap) tourAdvance() })
-            return () => { coinExplainerOverlayEl = null }
-          },
-          // Self-healing: re-open if the popup this step opened has been
-          // removed from the DOM by something other than the chef actually
-          // dismissing it (e.g. an unrelated screen re-render replacing
-          // app.innerHTML while the overlay was appended to the old .app
-          // wrapper) - runs on every sync, not just on entering the step.
-          watch: () => {
-            if (coinExplainerOverlayEl && !document.body.contains(coinExplainerOverlayEl)) {
-              coinExplainerOverlayEl = null
-              tour.entered = -1
-              tourSync()
-            }
-          },
-        },
-        // 8. Grant the coin server-side - the ONLY place this ever happens
-        // is this RPC; never a client-side coin_adjustment write. Silent
-        // (nothing to show), and continues on regardless of the RPC result -
-        // false just means "no coin this time", never an error to surface.
-        {
-          id: 'grant-coin',
-          kind: 'explain',
-          silent: true,
-          getTarget: () => null,
-          text: '',
-          enter: () => {
-            ;(async () => {
-              try { await supabase.rpc('claim_onboarding_coin') } catch {}
-              try { await refreshProfile() } catch {}
-              tourAdvance()
-            })()
-            return null
-          },
-        },
-        // 9. Forced waving purchase - an action step the chef can't skip
-        // past except via Skip Tutorial. Advancing is driven by `watch()`
-        // (checked on every tourSync, not just on entering the step) rather
-        // than a click handler, because the real "buy" tap only opens a
-        // confirm popup ("Yes, unlock it?") - the purchase itself completes
-        // a beat later, and that's the moment that should count.
-        {
-          id: 'buy-waving',
-          kind: 'action',
-          ready: () => {
-            if (document.querySelector('.shop-sort-row')) return true
-            if (Date.now() - shopLastKickAt > 1200) { shopLastKickAt = Date.now(); renderShop() }
-            return false
-          },
-          // Pure, side-effect-free - lets the self-heal scan land here.
-          probe: () => !!document.querySelector('.shop-sort-row') && !!document.querySelector('[data-buy="waving"]'),
-          getTarget: () => document.querySelector('[data-buy="waving"]'),
-          text: `Buy the <b>Waving</b> emote to give your chef its first move!`,
-          // The card the tour targets may be well down a long shop list -
-          // tourPositionForStep's generic out-of-view scrollIntoView
-          // already handles bringing it on screen (applies to every step
-          // with a real getTarget()), so no extra scroll call is needed
-          // here.
-          watch: () => {
-            if (isOwned('waving')) { tourAdvance(); return }
-            // Grant-coin's RPC may have failed (network, RLS, etc.), or the
-            // balance may have been consumed elsewhere between grant and
-            // here - either way, never hold the tour hostage on a forced
-            // purchase the chef can't afford. Skip past it instead of
-            // stranding them with Skip Tutorial as the only way out.
-            if (!buyWavingSkipped && coinBalance() < 1) { buyWavingSkipped = true; tourAdvance() }
-          },
-        },
-        // Step 10 (equip-waving) removed: confirmBuy() already auto-equips
-        // immediately after a purchase, so that step spotlit a control that
-        // already read "✓ Equipped" - it taught nothing and asked for a tap
-        // that did nothing. tap-emote-demo is now the step right after
-        // buy-waving.
-        tapEmoteStep,
-        goSettingsStep,
-        addHomescreenStep,
-      )
-    } else {
-      // Not eligible: skip 7-10 entirely and silently, straight to the
-      // emote demo (if there's anything to demo) or Add to Homescreen.
-      if (equippedEmote()) steps.push(tapEmoteStep)
-      steps.push(goSettingsStep)
-      steps.push(addHomescreenStep)
-    }
-  } else {
-    // Guest branch: instead of the coin-claim steps, a popup nudging sign-in.
-    // Signing in kicks off the real Google OAuth flow (same signInWithGoogle()
-    // every other sign-in prompt uses), which navigates the page away and
-    // reloads it - destroying this in-memory tour. Before that happens, a
-    // resume marker is persisted to localStorage (state.onboardingResumeStep)
-    // so boot(), once handleSignedIn() + migrateLocalDataIfNeeded() have run
-    // post-redirect (pizzas/coins merged, profile loaded), can pick the tour
-    // back up at the coin-claim steps with eligibility re-evaluated fresh on
-    // the merged totals - see maybeResumeOnboardingTour().
-    steps.push(
-      {
-        id: 'guest-coin-prompt',
-        kind: 'explain',
-        silent: true,
-        // Gate on the barrel-explosion delete clip (playDeleteClip(),
-        // wrapper class `.delete-clip`) not being on screen - same reason as
-        // coin-explainer above: this step has no ready() of its own, so
-        // without this its enter() would fire straight into a transient
-        // full-screen clip still playing.
-        ready: () => !document.querySelector('.delete-clip'),
-        getTarget: () => null,
-        text: '',
-        enter: () => {
-          // Qualifying guest (S1) keeps the coin-redeem pitch with the coin
-          // image. A guest who wouldn't get a coin (S2 - already earned one
-          // locally) gets the same popup shape/buttons but no coin promise -
-          // sign-in is pitched purely on saving progress, so it never
-          // implies a coin the merge would then refuse to grant.
-          const o = overlay(guestQualifies ? `
-            <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
-            ${coinImg('xl')}
-            <h3>Sign in to redeem your free coin</h3>
-            <p>Free coin only applies if you've never earned one before. Either way, signing in saves your progress, pizzas and coins.</p>
-            ${googleBtn()}
-            <button type="button" class="btn-secondary" style="margin-top:10px" data-action="continue-guest">Continue without signing in</button>
-          ` : `
-            <span class="info-badge popup-info-badge" aria-hidden="true">i</span>
-            <h3>Sign in to save your progress</h3>
-            <p>Your pizzas and coins sync to your account, so you'll never lose them.</p>
-            ${googleBtn()}
-            <button type="button" class="btn-secondary" style="margin-top:10px" data-action="continue-guest">Continue without signing in</button>
-          `, { popupClass: 'popup-wide', dismissable: false })
-          guestCoinOverlayEl = o
-          o.querySelector('[data-action="google"]').addEventListener('click', () => {
-            // Persist BEFORE kicking off the OAuth redirect so it's never
-            // lost to the navigation that follows.
-            state.onboardingResumeStep = 'coin-explainer'
-            save()
-            signInWithGoogle()
-          })
-          o.querySelector('[data-action="apple"]')?.addEventListener('click', () => toast('Sign in with Apple is coming soon! 🚧'))
-          o.querySelector('[data-action="continue-guest"]').addEventListener('click', () => {
-            o.remove()
-            guestCoinOverlayEl = null
-            // Jump to go-settings (not straight to add-to-homescreen) - the
-            // guest tail has no emote demo to skip past, but go-settings
-            // still belongs in the sequence for every persona so the chef
-            // navigates to Settings themselves instead of being teleported.
-            const idx = tour.steps.findIndex(s => s.id === 'go-settings')
-            if (idx >= 0) { tour.index = idx; tour.entered = -1; tourSync() } else tourAdvance()
-          })
-          return () => { o.remove(); guestCoinOverlayEl = null }
-        },
-        // Self-healing: re-open the sign-in popup if it's been removed from
-        // the DOM by something other than the chef actually dismissing it
-        // (e.g. an unrelated screen re-render replacing app.innerHTML while
-        // the overlay was appended to the old .app wrapper) - runs on every
-        // sync, not just on entering the step.
-        watch: () => {
-          if (guestCoinOverlayEl && !document.body.contains(guestCoinOverlayEl)) {
-            guestCoinOverlayEl = null
-            tour.entered = -1
-            tourSync()
-          }
-        },
+    // ---------- 7. Free coin popup (silent - a real overlay, not tour
+    // chrome) ----------
+    // Same shape/self-heal pattern as the old coin-explainer/guest-coin-
+    // prompt it replaces: `silent` (tourSync hides all tour chrome and lets
+    // this real popup do the talking), gated on the delete-clip not still
+    // playing, self-healing via watch() if some unrelated re-render removes
+    // it from the DOM. NO server/state write happens here - see the "write-
+    // once-atomically" rule at completeOnboardingPurchase(). tour.
+    // coinBonusShown (read by coinBalance()'s display-only +1 and by
+    // buy-waving's Locked-card override) is only ever set for someone who
+    // doesn't already own waving - an existing owner gets the same popup
+    // (one unified flow) but never the illusion of a coin they won't
+    // actually receive.
+    {
+      id: 'coin-popup',
+      kind: 'explain',
+      silent: true,
+      ready: () => !document.querySelector('.delete-clip'),
+      getTarget: () => null,
+      text: '',
+      enter: () => {
+        const o = overlay(`
+          ${coinImg('xl')}
+          <h3>Free Penguino Coin!</h3>
+          <p>Here's a free coin for you, let's see how to use this in the shop!</p>
+          <div class="home-btn-col">
+            <button type="button" data-action="ok">Got it!</button>
+          </div>
+        `, { dismissable: false })
+        coinPopupOverlayEl = o
+        o.querySelector('[data-action="ok"]').addEventListener('click', () => {
+          o.remove()
+          coinPopupOverlayEl = null
+          // Unconditional - the +1 illusion (and the shop's matching Locked
+          // card, see renderShop()) shows for EVERYONE the same way,
+          // owners included, so the tour reads identically regardless of
+          // what's really owned underneath. For an owner it disappears
+          // again the instant wavingPurchased flips true (their real
+          // balance never actually changed - see completeOnboardingPurchase()'s
+          // no-coin/no-array-change branch), so "the coin" was always just
+          // a teaching illusion for them, never a real grant.
+          if (tour) tour.coinBonusShown = true
+          tourAdvance()
+        })
+        return () => { coinPopupOverlayEl = null }
       },
-      goSettingsStep,
-      addHomescreenStep,
-    )
-  }
+      watch: () => {
+        if (coinPopupOverlayEl && !document.body.contains(coinPopupOverlayEl)) {
+          coinPopupOverlayEl = null
+          tour.entered = -1
+          tourSync()
+        }
+      },
+    },
+    // ---------- 8. Buy Waving (real purchase, popup exception for the
+    // confirm) ----------
+    // Advancing is driven by `watch()` (checked on every tourSync, not just
+    // on entering the step) rather than a click handler, because the real
+    // "buy" tap only opens a confirm popup - the purchase itself completes
+    // a beat later (completeOnboardingPurchase(), via confirmBuyTour() -
+    // see renderShop()), and that's the moment that should count.
+    // getTarget/text are DYNAMIC (getters, since step.text is read as a
+    // plain property, not called) - once the confirm popup is open, the
+    // spotlight and copy switch to its "Yes, unlock it" button. That
+    // button lives inside `.popup`, so the engine's existing popup
+    // exception (see tourPositionForStep: `if (modal) tourClearBlockers()`)
+    // takes over automatically - ring+card, no blockers, no extra code
+    // needed here for that part.
+    {
+      id: 'buy-waving',
+      kind: 'action',
+      ready: () => {
+        if (document.querySelector('.shop-sort-row')) return true
+        if (Date.now() - shopLastKickAt > 1200) { shopLastKickAt = Date.now(); renderShop() }
+        return false
+      },
+      // Pure, side-effect-free - lets the self-heal scan land here. Matches
+      // only the pre-confirm shop screen (the scan should never land mid-
+      // confirm), which is fine - watch()/enter() below handle that state
+      // once the tour is actually current on this step.
+      probe: () => !!document.querySelector('.shop-sort-row') && !!document.querySelector('[data-buy="waving"]'),
+      get getTarget() {
+        return () => document.querySelector('.overlay.show [data-action="yes"]') || document.querySelector('[data-buy="waving"]')
+      },
+      get text() {
+        return document.querySelector('.overlay.show [data-action="yes"]')
+          ? `Tap <b>Yes, unlock it</b> to spend your coin.`
+          : `Spend it on the <b>Waving</b> emote - your chef needs a move!`
+      },
+      watch: () => {
+        if (tour.wavingPurchased) tourAdvance()
+      },
+    },
+    // ---------- 9. Equipped-shown (explain-with-target, dismiss on any
+    // tap) ----------
+    {
+      id: 'equipped-shown',
+      kind: 'explain',
+      ready: () => !!document.querySelector('[data-equip="waving"].equipped'),
+      getTarget: () => document.querySelector('[data-equip="waving"].equipped'),
+      text: `Nice - <b>Waving</b> is now equipped, so it's the move your chef performs.`,
+      hintText: 'Tap anywhere to dismiss',
+    },
+    // ---------- 10. Go Home ----------
+    {
+      id: 'go-home',
+      kind: 'action',
+      ready: () => !!document.querySelector('.tab[data-tab="home"]'),
+      // No probe: the Home tab, like Settings below, exists on every
+      // screen (the tabbar is omnipresent) - a probe here would make this
+      // step a scan magnet the same way go-settings' would.
+      getTarget: () => document.querySelector('.tab[data-tab="home"]'),
+      text: `Tap <b>Home</b> to see your chef.`,
+      enter: () => tourAdvanceOnRealClick('.tab[data-tab="home"]'),
+    },
+    // ---------- 11. Tap-to-emote demo ----------
+    // Reachable by EVERYONE now (equipped-shown/buy-waving guarantee
+    // equippedEmote() is 'waving' for literally every chef who reaches
+    // here), so no more "if there's anything to demo" guard around pushing
+    // this step.
+    {
+      id: 'tap-emote-demo',
+      kind: 'action',
+      ready: () => {
+        const btn = document.querySelector('.hero-tap[data-action="emote"]')
+        if (btn) return true
+        if (Date.now() - homeLastKickAt > 1200) { homeLastKickAt = Date.now(); renderHome() }
+        return false
+      },
+      // Pure, side-effect-free - lets the self-heal scan land here.
+      probe: () => !!document.querySelector('.hero-tap[data-action="emote"]'),
+      getTarget: () => document.querySelector('.hero-tap[data-action="emote"]'),
+      text: `Tap <b>Tap to emote</b> to see your chef's new move!`,
+      // Deliberately does NOT advance on the real tap (unlike
+      // tourAdvanceOnRealClick) - the tap only starts the clip
+      // (playEmoteInto() swaps the hero <img> for a <video>, see ~line
+      // 1110); advancing here would cut the demo off before the chef ever
+      // sees it play. watch() below is what actually advances, once the
+      // clip has genuinely played out.
+      enter: () => {
+        emoteTappedAt = null
+        emoteSawVideo = false
+        emoteDemoAdvanced = false
+        const step = tour ? tour.steps[tour.index] : null
+        const onClick = (e) => {
+          const t = e.target
+          if (!(t instanceof Element) || !t.closest('.hero-tap[data-action="emote"]')) return
+          if (emoteTappedAt != null) return
+          emoteTappedAt = Date.now()
+          // Belt-and-braces: guarantees watch() gets re-evaluated at the 8s
+          // cap even if nothing else (DOM mutation, resize, scroll) happens
+          // to trigger a resync in the meantime - e.g. play().catch's
+          // revert already fires fast via a mutation in the normal case,
+          // but a stuck/hung decode with no further DOM change wouldn't
+          // otherwise ever get rechecked.
+          const id = setTimeout(() => { if (tour) tourSync() }, 8100)
+          if (tour) tour.timers.push(id)
+        }
+        const attachId = setTimeout(() => {
+          if (tour && tour.steps[tour.index] === step) document.addEventListener('click', onClick, true)
+        }, 0)
+        if (tour) tour.timers.push(attachId)
+        return () => document.removeEventListener('click', onClick, true)
+      },
+      watch: () => {
+        if (emoteDemoAdvanced || emoteTappedAt == null) return
+        // #hero-card is the hero container both renderHome() and
+        // renderFriendHome() use; playEmoteInto() swaps its .hero-still
+        // <img> for a shared <video> node (same class/id) while playing,
+        // and swaps it back to an <img> on 'ended' (or immediately via
+        // play().catch on a decode failure - the common case headless).
+        const hasVideo = !!document.querySelector('#hero-card video')
+        if (hasVideo) emoteSawVideo = true
+        const playedAndReverted = emoteSawVideo && !hasVideo
+        const timedOut = Date.now() - emoteTappedAt > 8000
+        if (playedAndReverted || timedOut) {
+          emoteDemoAdvanced = true
+          tourAdvance()
+        }
+      },
+    },
+    // ---------- 12. Go Settings ----------
+    // Guides the chef to tap the real Settings tab themselves rather than
+    // the tour silently teleporting them there. ready()/probe()
+    // deliberately do NOT kick to Settings themselves - while this step is
+    // current, nothing may navigate ahead of the chef's own tap (see
+    // add-to-homescreen's kick below, which only ever fires once THIS
+    // step's target - the add-to-homescreen row - is what's current).
+    {
+      id: 'go-settings',
+      kind: 'action',
+      ready: () => {
+        const tab = document.querySelector('.tab[data-tab="settings"]')
+        // Not-ready (rather than advancing here) if the add-to-homescreen
+        // row is ALREADY visible - i.e. we're already on Settings, most
+        // likely because a replayed tour landed mid-flow. Lets the forward
+        // self-heal scan (tourSync) land directly on add-to-homescreen
+        // instead of this step demanding a redundant tap on a tab the chef
+        // is already sitting on.
+        if (!tab) return false
+        if (document.querySelector('[data-action="add-to-homescreen"]')) return false
+        return true
+      },
+      // No probe: the Settings tab exists on every screen (the tabbar is
+      // omnipresent), so a probe here would make this step a scan magnet -
+      // the forward self-heal scan would vault straight to it from
+      // anywhere, silently skipping the silent, probe-less coin-popup step
+      // just before it that a real device would otherwise land on. This
+      // step must only ever be reached sequentially.
+      getTarget: () => document.querySelector('.tab[data-tab="settings"]'),
+      text: `Tap <b>Settings</b> - one last thing!`,
+      enter: () => tourAdvanceOnRealClick('.tab[data-tab="settings"]'),
+    },
+    // ---------- 13. Add to Homescreen (final step, ends the tour) ----------
+    // tourAdvance() past it already calls endOnboardingTour(true) with no
+    // extra code needed here. Action-style (not explain) - blockers apply
+    // and it can't be dismissed by tapping elsewhere; go-settings above
+    // already got the chef to Settings deliberately, so the final step
+    // should ask for one more deliberate tap, not silently accept a stray
+    // tap anywhere on the screen. Still spotlights the real row via
+    // getTarget; a real tap on it opens the guide AND ends the tour (see
+    // the delegated listener in enter() below).
+    {
+      id: 'add-to-homescreen',
+      kind: 'action',
+      ready: () => {
+        const el = document.querySelector('[data-action="add-to-homescreen"]')
+        if (el) return true
+        // Rate-limited re-kick as a clobber backstop only - this step is
+        // only ever CURRENT after go-settings has already gotten the chef
+        // to Settings via their own real tap, so this just recovers from a
+        // late async re-render clobbering that screen (see
+        // cookHomeLastKickAt's rationale above), it never preempts the
+        // chef's own navigation.
+        if (Date.now() - settingsLastKickAt > 1200) { settingsLastKickAt = Date.now(); renderSettings() }
+        return false
+      },
+      // Pure, side-effect-free - lets the self-heal scan land here. This
+      // row sits below the fold in Settings' Tutorials section (same row
+      // fixed for the non-tour recurring popup in bug report 89b30c3b) -
+      // tourPositionForStep's generic out-of-view scrollIntoView already
+      // handles bringing it on screen for the tour path too, since it
+      // applies to every step with a real getTarget().
+      probe: () => !!document.querySelector('[data-action="add-to-homescreen"]'),
+      getTarget: () => document.querySelector('[data-action="add-to-homescreen"]'),
+      text: `<b>Add to Homescreen</b> installs Chef Penguino like a real app!<br>That's it, happy cooking!`,
+      // Tapping the spotlighted row navigates to the guide subpage, which
+      // makes the target vanish - ready() then goes false forever (this is
+      // the LAST step) and would otherwise leave #tour-root (Skip
+      // Tutorial) mounted with nothing to end it. End the tour on that
+      // same tap instead of waiting on the generic explain-step dismiss.
+      // Deliberately does NOT preventDefault/stopPropagation - the row's
+      // real handler must still fire and open the guide; this only ALSO
+      // ends the tour alongside it. Same deferred-by-a-tick +
+      // still-on-this-step guard as tourAdvanceOnRealClick, so a click
+      // that entered this step doesn't get caught by this listener before
+      // it's even attached.
+      enter: () => {
+        const step = tour ? tour.steps[tour.index] : null
+        const onClick = (e) => {
+          const t = e.target
+          if (!(t instanceof Element) || !t.closest('[data-action="add-to-homescreen"]')) return
+          endOnboardingTour(true)
+        }
+        const attachId = setTimeout(() => {
+          if (tour && tour.steps[tour.index] === step) document.addEventListener('click', onClick, true)
+        }, 0)
+        if (tour) tour.timers.push(attachId)
+        return () => document.removeEventListener('click', onClick, true)
+      },
+    },
+  ]
 
   return steps
 }
