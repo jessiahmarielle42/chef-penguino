@@ -143,20 +143,16 @@ html, body {
 html { background: var(--page-bg); }
 
 #app {
-  /* Cascade, weakest to strongest: 100vh (ancient fallback) -> 100dvh
-     (modern dynamic viewport, wins wherever supported).
-     -webkit-fill-available USED to sit between these as the standalone-
-     mode letterbox fix, but it's WebKit's documented workaround for a
-     browser-toolbar reservation that doesn't exist in standalone mode -
-     with no toolbar to subtract, it under-measures the true screen height
-     there, which is what produced a dead band of unpainted canvas at the
-     bottom (reported as a white bar pushing the tab bar up - white because
-     nothing painted the root canvas at the time). Removed. dvh with a vh
-     fallback is the correct value in both browser and standalone; html's
-     own root background (see above) makes any residual unit quirk paint
-     app-coloured instead of white regardless. */
-  height: 100vh;
-  height: 100dvh;
+  /* NO viewport units here, deliberately. Every unit tried on this line
+     under-measured the real screen in iOS standalone mode and left a dead
+     band under the tab bar: -webkit-fill-available (subtracts a browser
+     toolbar that standalone doesn't have), then 100vh/100dvh (still short
+     on the user's device). html and body are height:100% (see above), so
+     percentage height chains straight off the initial containing block -
+     the layout viewport itself - which is the one measurement WebKit gets
+     right in every mode. html's root background makes any residual gap
+     paint app-coloured rather than white regardless. */
+  height: 100%;
   width: 100%;
   max-width:460px;      /* keep the phone-app column on tablet/desktop */
   margin: 0 auto;        /* centre it, with the body gradient as the surround */
