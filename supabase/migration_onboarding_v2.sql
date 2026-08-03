@@ -42,13 +42,15 @@ begin
   already_owns := me.waving_free or ('waving' = any(coalesce(me.owned_emotes, '{}')));
 
   if already_owns then
-    -- Already an owner (grandfathered via waving_free, or bought it before
-    -- reaching this step some other way): a paid emote can never be lost or
-    -- double-granted, so this is just the claim-flag write - no coin, no
-    -- owned_emotes change, no equip (they're already equipped or free to
-    -- equip it already).
+    -- Already an owner (grandfathered via waving_free, or bought it before):
+    -- a paid emote can never be lost or double-granted, so no coin and no
+    -- owned_emotes change - but the tour's "rebuy" DOES re-equip waving,
+    -- matching the app rule that buying auto-equips. Without this, the
+    -- tour shows Waving as newly equipped while another emote still holds
+    -- the real equipped slot - two Equipped badges at once.
     update public.profiles
-    set onboarding_coin_claimed = true
+    set onboarding_coin_claimed = true,
+        equipped_emote = 'waving'
     where id = auth.uid();
   else
     -- Single UPDATE, one transaction: +1 coin AND +waving in owned_emotes

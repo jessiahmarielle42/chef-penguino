@@ -328,7 +328,10 @@ function fakeRpc(name, args) {
     if (me.onboarding_coin_claimed) return Promise.resolve({ data: null, error: null })
     const alreadyOwns = me.waving_free || (me.owned_emotes || []).includes('waving')
     if (alreadyOwns) {
+      // Mirrors the SQL: the rebuy re-equips waving (buying auto-equips),
+      // no coin, no owned_emotes change.
       me.onboarding_coin_claimed = true
+      me.equipped_emote = 'waving'
     } else {
       me.coin_adjustment = (me.coin_adjustment || 0) + 1
       me.owned_emotes = [...(me.owned_emotes || []), 'waving']
