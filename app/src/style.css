@@ -3265,7 +3265,11 @@ img.shop-image {
    Save without needing to be re-created. */
 .st-mini {
   position: fixed; left:0; right:0; margin:0 auto; width:100%; max-width:460px;
-  bottom: calc(7.1rem + env(safe-area-inset-bottom, 0px));
+  /* var(--safe-bottom), not a bare env() - it resolves to the same inset but
+     can be overridden, which is the only way the headless review harness can
+     reproduce an iPhone's home-indicator inset and measure this player
+     against the toast/FAB the way it actually stacks on device. */
+  bottom: calc(7.1rem + var(--safe-bottom, 0px));
   z-index: 40; box-sizing: border-box;
   background: var(--card-2); border-top:1px solid var(--line); border-radius:0.875rem 0.875rem 0 0;
   box-shadow: 0 -8px 24px -12px rgba(0,0,0,0.4);
@@ -3316,10 +3320,18 @@ img.shop-image {
    max-height, which is only a transition cap and would strand both floating
    mid-screen. */
 body.soundtrack-mini-open #bug-fab {
-  bottom: calc(7.1rem + 7rem + env(safe-area-inset-bottom, 0px));
+  bottom: calc(7.1rem + 7.4rem + var(--safe-bottom, 0px));
 }
+/* Clears BOTH the mini-player and the lifted bug FAB (whose top sits at
+   17.1rem once lifted). The safe-area term is not optional: the player's own
+   bottom tracks the inset, so on a device with a home indicator it rises
+   ~34px - while this toast, pinned to a fixed rem value, did not, which is
+   exactly how the "Saved" toast ended up underneath the player. Everything
+   in this stack has to move together.
+   The FAB is z-index 65 against the toast's 45, so any overlap doesn't just
+   look untidy - the FAB paints over the toast and eats its first word. */
 body.soundtrack-mini-open .toast {
-  bottom: calc(7.25rem + 7rem);
+  bottom: calc(7.25rem + 10.35rem + var(--safe-bottom, 0px));
 }
 
 @media (prefers-reduced-motion: reduce) {
