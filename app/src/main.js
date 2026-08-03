@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.7.0'
+const APP_VERSION = 'v2.4.8'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -94,6 +94,7 @@ async function signOut() {
   await supabase.auth.signOut()
   currentUser = null
   currentProfile = null
+  applySavedSoundtrack() // no profile anymore - revert to the default track
   clearNotifBadges()
   renderHome()
 }
@@ -103,9 +104,12 @@ async function refreshProfile() {
   // Falls back to the pre-migration column set if `task_type_labels` doesn't
   // exist yet (migration_task_types.sql hasn't been run), so the profile still
   // loads and the app doesn't break for signed-in users before the migration.
+  // Same reasoning covers `soundtrack` (migration_soundtrack.sql) - it's
+  // simply absent from the fallback select, so a pre-migration profile loads
+  // fine and soundtrackById(undefined) treats it as the default track.
   let { data } = await supabase
     .from('profiles')
-    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels, level_seen, waving_free, onboarding_done, onboarding_coin_claimed')
+    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels, level_seen, waving_free, onboarding_done, onboarding_coin_claimed, soundtrack')
     .eq('id', currentUser.id)
     .single()
   if (!data) {
@@ -117,6 +121,7 @@ async function refreshProfile() {
   }
   currentProfile = data || null
   if (currentProfile && !Array.isArray(currentProfile.owned_emotes)) currentProfile.owned_emotes = []
+  applySavedSoundtrack()
 }
 
 async function migrateLocalDataIfNeeded() {
@@ -522,11 +527,26 @@ if (audioCtx) {
 // this is set, see the comment on the global click listener below.
 let musicSuspendedByOther = false
 
+// True only while the Background Music picker has a preview actively
+// playing. Lets a muted chef still hear the track they're auditioning
+// (at a low, non-persisted volume) without ever touching state.muted or
+// state.volume - their real saved prefs come straight back the moment the
+// preview ends (see teardownSoundtrackPreview()).
+let soundtrackPreviewBoost = false
+
+// True while the chef has deliberately paused a picker preview. Needed for
+// the same reason as musicSuspendedByOther: the global document-click
+// listener below re-runs syncMusic() on the very tap that paused the
+// preview, and without this flag it would call bgMusic.play() again and
+// undo the pause before the finger even lifts.
+let soundtrackPreviewPaused = false
+
 function syncMusic() {
-  if (musicGain) musicGain.gain.value = state.volume
-  else bgMusic.volume = state.volume
+  const previewVol = soundtrackPreviewBoost && state.muted ? 0.4 : state.volume
+  if (musicGain) musicGain.gain.value = previewVol
+  else bgMusic.volume = previewVol
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {})
-  if (state.muted || musicSuspendedByOther) bgMusic.pause()
+  if ((state.muted && !soundtrackPreviewBoost) || musicSuspendedByOther || soundtrackPreviewPaused) bgMusic.pause()
   else bgMusic.play().catch(() => {})
 }
 
@@ -566,6 +586,52 @@ if ('mediaSession' in navigator && typeof MediaMetadata !== 'undefined') {
   })
   navigator.mediaSession.setActionHandler('play', () => syncMusic())
   navigator.mediaSession.setActionHandler('pause', () => { state.muted = true; save(); syncMusic() })
+}
+
+// ---------- Background Music picker (settings -> soundtrack) ----------
+// `id: null` is the shipped default track - it deliberately reuses the exact
+// src bgMusic was constructed with above, so applySavedSoundtrack() below is
+// a no-op for every chef who never opens the picker.
+const SOUNDTRACKS = [
+  { id: null, title: 'Chef Penguino Theme', isDefault: true, src: `${BASE}assets/bg-music.mp3`, art: `${BASE}assets/icon-512.png` },
+  { id: 'handpan', title: 'Handpan', src: `${BASE}assets/soundtracks/handpan.mp3`, art: `${BASE}assets/soundtracks/handpan.jpg` },
+  { id: 'lofi-girl', title: 'Lofi Girl', src: `${BASE}assets/soundtracks/lofi-girl.mp3`, art: `${BASE}assets/soundtracks/lofi-girl.jpg` },
+  { id: 'plants-vs-zombies', title: 'Plants vs Zombies', src: `${BASE}assets/soundtracks/plants-vs-zombies.mp3`, art: `${BASE}assets/soundtracks/plants-vs-zombies.jpg` },
+]
+function soundtrackById(id) { return SOUNDTRACKS.find(t => (t.id || null) === (id || null)) || SOUNDTRACKS[0] }
+
+// The src bgMusic is *supposed* to be playing right now, per the signed-in
+// chef's saved profile (or the default, for guests/no-selection). Tracked
+// separately from bgMusic.src itself because the picker temporarily points
+// bgMusic.src at whatever track is being previewed - this is what
+// teardownSoundtrackPreview() restores on the way out.
+// Always stored as an ABSOLUTE url (what bgMusic.src reflects back), never
+// the relative `${BASE}…` form in SOUNDTRACKS - comparing the two forms
+// directly would always mismatch and needlessly restart playback from 0:00.
+const soundtrackAbsUrl = (src) => new URL(src, document.baseURI).href
+let currentTrackSrc = bgMusic.src
+
+function updateMediaSessionTrack(title) {
+  if ('mediaSession' in navigator && typeof MediaMetadata !== 'undefined') {
+    navigator.mediaSession.metadata = new MediaMetadata({ title, artist: 'Chef Penguino' })
+  }
+}
+
+// Swaps bgMusic to the chef's saved soundtrack, if it isn't already playing
+// it - never constructs a new Audio(), just repoints .src (see the module
+// comment above bgMusic's own declaration for why that matters on iOS).
+// Skipped entirely when nothing actually changed, so a routine profile
+// refresh (e.g. the realtime resync in subscribeToSocial()) doesn't restart
+// playback from 0:00 on every poll.
+function applySavedSoundtrack() {
+  const saved = soundtrackById(currentProfile?.soundtrack)
+  const abs = soundtrackAbsUrl(saved.src)
+  if (abs === currentTrackSrc) return
+  currentTrackSrc = abs
+  bgMusic.src = abs
+  bgMusic.loop = true
+  updateMediaSessionTrack(saved.title)
+  syncMusic()
 }
 
 // Tactile tap feedback (see the matching CSS rule in style.css): iOS Safari
@@ -799,6 +865,7 @@ if (import.meta.env.VITE_REVIEW) {
       renderTaskTypesEditor, renderBugReports, renderHistory, renderHome, renderShop,
       renderAdminPizzasCal, renderAdminChefs, renderAdminUsers,
       renderAdminPresets, renderAdminEmotes, renderAdminGroupIcons,
+      soundtrack: renderSoundtrackPicker,
       renderTypePicker: () => renderTypePicker(30, 'Essay writing'),
       openBugReport: () => { renderSettings(); return openBugReport() },
       startTypedTimer: () => startSession(30, 'Essay writing', 'deep'),
@@ -1321,7 +1388,16 @@ let mountedScreenKey = null
 // left off instead of snapping to the top.
 const scrollMemory = new Map()
 
+// One-shot cleanup a screen can register for itself before mountScreen tears
+// its DOM down (see renderSoundtrackPicker's teardownSoundtrackPreview) -
+// mountScreen replaces #app's innerHTML wholesale on every navigation, so
+// this is the one choke point guaranteed to run before any other screen
+// mounts, no matter how the chef left (back button, tab bar, a realtime kick
+// re-rendering the same screen, etc).
+let screenTeardown = null
+
 function mountScreen(active, contentHtml, after, opts = {}) {
+  if (screenTeardown) { const t = screenTeardown; screenTeardown = null; t() }
   const key = opts.key || active
   const prevScroll = app.querySelector('.scroll')
   if (prevScroll && mountedScreenKey) scrollMemory.set(mountedScreenKey, prevScroll.scrollTop)
@@ -4637,6 +4713,10 @@ function renderSettings(highlightProfile, highlightHomescreen) {
           <div><div class="gt">Volume</div></div>
           <div class="right">🔈<input class="srange" id="volume-slider" type="range" min="0" max="100" value="${Math.round(state.volume * 100)}" />🔊</div>
         </div>
+        <div class="grow" role="button" tabindex="0" data-action="soundtrack">
+          <div><div class="gt">Background Music</div><div class="gs">${escapeHtml(soundtrackById(currentProfile?.soundtrack).title)}</div></div>
+          <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
+        </div>
       </div>
     </div>
     <div class="group">
@@ -4713,6 +4793,10 @@ function renderSettings(highlightProfile, highlightHomescreen) {
       if (v > 0) state.lastVolume = v
       save(); syncMusic()
       app.querySelector('[data-action="toggle-music"]')?.classList.toggle('off', state.muted)
+    })
+    app.querySelector('[data-action="soundtrack"]')?.addEventListener('click', () => {
+      if (!isSignedIn()) { toast('Sign in to customise background music'); return }
+      renderSoundtrackPicker()
     })
     app.querySelector('[data-action="toggle-music"]').addEventListener('click', (e) => {
       state.muted = !state.muted
@@ -5311,6 +5395,253 @@ function renderLore() {
       card.addEventListener('click', () => playLoreVideo(LORE_VIDEOS[Number(card.dataset.lore)]))
     })
   }, { key: 'lore' })
+}
+
+// =================================================================
+//  Background Music picker (Settings -> Background Music)
+// =================================================================
+// Registered by teardownSoundtrackPreview itself and torn down together -
+// tracks whichever track the picker most recently pointed bgMusic at, so
+// teardown knows whether it needs to restore the saved track or can leave
+// bgMusic alone (nothing was previewed this visit).
+let stPreviewTrackId
+let stAudioHandlers = null
+let stVisibilityHandler = null
+let stPagehideHandler = null
+
+// Idempotent - safe to call more than once (mountScreen's generic hook,
+// pagehide and a real navigation can all race to call this for the same
+// visit). Restores the chef's actual saved track + real mute/volume prefs,
+// which is the whole point: leaving the picker, in any way, must never
+// leave a muted chef's music audibly playing, nor a different track parked
+// in bgMusic than the one they actually saved.
+function teardownSoundtrackPreview() {
+  document.body.classList.remove('soundtrack-mini-open')
+  document.getElementById('soundtrack-mini')?.classList.remove('show')
+  if (stAudioHandlers) {
+    bgMusic.removeEventListener('playing', stAudioHandlers.playing)
+    bgMusic.removeEventListener('waiting', stAudioHandlers.waiting)
+    bgMusic.removeEventListener('pause', stAudioHandlers.pause)
+    bgMusic.removeEventListener('play', stAudioHandlers.play)
+    bgMusic.removeEventListener('loadedmetadata', stAudioHandlers.loadedmetadata)
+    bgMusic.removeEventListener('durationchange', stAudioHandlers.loadedmetadata)
+    bgMusic.removeEventListener('timeupdate', stAudioHandlers.timeupdate)
+    stAudioHandlers = null
+  }
+  if (stVisibilityHandler) { document.removeEventListener('visibilitychange', stVisibilityHandler); stVisibilityHandler = null }
+  if (stPagehideHandler) { window.removeEventListener('pagehide', stPagehideHandler); stPagehideHandler = null }
+  soundtrackPreviewBoost = false
+  soundtrackPreviewPaused = false
+  if (stPreviewTrackId !== undefined && bgMusic.src !== currentTrackSrc) {
+    bgMusic.src = currentTrackSrc
+    bgMusic.loop = true
+    updateMediaSessionTrack(soundtrackById(currentProfile?.soundtrack).title)
+  }
+  stPreviewTrackId = undefined
+  syncMusic()
+}
+
+function renderSoundtrackPicker() {
+  if (!isSignedIn()) { renderSettings(); return }
+  let savedId = currentProfile?.soundtrack ?? null
+  let previewId // undefined until a row is tapped this visit; may be null (the default track)
+  let stLoading = false // true while a freshly-picked track is still buffering
+
+  const rows = SOUNDTRACKS.map((t, i) => `
+    <button type="button" class="st-row" data-i="${i}">
+      <img class="st-art" src="${t.art}" alt="" />
+      <span class="st-title">${escapeHtml(t.title)}</span>${t.isDefault ? '<em class="st-def">Default</em>' : ''}
+      <span class="st-bars" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="st-tick" aria-hidden="true">✓</span>
+    </button>
+  `).join('')
+
+  const content = `
+    <div class="back-link" role="button" tabindex="0" data-action="back-to-settings">‹ Settings</div>
+    <div class="section-h" style="margin-top:2px"><h2>Background Music</h2></div>
+    <p class="gs st-sub">Tap a track to hear it. Save to make it yours.</p>
+    <div class="st-savebar">
+      <button type="button" class="st-save" id="st-save" disabled>Save as my soundtrack</button>
+    </div>
+    <div class="st-list">${rows}</div>
+    <div style="height:6.5rem"></div>
+  `
+
+  mountScreen('settings', content, () => {
+    const rowEls = Array.from(app.querySelectorAll('.st-row'))
+    const saveBtn = app.querySelector('#st-save')
+
+    // Mini-player lives outside #app - mountScreen wipes #app's innerHTML on
+    // every navigation, but the mini-player must survive a repaint of this
+    // same screen (e.g. right after Save) and float above the tab bar
+    // regardless of whatever is scrolled inside .scroll.
+    let miniEl = document.getElementById('soundtrack-mini')
+    if (!miniEl) {
+      miniEl = document.createElement('div')
+      miniEl.id = 'soundtrack-mini'
+      miniEl.className = 'st-mini'
+      miniEl.innerHTML = `
+        <div class="st-mini-row">
+          <img class="st-mini-art" id="st-mini-art" src="" alt="" />
+          <div>
+            <div class="st-mini-title" id="st-mini-title">-</div>
+            <div class="st-mini-sub">Previewing</div>
+          </div>
+          <button type="button" class="st-playbtn" id="st-playbtn" aria-label="Play or pause preview"></button>
+        </div>
+        <div class="st-scrub" id="st-scrub">
+          <div class="st-track"><div class="st-fill" id="st-fill"></div><div class="st-knob" id="st-knob"></div></div>
+        </div>
+        <div class="st-times"><span id="st-tcur">0:00</span><span id="st-tdur">0:00</span></div>
+      `
+      document.body.appendChild(miniEl)
+    }
+    const miniArt = miniEl.querySelector('#st-mini-art')
+    const miniTitle = miniEl.querySelector('#st-mini-title')
+    const playBtn = miniEl.querySelector('#st-playbtn')
+    const fillEl = miniEl.querySelector('#st-fill')
+    const knobEl = miniEl.querySelector('#st-knob')
+    const tCur = miniEl.querySelector('#st-tcur')
+    const tDur = miniEl.querySelector('#st-tdur')
+    const scrubEl = miniEl.querySelector('#st-scrub')
+
+    function fmtTime(s) {
+      s = Math.max(0, s | 0)
+      return (s / 60 | 0) + ':' + String(s % 60).padStart(2, '0')
+    }
+
+    function paint() {
+      rowEls.forEach((r, i) => {
+        const t = SOUNDTRACKS[i]
+        const isSaved = (t.id || null) === (savedId || null)
+        const isPreviewing = previewId !== undefined && (t.id || null) === (previewId || null)
+        r.classList.toggle('is-selected', isSaved)
+        r.classList.toggle('is-playing', isPreviewing)
+        r.classList.toggle('paused', isPreviewing && bgMusic.paused)
+      })
+      saveBtn.disabled = previewId === undefined || (previewId || null) === (savedId || null)
+      playBtn.classList.toggle('loading', stLoading)
+      playBtn.innerHTML = stLoading ? '' : (bgMusic.paused ? '&#9654;' : '&#10074;&#10074;')
+    }
+
+    function showMini(t) {
+      miniArt.src = t.art
+      miniTitle.textContent = t.title
+      miniEl.classList.add('show')
+      document.body.classList.add('soundtrack-mini-open')
+    }
+
+    rowEls.forEach((r, i) => {
+      r.addEventListener('click', () => {
+        const t = SOUNDTRACKS[i]
+        if (previewId !== undefined && (previewId || null) === (t.id || null)) {
+          // Same row tapped again - toggle play/pause on the existing preview.
+          // soundtrackPreviewPaused (not a bare .pause()) so the global click
+          // listener's syncMusic() doesn't immediately resume it.
+          soundtrackPreviewBoost = true
+          soundtrackPreviewPaused = !bgMusic.paused
+          syncMusic()
+          paint()
+          return
+        }
+        previewId = t.id
+        stPreviewTrackId = previewId
+        soundtrackPreviewBoost = true // audible even if the chef has muted - see syncMusic()
+        soundtrackPreviewPaused = false
+        stLoading = true
+        bgMusic.src = t.src
+        bgMusic.loop = true
+        bgMusic.currentTime = 0
+        updateMediaSessionTrack(t.title)
+        showMini(t)
+        syncMusic()
+        bgMusic.play().catch(() => {})
+        paint()
+      })
+    })
+
+    playBtn.addEventListener('click', () => {
+      if (previewId === undefined) return
+      soundtrackPreviewBoost = true
+      soundtrackPreviewPaused = !bgMusic.paused
+      syncMusic()
+      paint()
+    })
+
+    // ---- scrubber (pointer drag to seek), ported from the mockup ----
+    let scrubbing = false
+    function seekAt(clientX) {
+      const r = scrubEl.getBoundingClientRect()
+      const p = Math.min(1, Math.max(0, (clientX - r.left) / r.width))
+      fillEl.style.width = (p * 100) + '%'
+      knobEl.style.left = (p * 100) + '%'
+      tCur.textContent = fmtTime(p * (bgMusic.duration || 0))
+      return p
+    }
+    scrubEl.addEventListener('pointerdown', (e) => {
+      if (previewId === undefined) return
+      scrubbing = true
+      scrubEl.setPointerCapture(e.pointerId)
+      seekAt(e.clientX)
+    })
+    scrubEl.addEventListener('pointermove', (e) => { if (scrubbing) seekAt(e.clientX) })
+    scrubEl.addEventListener('pointerup', (e) => {
+      if (!scrubbing) return
+      scrubbing = false
+      bgMusic.currentTime = seekAt(e.clientX) * (bgMusic.duration || 0)
+    })
+
+    // ---- bgMusic listeners, named so teardownSoundtrackPreview can remove them ----
+    const onPlaying = () => { stLoading = false; paint() }
+    const onWaiting = () => { stLoading = true; paint() }
+    const onPause = () => paint()
+    const onPlay = () => paint()
+    const onLoadedMeta = () => { tDur.textContent = fmtTime(bgMusic.duration) }
+    const onTimeUpdate = () => {
+      if (scrubbing) return
+      const p = bgMusic.duration ? bgMusic.currentTime / bgMusic.duration * 100 : 0
+      fillEl.style.width = p + '%'
+      knobEl.style.left = p + '%'
+      tCur.textContent = fmtTime(bgMusic.currentTime)
+    }
+    bgMusic.addEventListener('playing', onPlaying)
+    bgMusic.addEventListener('waiting', onWaiting)
+    bgMusic.addEventListener('pause', onPause)
+    bgMusic.addEventListener('play', onPlay)
+    bgMusic.addEventListener('loadedmetadata', onLoadedMeta)
+    bgMusic.addEventListener('durationchange', onLoadedMeta)
+    bgMusic.addEventListener('timeupdate', onTimeUpdate)
+    stAudioHandlers = { playing: onPlaying, waiting: onWaiting, pause: onPause, play: onPlay, loadedmetadata: onLoadedMeta, timeupdate: onTimeUpdate }
+
+    // Backgrounding the tab must never leave the mute-override on - clear it
+    // (syncMusic re-pauses for real, same as it would anyway once actually
+    // backgrounded) but keep the preview selection so coming back can resume
+    // it with one more tap rather than losing the spot entirely.
+    const onVisibility = () => { if (document.hidden) { soundtrackPreviewBoost = false; syncMusic() } }
+    document.addEventListener('visibilitychange', onVisibility)
+    stVisibilityHandler = onVisibility
+    const onPagehide = () => { soundtrackPreviewBoost = false; syncMusic() }
+    window.addEventListener('pagehide', onPagehide)
+    stPagehideHandler = onPagehide
+
+    saveBtn.addEventListener('click', async () => {
+      if (previewId === undefined) return
+      const track = soundtrackById(previewId)
+      const { error } = await supabase.from('profiles').update({ soundtrack: previewId }).eq('id', currentUser.id)
+      if (error) { toast("Couldn't save — try again"); return }
+      currentProfile.soundtrack = previewId
+      currentTrackSrc = soundtrackAbsUrl(track.src) // the preview IS now the saved/applied track
+      savedId = previewId
+      paint()
+      toast(`Saved — "${track.title}" is your soundtrack`)
+    })
+
+    app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
+
+    stPreviewTrackId = previewId
+    paint()
+    screenTeardown = teardownSoundtrackPreview
+  }, { key: 'soundtrack' })
 }
 
 let addToHomescreenTab = 'ios' // 'ios' | 'android' - defaults to iOS on open
