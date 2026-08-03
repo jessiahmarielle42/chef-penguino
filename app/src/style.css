@@ -3274,11 +3274,20 @@ img.shop-image {
   background: var(--card-2); border-top:1px solid var(--line); border-radius:0.875rem 0.875rem 0 0;
   box-shadow: 0 -8px 24px -12px rgba(0,0,0,0.4);
   padding:0.6875rem 1rem 0.75rem;
+  /* Belt and braces with the DOM removal in teardownSoundtrackPreview():
+     padding:0 and visibility:hidden are what actually make the hidden state
+     occupy nothing - max-height:0 alone still leaves the padding box
+     rendering, which is how a sliver of the player used to linger over
+     Settings after leaving the picker. */
   transform: translateY(110%); max-height:0; overflow:hidden;
-  transition: transform 0.25s ease, max-height 0.25s ease;
+  padding-top:0; padding-bottom:0; visibility: hidden;
+  transition: transform 0.25s ease, max-height 0.25s ease, padding 0.25s ease;
   pointer-events: none;
 }
-.st-mini.show { transform: none; max-height:9rem; pointer-events: auto; }
+.st-mini.show {
+  transform: none; max-height:9rem; visibility: visible; pointer-events: auto;
+  padding-top:0.6875rem; padding-bottom:0.75rem;
+}
 .st-mini-row { display:flex; align-items:center; gap:0.6875rem; }
 .st-mini-art { width:2.375rem; height:2.375rem; border-radius:0.5rem; flex:none; object-fit:cover; border:1px solid var(--line); }
 .st-mini-title { font-weight:700; font-size:0.875rem; color: var(--cream); }

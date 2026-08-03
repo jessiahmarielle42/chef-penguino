@@ -5417,7 +5417,12 @@ let stPagehideHandler = null
 // in bgMusic than the one they actually saved.
 function teardownSoundtrackPreview() {
   document.body.classList.remove('soundtrack-mini-open')
-  document.getElementById('soundtrack-mini')?.classList.remove('show')
+  // Removed from the DOM outright, not just un-.show'd: the hidden state is
+  // max-height:0, which collapses the CONTENT box but not the player's own
+  // padding/border, so a stubborn sliver of it kept rendering over the
+  // Settings list after the chef left the picker. It's re-created on the
+  // next mount anyway (see renderSoundtrackPicker), so nothing is lost.
+  document.getElementById('soundtrack-mini')?.remove()
   if (stAudioHandlers) {
     bgMusic.removeEventListener('playing', stAudioHandlers.playing)
     bgMusic.removeEventListener('waiting', stAudioHandlers.waiting)
