@@ -127,39 +127,35 @@ html { font-size: calc(min(100vw, 460px) / 390 * 16); }
 html, body {
   margin: 0;
   height: 100%;
-  height: -webkit-fill-available; /* pairs with #app's own fallback below */
   overflow: hidden;
   font-family: var(--font-body);
   background: linear-gradient(180deg, var(--page-bg), var(--page-bg-2));
   color: var(--page-fg);
   -webkit-font-smoothing: antialiased;
 }
+/* Root canvas paint, after the shared rule above so it wins for html
+   specifically (same specificity, later in source): the UA canvas under
+   html is what shows through if any element in the height cascade below
+   ever under-measures the real viewport (see #app's height comment) - a
+   plain --page-bg here (not the two-stop gradient, which body still owns
+   in full) guarantees that gap is always app-coloured, never white, in
+   both themes. */
+html { background: var(--page-bg); }
 
 #app {
-  /* Cascade, weakest to strongest: 100vh (ancient fallback) -> WebKit's
-     -webkit-fill-available (the real fix - see below) -> 100dvh (modern
-     dynamic viewport, wins wherever both it and fill-available exist).
-     AUDIT: grepped style.css/main.js for every safe-area-inset-bottom /
-     100vh / innerHeight use in the tabbar's ancestor chain (html, body,
-     #app, .app, .scroll) - .tabbar is the ONLY real consumer of
-     safe-area-inset-bottom there (its own calc(0.5rem + inset) padding,
-     correct, untouched), and no wrapper in the chain adds a second
-     bottom-inset padding/margin - so the letterboxing isn't a double
-     application of the inset in THIS codebase. It's iOS Safari's own
-     documented standalone-mode bug: 100dvh (and 100vh before it) can
-     conservatively reserve room for a browser toolbar that doesn't exist
-     once installed to the homescreen, under-reporting the real available
-     height by roughly the home-indicator's worth of pixels - #app renders
-     shorter than the true fullscreen webview, and the tab bar (correctly
-     sized) ends up floating above a dead band of body background rather
-     than flush with the bottom edge. -webkit-fill-available reports the
-     ACTUAL available space with no such reservation, which is the
-     standard mitigation for this exact symptom - it can't be demonstrated
-     in Chromium (only WebKit has the reservation bug this works around),
-     so this is shipped on the strength of the well-documented real-device
-     issue, not a reproduced-here regression. */
+  /* Cascade, weakest to strongest: 100vh (ancient fallback) -> 100dvh
+     (modern dynamic viewport, wins wherever supported).
+     -webkit-fill-available USED to sit between these as the standalone-
+     mode letterbox fix, but it's WebKit's documented workaround for a
+     browser-toolbar reservation that doesn't exist in standalone mode -
+     with no toolbar to subtract, it under-measures the true screen height
+     there, which is what produced a dead band of unpainted canvas at the
+     bottom (reported as a white bar pushing the tab bar up - white because
+     nothing painted the root canvas at the time). Removed. dvh with a vh
+     fallback is the correct value in both browser and standalone; html's
+     own root background (see above) makes any residual unit quirk paint
+     app-coloured instead of white regardless. */
   height: 100vh;
-  height: -webkit-fill-available;
   height: 100dvh;
   width: 100%;
   max-width:460px;      /* keep the phone-app column on tablet/desktop */
