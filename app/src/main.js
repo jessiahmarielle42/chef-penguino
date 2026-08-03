@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.4.7.1'
+const APP_VERSION = 'v2.4.7.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -962,6 +962,8 @@ const EMOTES = [
   { id: 'my-favourite', name: 'My Favourite!', desc: 'Chef hugs Meelo the monkey plush toy', clip: 'my-favourite.mp4' },
   { id: 'lightsaber-battle', name: 'Lightsaber battle!', desc: 'Chef vs Meelo. who will win?', clip: 'lightsaber-battle.mp4' },
   { id: 'meelo-omelette', name: 'Meelo Omelette', desc: "Let's cook Meelo. Delicious!", clip: 'meelo-omelette.mp4' },
+  { id: 'meelo-milo', name: 'Meelo Milo', desc: "one of Chef's favourite drinks", clip: 'meelo-milo.mp4' },
+  { id: 'meelo-pizza', name: 'Meelo Pizza', desc: 'Pepperoni pizza, but Meelo. Tastes great!', clip: 'meelo-pizza.mp4' },
 ]
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
 
