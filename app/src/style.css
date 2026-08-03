@@ -3233,15 +3233,28 @@ img.shop-image {
      image's bounding box and paints a visible grey square behind it. */
   box-shadow: 0 2px 8px rgba(0,0,0,0.3);
 }
+/* Sibling of .st-title, NOT nested inside it - the title span is an
+   ellipsized nowrap box, and a pill inside it gets truncated to "DEF…"
+   whenever the ✓ tick squeezes the row. As its own flex item the pill can
+   never be clipped; the title alone absorbs the squeeze. */
 .st-def {
-  font-style: normal; font-size:0.625rem; font-weight:800; letter-spacing:0.04em;
+  flex:none; font-style: normal; font-size:0.625rem; font-weight:800; letter-spacing:0.04em;
   text-transform: uppercase; color: var(--muted); border:1px solid var(--line);
-  padding:0.125rem 0.375rem; border-radius:62rem; margin-left:0.4375rem; vertical-align:2%;
+  padding:0.125rem 0.375rem; border-radius:62rem; margin-left:-0.25rem;
 }
+/* flex:0 1 auto - shrinks (ellipsis) under pressure but never grows, so the
+   Default pill hugs the title text instead of being pushed to the far edge.
+   The tick/bars pin right via margin-left:auto instead of a stretched title. */
 .st-title {
-  flex:1; min-width:0; font-weight:700; font-size:0.9375rem;
+  flex:0 1 auto; min-width:0; font-weight:700; font-size:0.9375rem;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
+/* Whichever indicator is first-visible takes the auto margin; when both show
+   (previewing the very track that's saved) the bars push right and the tick
+   follows them via the row's normal flex gap. */
+.st-row .st-bars { margin-left:auto; }
+.st-row .st-tick { margin-left:auto; }
+.st-row.is-playing.is-selected .st-tick { margin-left:0; }
 .st-row .st-tick { display:none; color: var(--gold); font-weight:800; font-size:1.0625rem; flex:none; }
 .st-row.is-selected { background: rgba(246,198,75,0.10); border-color: rgba(246,198,75,0.35); }
 .st-row.is-selected .st-tick { display:block; }
@@ -3298,14 +3311,14 @@ img.shop-image {
 
 /* While the mini-player is showing, lift the bug FAB and toast clear of it -
    both would otherwise sit underneath/behind it. 5.75rem = the mini-player's
-   real rendered height (~5.6rem) plus a touch of air; NOT its 9rem
+   real rendered height (103px ≈ 6.44rem, harness-measured) plus air; NOT its 9rem
    max-height, which is only a transition cap and would strand both floating
    mid-screen. */
 body.soundtrack-mini-open #bug-fab {
-  bottom: calc(7.1rem + 5.75rem + env(safe-area-inset-bottom, 0px));
+  bottom: calc(7.1rem + 7rem + env(safe-area-inset-bottom, 0px));
 }
 body.soundtrack-mini-open .toast {
-  bottom: calc(7.25rem + 5.75rem);
+  bottom: calc(7.25rem + 7rem);
 }
 
 @media (prefers-reduced-motion: reduce) {

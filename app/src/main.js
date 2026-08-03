@@ -5415,7 +5415,7 @@ function renderSoundtrackPicker() {
   const rows = SOUNDTRACKS.map((t, i) => `
     <button type="button" class="st-row" data-i="${i}">
       <img class="st-art" src="${t.art}" alt="" />
-      <span class="st-title">${escapeHtml(t.title)}${t.isDefault ? ' <em class="st-def">Default</em>' : ''}</span>
+      <span class="st-title">${escapeHtml(t.title)}</span>${t.isDefault ? '<em class="st-def">Default</em>' : ''}
       <span class="st-bars" aria-hidden="true"><i></i><i></i><i></i></span>
       <span class="st-tick" aria-hidden="true">✓</span>
     </button>
