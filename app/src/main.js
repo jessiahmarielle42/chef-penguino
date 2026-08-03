@@ -991,6 +991,9 @@ const EMOTES = [
   { id: 'my-favourite', name: 'My Favourite!', desc: 'Chef hugs Meelo the monkey plush toy', clip: 'my-favourite.mp4' },
   { id: 'lightsaber-battle', name: 'Lightsaber battle!', desc: 'Chef vs Meelo. who will win?', clip: 'lightsaber-battle.mp4' },
   { id: 'meelo-omelette', name: 'Meelo Omelette', desc: "Let's cook Meelo. Delicious!", clip: 'meelo-omelette.mp4' },
+  { id: 'meelo-milo', name: 'Meelo Milo', desc: "one of Chef's favourite drinks", clip: 'meelo-milo.mp4' },
+  { id: 'meelo-pizza', name: 'Meelo Pizza', desc: 'Pepperoni pizza, but Meelo. Tastes great!', clip: 'meelo-pizza.mp4' },
+  { id: 'chef-mouse', name: 'Chef Mouse', desc: 'Chef Penguino and Sad Mouse make pizza!', clip: 'chef-mouse.mp4' },
 ]
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
 
