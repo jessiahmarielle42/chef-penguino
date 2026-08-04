@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.0.10'
+const APP_VERSION = 'v2.5.1.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -8947,6 +8947,10 @@ function tourMount() {
     <div class="tour-block tour-block-b" hidden></div>
     <div class="tour-block tour-block-l" hidden></div>
     <div class="tour-block tour-block-r" hidden></div>
+    <div class="tour-block tour-block-corner" id="tour-corner-tl" hidden></div>
+    <div class="tour-block tour-block-corner" id="tour-corner-tr" hidden></div>
+    <div class="tour-block tour-block-corner" id="tour-corner-bl" hidden></div>
+    <div class="tour-block tour-block-corner" id="tour-corner-br" hidden></div>
     <div class="tour-ring" id="tour-ring" hidden></div>
     <div class="tour-arrow" id="tour-arrow" hidden>👇</div>
     <div class="popup tour-card" id="tour-card" hidden><p></p></div>
@@ -9279,7 +9283,7 @@ function tourSyncEnter(step) {
   if (step.watch) { try { step.watch() } catch {} }
 }
 
-function tourApplyBlockers(rect, pad, vp) {
+function tourApplyBlockers(rect, pad, vp, cornerRadiusPx) {
   // rect and vw/vh are all in visual-viewport-relative space (see
   // tourTargetRect/tourViewport); convert back to layout-viewport
   // coordinates (add the offset back) only at the point of painting, since
@@ -9297,6 +9301,30 @@ function tourApplyBlockers(rect, pad, vp) {
   bottom.style.cssText = `left:${ox}px; top:${oy + y1}px; width:${vw}px; height:${Math.max(0, vh - y1)}px;`
   left.style.cssText = `left:${ox}px; top:${oy + y0}px; width:${Math.max(0, x0)}px; height:${Math.max(0, y1 - y0)}px;`
   right.style.cssText = `left:${ox + x1}px; top:${oy + y0}px; width:${Math.max(0, vw - x1)}px; height:${Math.max(0, y1 - y0)}px;`
+  // The four rects above cut a perfectly RECTANGULAR hole - but the ring
+  // drawn inside it is rounded (border-radius, up to a full pill). That
+  // mismatch leaves the hole's four square corners dimmed by nothing at
+  // all: real, undimmed app background peeking through in a faint
+  // rectangle exactly at the hole's bounding box, behind every rounded
+  // spotlighted button. A quarter-circle "cap" patch at each hole corner -
+  // same dim colour, rounded only on the corner facing the hole's centre -
+  // fills exactly that gap, so the dim boundary reads as rounded no matter
+  // the target's shape. Sized to the ring's own radius so the two curves
+  // are identical, not just visually close.
+  const r = Math.max(0, Math.min(cornerRadiusPx || 0, (x1 - x0) / 2, (y1 - y0) / 2))
+  const tl = document.getElementById('tour-corner-tl')
+  const tr = document.getElementById('tour-corner-tr')
+  const bl = document.getElementById('tour-corner-bl')
+  const br = document.getElementById('tour-corner-br')
+  if (r > 0.5) {
+    tl.hidden = false; tr.hidden = false; bl.hidden = false; br.hidden = false
+    tl.style.cssText = `left:${ox + x0}px; top:${oy + y0}px; width:${r}px; height:${r}px; border-bottom-right-radius:${r}px;`
+    tr.style.cssText = `left:${ox + x1 - r}px; top:${oy + y0}px; width:${r}px; height:${r}px; border-bottom-left-radius:${r}px;`
+    bl.style.cssText = `left:${ox + x0}px; top:${oy + y1 - r}px; width:${r}px; height:${r}px; border-top-right-radius:${r}px;`
+    br.style.cssText = `left:${ox + x1 - r}px; top:${oy + y1 - r}px; width:${r}px; height:${r}px; border-top-left-radius:${r}px;`
+  } else {
+    tl.hidden = true; tr.hidden = true; bl.hidden = true; br.hidden = true
+  }
 }
 
 function tourClearBlockers() {
@@ -9524,6 +9552,11 @@ function tourPositionForStep(step) {
   // undershoot the button's actual rounding.
   const isPill = parsedRadius >= Math.min(rect.width, rect.height) / 2 - 1
   const ringRadius = isPill ? '999px' : `${parsedRadius + pad}px`
+  // Numeric px version for the blocker corner patches below - "999px" as a
+  // CSS string clamps itself automatically in the browser, but JS needs a
+  // real number to size those patches, so pill buttons use the same
+  // half-of-the-smaller-side clamp the browser would apply.
+  const ringRadiusPx = isPill ? Math.min(rect.width + pad * 2, rect.height + pad * 2) / 2 : parsedRadius + pad
   ring.style.cssText = `left:${vp.offsetLeft + rect.left - pad}px; top:${vp.offsetTop + rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad * 2}px; border-radius:${ringRadius}; --tour-ring-radius:${ringRadius};`
   // When the target lives inside a real modal CARD - overlay()'s `.popup`
   // markup, which has an actual visual boundary (background, radius,
@@ -9567,7 +9600,7 @@ function tourPositionForStep(step) {
     // Blockers use the SAME uniform pad as the ring so the tappable hole
     // exactly matches what's visually lit - different pads would let the
     // hole and the highlight disagree.
-    tourApplyBlockers(blockerRect, pad, vp)
+    tourApplyBlockers(blockerRect, pad, vp, ringRadiusPx)
   }
   let arrowBelow = false
   if (step.arrow) {
@@ -10191,7 +10224,12 @@ function buildOnboardingSteps() {
       },
       // Pure, side-effect-free - lets the self-heal scan land here.
       probe: () => !!document.querySelector('.hero-tap[data-action="emote"]'),
-      getTarget: () => document.querySelector('.hero-tap[data-action="emote"]'),
+      // Spotlight the WHOLE hero card, not just the small button - the
+      // point of this step is watching the chef's move play out, and
+      // ringing just the button dimmed the actual art the chef is meant to
+      // see clearly. The click handler below still only fires on a real
+      // tap on the button itself; only what gets lit up changes.
+      getTarget: () => document.querySelector('#hero-card') || document.querySelector('.hero-tap[data-action="emote"]'),
       text: `Tap <b>Tap to emote</b> to see your chef's new move!`,
       // Deliberately does NOT advance on the real tap (unlike
       // tourAdvanceOnRealClick) - the tap only starts the clip
@@ -10213,7 +10251,12 @@ function buildOnboardingSteps() {
         const step = tour ? tour.steps[tour.index] : null
         const onClick = (e) => {
           const t = e.target
-          if (!(t instanceof Element) || !t.closest('.hero-tap[data-action="emote"]')) return
+          // The real app plays the emote on a tap ANYWHERE in #hero-card
+          // (see its own click listener), and the spotlight now covers the
+          // whole card to match - this must recognise the same tap the app
+          // does, not just the small button, or the tour stalls on a tap
+          // that visibly worked.
+          if (!(t instanceof Element) || !t.closest('#hero-card')) return
           if (emoteTappedAt != null) return
           emoteTappedAt = Date.now()
           // Belt-and-braces: guarantees watch() gets re-evaluated at the 8s
