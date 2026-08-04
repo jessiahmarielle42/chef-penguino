@@ -3140,6 +3140,13 @@ img.shop-image {
   z-index: 2;
 }
 .tour-ring[hidden] { display: none; }
+/* The gold ring IS the focus indicator for whatever it's spotlighting - the
+   browser's own default focus outline on the real control underneath then
+   draws a second, mismatched ring on top of it (square corners, wrong
+   colour). Tour targets are queried/clicked programmatically, which is
+   exactly what triggers that default outline; suppress it app-wide while
+   a tour is on screen - the ring already communicates focus. */
+body:has(#tour-root:not([hidden])) :focus { outline: none; }
 @keyframes tourPulse {
   0%,100% { box-shadow: 0 0 0 4px rgba(246,198,75,0.25), 0 0 22px rgba(246,198,75,0.55); }
   50%     { box-shadow: 0 0 0 8px rgba(246,198,75,0.12), 0 0 32px rgba(246,198,75,0.85); }
