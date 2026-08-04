@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.0.3'
+const APP_VERSION = 'v2.5.0.4'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -9121,6 +9121,19 @@ function tourSync() {
       }
     }
     if (!ready) {
+      // A step's watch() is its "the goal state was reached" trigger, and
+      // for several steps reaching that goal is EXACTLY what makes ready()
+      // go false (confirm-delete: the delete succeeds, so the confirm popup
+      // - its own target - disappears). Running watch() only on the ready
+      // path therefore made those watches unreachable at the one moment
+      // they mattered, stranding the tour with nothing able to advance it.
+      // Run it here first; if it advances, the sync for the new step takes
+      // over and this one must not continue tearing chrome down.
+      if (step.watch) {
+        const before = tour.index
+        try { step.watch() } catch {}
+        if (!tour || tour.index !== before) return
+      }
       tourDebugRender()
       tourSetVisible(false)
       if (tour.cleanupStep) { try { tour.cleanupStep() } catch {}; tour.cleanupStep = null }
