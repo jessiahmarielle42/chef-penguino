@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.0.6'
+const APP_VERSION = 'v2.5.0.7'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -5241,6 +5241,37 @@ async function openBugReport() {
         windowWidth: target.offsetWidth, windowHeight: target.offsetHeight,
       })
     } catch { shotCanvas = null }
+  }
+  // The soundtrack mini-player lives on <body> (survives mountScreen wiping
+  // #app's innerHTML - see renderSoundtrackPicker), so it's outside what the
+  // capture above walks: a bug report filed while previewing music silently
+  // omitted the very player being reported. Composited in as a SEPARATE
+  // capture, drawn onto the main shot at its real on-screen offset, rather
+  // than reparenting it into the main capture - html2canvas threw
+  // (InvalidStateError: createPattern on a 0-width canvas) when the two were
+  // captured together, traced to #st-fill: its width is 0% until playback
+  // has progressed, and combined with its large border-radius that hits a
+  // genuine html2canvas edge case in its cloned-document render pass. Hiding
+  // just that one element for the height of this capture sidesteps it
+  // without touching the always-known-good main .app capture at all.
+  const miniEl = document.getElementById('soundtrack-mini')
+  if (shotCanvas && miniEl?.classList.contains('show')) {
+    const fillEl = miniEl.querySelector('#st-fill')
+    const prevFillDisplay = fillEl?.style.display
+    if (fillEl) fillEl.style.display = 'none'
+    try {
+      const { default: html2canvas } = await import('html2canvas')
+      const miniCanvas = await html2canvas(miniEl, {
+        backgroundColor: null, logging: false, useCORS: true,
+        scale: Math.min(2, window.devicePixelRatio || 1),
+      })
+      const targetRect = target.getBoundingClientRect()
+      const miniRect = miniEl.getBoundingClientRect()
+      const s = miniCanvas.width / miniRect.width
+      const ctx = shotCanvas.getContext('2d')
+      ctx.drawImage(miniCanvas, (miniRect.left - targetRect.left) * s, (miniRect.top - targetRect.top) * s, miniCanvas.width, miniCanvas.height)
+    } catch { /* the main shot without the player is still useful - never let this sink the whole capture */ }
+    if (fillEl) fillEl.style.display = prevFillDisplay || ''
   }
 
   const o = overlay(`
