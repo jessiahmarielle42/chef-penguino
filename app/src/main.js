@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.0.1'
+const APP_VERSION = 'v2.5.0.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -5538,6 +5538,7 @@ let stPreviewTrackId
 let stAudioHandlers = null
 let stVisibilityHandler = null
 let stPagehideHandler = null
+let stPopupObserver = null
 
 // Idempotent - safe to call more than once (mountScreen's generic hook,
 // pagehide and a real navigation can all race to call this for the same
@@ -5565,6 +5566,7 @@ function teardownSoundtrackPreview() {
   }
   if (stVisibilityHandler) { document.removeEventListener('visibilitychange', stVisibilityHandler); stVisibilityHandler = null }
   if (stPagehideHandler) { window.removeEventListener('pagehide', stPagehideHandler); stPagehideHandler = null }
+  if (stPopupObserver) { stPopupObserver.disconnect(); stPopupObserver = null }
   soundtrackPreviewBoost = false
   soundtrackPreviewPaused = false
   if (stPreviewTrackId !== undefined && bgMusic.src !== currentTrackSrc) {
@@ -5758,6 +5760,27 @@ function renderSoundtrackPicker() {
     const onPagehide = () => { soundtrackPreviewBoost = false; syncMusic() }
     window.addEventListener('pagehide', onPagehide)
     stPagehideHandler = onPagehide
+
+    // The mini-player is body-level (fixed, z-index 40) so it survives
+    // mountScreen's innerHTML wipe of #app - but every popup (bug report,
+    // rename, delete confirm, etc.) is appended INSIDE #app's `.app` element,
+    // whose own z-index (2) is what actually competes against the mini-
+    // player's from outside. A popup's internal z-index:70 only wins within
+    // .app's own stack; against a body-level sibling at z-index 40 it loses
+    // outright, which is how the mini-player ended up rendering on top of
+    // the bug-report popup. Rather than touch the shared overlay()/popup
+    // system for every screen in the app, just duck the mini-player out of
+    // the way for as long as ANY popup is open on this page - overlay() only
+    // ever appends/removes `.overlay` as a direct child of shellEl().
+    const shell = shellEl()
+    if (shell) {
+      const syncPopupDuck = () => {
+        miniEl.classList.toggle('behind-popup', !!shell.querySelector('.overlay.show'))
+      }
+      stPopupObserver = new MutationObserver(syncPopupDuck)
+      stPopupObserver.observe(shell, { childList: true })
+      syncPopupDuck()
+    }
 
     saveBtn.addEventListener('click', async () => {
       if (previewId === undefined) return
