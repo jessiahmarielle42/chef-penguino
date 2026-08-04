@@ -3195,11 +3195,14 @@ img.shop-image {
 .st-sub { margin:0.125rem 0.25rem 0.875rem; }
 
 /* Sticky so the Save button stays reachable while the track list scrolls -
-   this page can get taller than one screen once more presets ship. */
+   this page can get taller than one screen once more presets ship.
+   border-radius + a margin that respects .scroll's own 1rem padding (not a
+   negative offset short of it) - without both, this read as an unstyled,
+   edge-floating rectangle that matched no other card in Settings. */
 .st-savebar {
   position: sticky; top:0; z-index: 1;
-  margin:0 -0.25rem 0.625rem; padding:0.625rem 0.25rem 0.75rem;
-  background: var(--card-2); border-bottom:1px solid var(--line);
+  margin:0 0 0.875rem; padding:0.625rem 0.25rem 0.75rem;
+  background: var(--card-2); border:1px solid var(--line); border-radius:1rem;
 }
 .st-save {
   width:100%; padding:0.8125rem; border:none; border-radius:0.875rem;
@@ -3288,6 +3291,12 @@ img.shop-image {
   transform: none; max-height:9rem; visibility: visible; pointer-events: auto;
   padding-top:0.6875rem; padding-bottom:0.75rem;
 }
+/* Ducks the mini-player out of the way while any popup is open on this page
+   (bug report, rename, etc.) - see the MutationObserver in
+   renderSoundtrackPicker. A popup's z-index only outranks .st-mini within
+   .app's own stacking context, not from a body-level sibling, so without
+   this the player rendered on top of every popup regardless of z-index. */
+.st-mini.behind-popup { opacity:0; pointer-events:none; transition: opacity 0.15s ease; }
 .st-mini-row { display:flex; align-items:center; gap:0.6875rem; }
 .st-mini-art { width:2.375rem; height:2.375rem; border-radius:0.5rem; flex:none; object-fit:cover; border:1px solid var(--line); }
 .st-mini-title { font-weight:700; font-size:0.875rem; color: var(--cream); }
