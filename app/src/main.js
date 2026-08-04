@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.0.8'
+const APP_VERSION = 'v2.5.0.9'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -9263,6 +9263,27 @@ function tourSyncEnter(step) {
       if (animCleanup) { try { animCleanup() } catch {} }
     }
   }
+  // A step's spotlight target can change WITHOUT the tour re-entering the
+  // step - buy-waving's getTarget()/text are getters that switch from the
+  // "Buy" button to the confirm popup's "Yes, unlock it" once that popup
+  // opens (see its definition). The retimer/animationend re-measure above
+  // only runs on step ENTRY (tour.entered !== tour.index), so a target swap
+  // like that skipped it entirely: the confirm popup's own pop-in scale
+  // animation was measured once, mid-animation, and never re-measured -
+  // this is what produced a ring permanently sized to the popup's smaller,
+  // pre-animation state. Detect the swap here and re-arm the same settle
+  // schedule for the new target.
+  const liveTarget = step.getTarget ? step.getTarget() : null
+  if (liveTarget && liveTarget !== tour.lastPositionedTarget) {
+    tour.lastPositionedTarget = liveTarget
+    const retimer = (ms) => { const id = setTimeout(() => { if (tour) tourSync() }, ms); tour.timers.push(id) }
+    retimer(120); retimer(300); retimer(500)
+    const modalEl = liveTarget.closest('.popup') || liveTarget.closest('.pause-content')
+    if (modalEl) {
+      const onAnimEnd = () => { if (tour) tourSync() }
+      modalEl.addEventListener('animationend', onAnimEnd, { once: true })
+    }
+  }
   tourPositionForStep(step)
   // Runs on every sync (not just on entering the step), so a step can watch
   // for a real state change - e.g. a purchase completing elsewhere on
@@ -10194,6 +10215,13 @@ function buildOnboardingSteps() {
         emoteTappedAt = null
         emoteSawVideo = false
         emoteDemoAdvanced = false
+        // The generic occlusion-scroll only moves a target into view when
+        // it's occluded - the emote button itself is usually already
+        // visible after the chef scrolled down for See All Sessions
+        // earlier in the tour, so it never triggers. That left the hero
+        // art (the actual payoff of "watch your chef move") scrolled
+        // off-screen above. Scroll straight to the top of Home instead.
+        document.querySelector('.scroll')?.scrollTo({ top: 0, behavior: 'auto' })
         const step = tour ? tour.steps[tour.index] : null
         const onClick = (e) => {
           const t = e.target
