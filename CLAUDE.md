@@ -112,6 +112,18 @@ Every review pass checks:
   buttons not in the same row when they should be, low-contrast/hard-to-read
   colors, uneven padding, anything that reads as sloppy or unfinished.
 
+## 5a. Root cause first, not the smallest patch
+Fix problems fast and directly at the root cause, using the simplest,
+most reliable approach — like a senior app designer would, not a string of
+incremental patches. Concretely: before shipping a fix, ask whether it
+removes the failure mode or just narrows it. If the same class of bug has
+been "fixed" more than once (e.g. shell-height under-measuring in iOS
+standalone across several viewport units), stop tuning the losing approach
+and switch to one that can't fail the same way — e.g. pin chrome with
+`position: fixed` off the real viewport instead of trusting a container's
+computed height. Prefer the fix that eliminates a whole category of future
+bug reports over the one that only resolves the current screenshot.
+
 ## 6. Anticipate downstream UI gaps
 Don't just implement the literal spec — think through where a feature's
 effects surface elsewhere in the app, and fix gaps proactively. Example:
