@@ -3,10 +3,13 @@
 // and screenshots every step. See CLAUDE.md rule 4 / app/review/reviewHarness.js.
 //
 // Usage: node review/tour.mjs [preset]
-//   preset defaults to signed-in-ineligible-many-sessions - the important
-//   case: a real, long-tenured chef whose day sheet has many rows and who
-//   is NOT eligible for the onboarding coin, but still has onboarding_done
-//   false so the tour is reachable via Settings -> Replay Tutorial.
+//   preset defaults to owner-many-sessions - the important case: a real,
+//   long-tenured chef (already owns waving, many-row day sheet) who still
+//   has onboarding_done false so the unified tour is reachable via
+//   Settings -> Replay Tutorial. Onboarding v2.5.0.0: ONE step list for
+//   everyone (see buildOnboardingSteps() in main.js) - the three presets
+//   (guest, fresh-signup, owner-many-sessions) differ only in what
+//   completeOnboardingPurchase() ends up writing, not in which steps run.
 //
 // IMPORTANT: steps are advanced by calling `.click()` on the real DOM node
 // inside `page.evaluate()`, NOT Playwright's own `.click({ force: true })`.
@@ -26,7 +29,7 @@ const appDir = path.resolve(__dirname, '..')
 const shotsDir = path.join(__dirname, 'shots')
 mkdirSync(shotsDir, { recursive: true })
 
-const preset = process.argv[2] || 'signed-in-ineligible-many-sessions'
+const preset = process.argv[2] || 'owner-many-sessions'
 const BASE_PATH = '/chef-penguino/'
 const PORT = 4173
 const URL = `http://localhost:${PORT}${BASE_PATH}`
@@ -157,6 +160,41 @@ async function main() {
       log.push({ step, cardText: info.cardText, ringRect: info.ringRect, blockerCount: info.blockerCount })
       console.log(JSON.stringify(log[log.length - 1]))
       await shot(page, `${String(step).padStart(2, '0')}-${slug(info.cardText)}`)
+
+      // Onboarding economics numeric assertions (owner-many-sessions only -
+      // it's the one preset that already owns waving going in, so it
+      // exercises completeOnboardingPurchase()'s no-coin/no-array-change
+      // branch as well as the display-only +1 illusion everyone sees).
+      if (preset === 'owner-many-sessions') {
+        // 1. Base balance, captured once on Welcome, before the coin-popup
+        // has shown anything.
+        if (global.__econBase == null && /Welcome to Chef Penguino/.test(info.cardText || '')) {
+          global.__econBase = await page.evaluate(() => window.__reviewFixtures.coinBalance())
+          global.__econOwnedBefore = await page.evaluate(() => window.__reviewFixtures.isOwned('waving'))
+          console.log(`[ECON] base balance=${global.__econBase} ownedWavingBefore=${global.__econOwnedBefore}`)
+        }
+        // 2. Displayed +1 illusion, captured the moment buy-waving becomes
+        // current (coin-popup's "Got it!" has just fired tour.coinBonusShown
+        // = true, purchase hasn't happened yet) - also doubles as "owned
+        // state unchanged if the run is killed before purchase", since this
+        // is the exact state a kill mid-tour would leave behind: real
+        // ownership/coin_adjustment untouched, only the display illusion is
+        // up.
+        if (global.__econBonus == null && /Spend it on the.*Waving/i.test(info.cardText || '')) {
+          const econ = await page.evaluate(() => ({
+            balance: window.__reviewFixtures.coinBalance(),
+            owned: window.__reviewFixtures.isOwned('waving'),
+          }))
+          global.__econBonus = econ.balance
+          console.log(`[ECON] displayed balance after coin-popup (pre-purchase)=${econ.balance} (expect base+1=${global.__econBase + 1}) ownedWaving=${econ.owned} (expect unchanged=${global.__econOwnedBefore})`)
+        }
+        // 3. Back to base once the real purchase has landed (equipped-shown
+        // is the first step reachable only after tour.wavingPurchased).
+        if (global.__econAfter == null && /is now equipped/i.test(info.cardText || '')) {
+          global.__econAfter = await page.evaluate(() => window.__reviewFixtures.coinBalance())
+          console.log(`[ECON] balance after purchase=${global.__econAfter} (expect back to base=${global.__econBase})`)
+        }
+      }
 
       // Fix 1 numeric check: on the first ORDINARY action step (excludes the
       // welcome step's own .tour-block-t, which deliberately carries a
