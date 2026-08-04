@@ -8911,6 +8911,7 @@ function tourMount() {
       <button class="tour-pro-btn" type="button" id="tour-pro">I'm a pro.</button>
     </div>
     <p class="tour-hint" id="tour-hint" hidden>Tap anywhere to continue</p>
+    <pre class="tour-debug" id="tour-debug" hidden></pre>
   `
   document.body.appendChild(root)
   root.querySelector('#tour-skip').addEventListener('click', (e) => { e.stopPropagation(); endOnboardingTour(true) })
@@ -8934,6 +8935,40 @@ function tourMount() {
     if (external) tourSync()
   })
   tour.obs.observe(document.body, { childList: true, subtree: true })
+}
+
+// Diagnostic readout, opt-in via ?tourdebug=1 (persisted). Renders the
+// tour's ACTUAL state into the corner of the screen so a screenshot of a
+// stuck tour carries its own diagnosis - a stranded tour and a working one
+// are visually identical once the chrome hides, which is exactly why
+// several "fixed" strand bugs kept coming back. Also prints the shell
+// metrics, since iOS standalone letterboxing cannot be reproduced in a
+// headless browser at all.
+function tourDebugEnabled() {
+  try {
+    if (new URLSearchParams(location.search).get('tourdebug') === '1') localStorage.setItem('cp-tourdebug', '1')
+    return localStorage.getItem('cp-tourdebug') === '1'
+  } catch { return false }
+}
+function tourDebugRender() {
+  const el = document.getElementById('tour-debug')
+  if (!el) return
+  if (!tourDebugEnabled() || !tour) { el.hidden = true; return }
+  const step = tour.steps[tour.index]
+  let ready = 'n/a'
+  try { ready = step && step.ready ? String(step.ready()) : 'true' } catch (e) { ready = 'THREW' }
+  const probes = tour.steps
+    .map((st, i) => (i > tour.index && st.probe && (() => { try { return st.probe() } catch { return false } })()) ? `${i}:${st.id}` : null)
+    .filter(Boolean).slice(0, 3).join(',') || 'none'
+  const vv = window.visualViewport
+  const appEl = document.getElementById('app')
+  const tb = document.querySelector('.tabbar')
+  const gap = tb ? Math.round((vv ? vv.height : innerHeight) - tb.getBoundingClientRect().bottom) : '?'
+  el.hidden = false
+  el.textContent =
+    `${tour.index + 1}/${tour.steps.length} ${step ? step.id : 'END'} ready=${ready}\n` +
+    `probes=${probes} notReady=${tour.notReadyCount || 0}\n` +
+    `vh=${innerHeight} vv=${vv ? Math.round(vv.height) : '-'} app=${appEl ? Math.round(appEl.getBoundingClientRect().height) : '-'} gap=${gap}`
 }
 
 function tourSetVisible(show) {
@@ -9062,6 +9097,7 @@ function tourSync() {
       }
     }
     if (!ready) {
+      tourDebugRender()
       tourSetVisible(false)
       if (tour.cleanupStep) { try { tour.cleanupStep() } catch {}; tour.cleanupStep = null }
       document.removeEventListener('click', tourExplainClickHandler)
@@ -9093,6 +9129,7 @@ function tourSync() {
   }
   tour.notReadyCount = 0
   tourSyncEnter(step)
+  tourDebugRender()
 }
 
 function tourSyncEnter(step) {
