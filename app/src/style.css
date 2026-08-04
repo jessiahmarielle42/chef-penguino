@@ -3301,11 +3301,14 @@ body:has(#tour-root:not([hidden])) :focus { outline: none; }
 @keyframes st-eq { 0%, 100% { transform: scaleY(0.45); } 50% { transform: scaleY(1); } }
 .st-row.paused .st-bars i { animation-play-state: paused; }
 
-/* Floats above the tab bar while the picker is mounted - lives outside #app
-   (see renderSoundtrackPicker) so it survives that screen repainting after
-   Save without needing to be re-created. */
+/* Floats above the tab bar while the picker is mounted. Lives INSIDE .app
+   (position:absolute against .app's position:relative) - NOT on <body>.
+   The body-level version needed a z-index war against popups that live in
+   .app's stacking context and lost it on real Safari; in here, the shared
+   .overlay (z 70) beats this (z 40) by plain CSS in every engine, and the
+   bug-report html2canvas capture of .app includes this player natively. */
 .st-mini {
-  position: fixed; left:0; right:0; margin:0 auto; width:100%; max-width:460px;
+  position: absolute; left:0; right:0;
   /* var(--safe-bottom), not a bare env() - it resolves to the same inset but
      can be overridden, which is the only way the headless review harness can
      reproduce an iPhone's home-indicator inset and measure this player
@@ -3329,12 +3332,6 @@ body:has(#tour-root:not([hidden])) :focus { outline: none; }
   transform: none; max-height:9rem; visibility: visible; pointer-events: auto;
   padding-top:0.6875rem; padding-bottom:0.75rem;
 }
-/* Ducks the mini-player out of the way while any popup is open on this page
-   (bug report, rename, etc.) - see the MutationObserver in
-   renderSoundtrackPicker. A popup's z-index only outranks .st-mini within
-   .app's own stacking context, not from a body-level sibling, so without
-   this the player rendered on top of every popup regardless of z-index. */
-.st-mini.behind-popup { opacity:0; pointer-events:none; transition: opacity 0.15s ease; }
 .st-mini-row { display:flex; align-items:center; gap:0.6875rem; }
 .st-mini-art { width:2.375rem; height:2.375rem; border-radius:0.5rem; flex:none; object-fit:cover; border:1px solid var(--line); }
 .st-mini-title { font-weight:700; font-size:0.875rem; color: var(--cream); }
@@ -3372,9 +3369,12 @@ body:has(#tour-root:not([hidden])) :focus { outline: none; }
    instead of being derived from it. Deriving both from the same variable,
    with the arithmetic spelled out in each calc(), means they can't drift
    apart again - change --st-mini-h once and both follow.
-   6.5rem is generous over the harness-measured real height (103px ≈
-   6.4375rem); NOT the 9rem max-height above, which is only a transition
-   cap and would strand both floating mid-screen if used here instead. */
+   The 6.5rem here is only a first-paint FALLBACK: showMini() overwrites it
+   on <body> with the player's MEASURED offsetHeight, because any hardcoded
+   height is a guess about someone else's device - larger system fonts /
+   Dynamic Type grow the real player, and a guessed height is exactly how
+   the FAB ended up floating far above the player on a real iPhone while
+   the headless harness swore it was 7px away. */
 body.soundtrack-mini-open {
   --st-mini-h: 6.5rem;
 }

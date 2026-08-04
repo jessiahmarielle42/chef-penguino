@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.0.9'
+const APP_VERSION = 'v2.5.0.10'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -5230,9 +5230,19 @@ function updateBugFabVisibility() {
 async function openBugReport() {
   // Capture the current screen (.app, which excludes the body-level FAB)
   // BEFORE the popup is added to the DOM, so the shot shows the real screen.
+  // The soundtrack mini-player now lives inside .app, so it appears in this
+  // capture natively - no separate composite pass. One quirk remains:
+  // html2canvas throws (InvalidStateError: createPattern on a 0-width
+  // canvas) on the picker's #st-fill progress bar - its width is 0% until
+  // playback progresses, and combined with its large border-radius that
+  // hits a genuine html2canvas edge case, killing the WHOLE capture. Hide
+  // just that element for the duration of the shot; restored right after.
   let shotCanvas = null
   const target = shellEl()
   if (target) {
+    const fillEl = target.querySelector('#st-fill')
+    const prevFillDisplay = fillEl?.style.display
+    if (fillEl) fillEl.style.display = 'none'
     try {
       const { default: html2canvas } = await import('html2canvas')
       const bg = getComputedStyle(document.documentElement).getPropertyValue('--page-bg').trim() || '#120c09'
@@ -5242,36 +5252,6 @@ async function openBugReport() {
         windowWidth: target.offsetWidth, windowHeight: target.offsetHeight,
       })
     } catch { shotCanvas = null }
-  }
-  // The soundtrack mini-player lives on <body> (survives mountScreen wiping
-  // #app's innerHTML - see renderSoundtrackPicker), so it's outside what the
-  // capture above walks: a bug report filed while previewing music silently
-  // omitted the very player being reported. Composited in as a SEPARATE
-  // capture, drawn onto the main shot at its real on-screen offset, rather
-  // than reparenting it into the main capture - html2canvas threw
-  // (InvalidStateError: createPattern on a 0-width canvas) when the two were
-  // captured together, traced to #st-fill: its width is 0% until playback
-  // has progressed, and combined with its large border-radius that hits a
-  // genuine html2canvas edge case in its cloned-document render pass. Hiding
-  // just that one element for the height of this capture sidesteps it
-  // without touching the always-known-good main .app capture at all.
-  const miniEl = document.getElementById('soundtrack-mini')
-  if (shotCanvas && miniEl?.classList.contains('show')) {
-    const fillEl = miniEl.querySelector('#st-fill')
-    const prevFillDisplay = fillEl?.style.display
-    if (fillEl) fillEl.style.display = 'none'
-    try {
-      const { default: html2canvas } = await import('html2canvas')
-      const miniCanvas = await html2canvas(miniEl, {
-        backgroundColor: null, logging: false, useCORS: true,
-        scale: Math.min(2, window.devicePixelRatio || 1),
-      })
-      const targetRect = target.getBoundingClientRect()
-      const miniRect = miniEl.getBoundingClientRect()
-      const s = miniCanvas.width / miniRect.width
-      const ctx = shotCanvas.getContext('2d')
-      ctx.drawImage(miniCanvas, (miniRect.left - targetRect.left) * s, (miniRect.top - targetRect.top) * s, miniCanvas.width, miniCanvas.height)
-    } catch { /* the main shot without the player is still useful - never let this sink the whole capture */ }
     if (fillEl) fillEl.style.display = prevFillDisplay || ''
   }
 
@@ -5571,7 +5551,6 @@ let stPreviewTrackId
 let stAudioHandlers = null
 let stVisibilityHandler = null
 let stPagehideHandler = null
-let stPopupObserver = null
 
 // Idempotent - safe to call more than once (mountScreen's generic hook,
 // pagehide and a real navigation can all race to call this for the same
@@ -5581,6 +5560,7 @@ let stPopupObserver = null
 // in bgMusic than the one they actually saved.
 function teardownSoundtrackPreview() {
   document.body.classList.remove('soundtrack-mini-open')
+  document.body.style.removeProperty('--st-mini-h') // measured per-visit by showMini()
   // Removed from the DOM outright, not just un-.show'd: the hidden state is
   // max-height:0, which collapses the CONTENT box but not the player's own
   // padding/border, so a stubborn sliver of it kept rendering over the
@@ -5599,7 +5579,6 @@ function teardownSoundtrackPreview() {
   }
   if (stVisibilityHandler) { document.removeEventListener('visibilitychange', stVisibilityHandler); stVisibilityHandler = null }
   if (stPagehideHandler) { window.removeEventListener('pagehide', stPagehideHandler); stPagehideHandler = null }
-  if (stPopupObserver) { stPopupObserver.disconnect(); stPopupObserver = null }
   soundtrackPreviewBoost = false
   soundtrackPreviewPaused = false
   if (stPreviewTrackId !== undefined && bgMusic.src !== currentTrackSrc) {
@@ -5641,10 +5620,19 @@ function renderSoundtrackPicker() {
     const rowEls = Array.from(app.querySelectorAll('.st-row'))
     const saveBtn = app.querySelector('#st-save')
 
-    // Mini-player lives outside #app - mountScreen wipes #app's innerHTML on
-    // every navigation, but the mini-player must survive a repaint of this
-    // same screen (e.g. right after Save) and float above the tab bar
-    // regardless of whatever is scrolled inside .scroll.
+    // Mini-player lives INSIDE .app (position:absolute against .app's own
+    // position:relative), NOT on document.body. It used to live on body "to
+    // survive navigation" - that one decision caused an entire family of
+    // real-device bugs: body-level z-index can't be beaten by popups that
+    // live inside .app's stacking context (so the player rendered over the
+    // bug-report popup on iOS - a MutationObserver "duck" papered over it
+    // and raced, passing on Chromium and failing on Safari), html2canvas
+    // couldn't see it in bug-report screenshots, and leaving the page could
+    // strand a sliver of it. Inside .app: popups (z 70) beat it (z 40)
+    // by plain CSS in every engine, the bug-shot capture includes it
+    // natively, and mountScreen's innerHTML wipe destroys it on any
+    // navigation so nothing can linger. Save repaints this screen in place
+    // (no re-mount), so it survives the one moment it must.
     let miniEl = document.getElementById('soundtrack-mini')
     if (!miniEl) {
       miniEl = document.createElement('div')
@@ -5664,7 +5652,7 @@ function renderSoundtrackPicker() {
         </div>
         <div class="st-times"><span id="st-tcur">0:00</span><span id="st-tdur">0:00</span></div>
       `
-      document.body.appendChild(miniEl)
+      shellEl().appendChild(miniEl)
     }
     const miniArt = miniEl.querySelector('#st-mini-art')
     const miniTitle = miniEl.querySelector('#st-mini-title')
@@ -5699,6 +5687,20 @@ function renderSoundtrackPicker() {
       miniTitle.textContent = t.title
       miniEl.classList.add('show')
       document.body.classList.add('soundtrack-mini-open')
+      // Feed the player's MEASURED height to the CSS that lifts the bug FAB
+      // and toast clear of it (see --st-mini-h in style.css). A hardcoded
+      // height already shipped wrong once: it was tuned against a headless
+      // viewport and left the FAB floating far above the real player on an
+      // actual iPhone (larger fonts/Dynamic Type change the true height).
+      // Measured twice: once right away (best-effort while the 0.25s slide-in
+      // is still running - offsetHeight mid-transition is partial, hence the
+      // >40 guard so a half-open 1px never gets recorded), and again after
+      // the transition has settled, which is the value that sticks.
+      const measureMini = () => {
+        if (miniEl.offsetHeight > 40) document.body.style.setProperty('--st-mini-h', miniEl.offsetHeight + 'px')
+      }
+      requestAnimationFrame(measureMini)
+      setTimeout(measureMini, 320)
     }
 
     rowEls.forEach((r, i) => {
@@ -5794,26 +5796,12 @@ function renderSoundtrackPicker() {
     window.addEventListener('pagehide', onPagehide)
     stPagehideHandler = onPagehide
 
-    // The mini-player is body-level (fixed, z-index 40) so it survives
-    // mountScreen's innerHTML wipe of #app - but every popup (bug report,
-    // rename, delete confirm, etc.) is appended INSIDE #app's `.app` element,
-    // whose own z-index (2) is what actually competes against the mini-
-    // player's from outside. A popup's internal z-index:70 only wins within
-    // .app's own stack; against a body-level sibling at z-index 40 it loses
-    // outright, which is how the mini-player ended up rendering on top of
-    // the bug-report popup. Rather than touch the shared overlay()/popup
-    // system for every screen in the app, just duck the mini-player out of
-    // the way for as long as ANY popup is open on this page - overlay() only
-    // ever appends/removes `.overlay` as a direct child of shellEl().
-    const shell = shellEl()
-    if (shell) {
-      const syncPopupDuck = () => {
-        miniEl.classList.toggle('behind-popup', !!shell.querySelector('.overlay.show'))
-      }
-      stPopupObserver = new MutationObserver(syncPopupDuck)
-      stPopupObserver.observe(shell, { childList: true })
-      syncPopupDuck()
-    }
+    // No popup-vs-mini-player handling needed here: the player now lives
+    // inside .app, the same stacking context as every popup, so the
+    // overlay's z-index 70 beats the player's 40 by plain CSS - the old
+    // body-level placement needed a MutationObserver "duck" for this, which
+    // raced on real Safari (class applied, style not yet - the exact
+    // on-device bug where the player sat on top of the bug-report popup).
 
     saveBtn.addEventListener('click', async () => {
       if (previewId === undefined) return

@@ -103,6 +103,33 @@ gestures. Every report must say which fixes are harness-verified and which
 still need the user's device — never let an unverifiable fix sit inside a
 list of verified ones.
 
+### 4e. Device-reported bugs: WebKit-first, repro-first, no blind fixes
+Learned the hard way (soundtrack mini-player, Aug 2026): a bug the user
+screenshots on their iPhone was "fixed" and re-"fixed" against headless
+Chromium, shipped as verified, and was never actually fixed — the failing
+mechanism (a MutationObserver-driven CSS class) **raced only on Safari**.
+Chromium-green means nothing for a device-reported bug. The rules:
+1. **Reproduce the bug FIRST** (red), in Playwright **WebKit** with iPhone
+   emulation (`devices['iPhone 13']`) — WebKit is Safari's engine and does
+   catch engine-divergent behaviour Chromium hides. Install if missing
+   (container recycles wipe it):
+   `npx playwright install webkit && npx playwright install-deps webkit`
+   (binaries land in /opt/pw-browsers, e.g. webkit-2336).
+2. **No fix ships without a red repro** or on-device measurements that
+   pinpoint the defect. If it won't reproduce in WebKit either, do NOT
+   ship a guess — ship an opt-in diagnostic instead (the `?tourdebug=1`
+   pattern: an overlay that prints live rects/env values on screen) and ask
+   the user for ONE debug screenshot; fix from that data.
+3. A fix for a device-reported bug passes only when the SAME assertions go
+   green in **both** engines (Chromium + WebKit-iPhone).
+4. Prefer removing the fragile mechanism over patching it: races
+   (observer-toggled classes, timing-dependent styles) and guessed
+   geometry (hardcoded heights for elements whose size depends on device
+   fonts) are bug factories — measure real layout at runtime instead.
+5. Never claim "fixed" to the user for iOS-only compositing/viewport/
+   keyboard behaviour that even WebKit-headless can't reproduce — say
+   exactly what needs their device, per 4d.
+
 ## 5. UI/functionality/design QA
 Every review pass checks:
 - The UI actually works (interactions, states, edge cases).
