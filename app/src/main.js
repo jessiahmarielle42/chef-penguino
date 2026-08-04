@@ -620,6 +620,7 @@ const SOUNDTRACKS = [
   { id: 'handpan', title: 'Handpan', src: `${BASE}assets/soundtracks/handpan.mp3`, art: `${BASE}assets/soundtracks/handpan.jpg` },
   { id: 'lofi-girl', title: 'Lofi Girl', src: `${BASE}assets/soundtracks/lofi-girl.mp3`, art: `${BASE}assets/soundtracks/lofi-girl.jpg` },
   { id: 'plants-vs-zombies', title: 'Plants vs Zombies', src: `${BASE}assets/soundtracks/plants-vs-zombies.mp3`, art: `${BASE}assets/soundtracks/plants-vs-zombies.jpg` },
+  { id: 'sad-mouse', title: 'Sad Mouse', src: `${BASE}assets/soundtracks/sad-mouse.mp3`, art: `${BASE}assets/soundtracks/sad-mouse.jpg` },
 ]
 function soundtrackById(id) { return SOUNDTRACKS.find(t => (t.id || null) === (id || null)) || SOUNDTRACKS[0] }
 
