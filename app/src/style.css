@@ -3127,6 +3127,12 @@ img.shop-image {
 .tour-block[hidden] { display: none; }
 .tour-ring {
   position: fixed; border-radius: 1rem; border: 3px solid var(--gold); pointer-events: none;
+  /* clip-path forces the glow to actually follow the ring's rounded shape.
+     Without it, a wide-blur box-shadow on a rounded element still renders a
+     faint rectangular silhouette at the box's true (unrounded) corners -
+     the "amateur rectangle behind the button" artifact. inset() with the
+     same radius as the border clips the shadow to the rounded outline. */
+  clip-path: inset(-30px round var(--tour-ring-radius, 1rem));
   box-shadow: 0 0 0 4px rgba(246,198,75,0.25), 0 0 22px rgba(246,198,75,0.55);
   animation: tourPulse 1.6s ease-in-out infinite;
   /* Above .tour-block's full-screen scrim (z-index 1) so the ring/card/hint

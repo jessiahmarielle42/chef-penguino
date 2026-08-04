@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.0.5'
+const APP_VERSION = 'v2.5.0.6'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -9483,7 +9483,7 @@ function tourPositionForStep(step) {
   // undershoot the button's actual rounding.
   const isPill = parsedRadius >= Math.min(rect.width, rect.height) / 2 - 1
   const ringRadius = isPill ? '999px' : `${parsedRadius + pad}px`
-  ring.style.cssText = `left:${vp.offsetLeft + rect.left - pad}px; top:${vp.offsetTop + rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad * 2}px; border-radius:${ringRadius};`
+  ring.style.cssText = `left:${vp.offsetLeft + rect.left - pad}px; top:${vp.offsetTop + rect.top - pad}px; width:${rect.width + pad * 2}px; height:${rect.height + pad * 2}px; border-radius:${ringRadius}; --tour-ring-radius:${ringRadius};`
   // When the target lives inside a real modal CARD - overlay()'s `.popup`
   // markup, which has an actual visual boundary (background, radius,
   // shadow) - unlike `.pause-content` (see below), so it CAN be reasoned
