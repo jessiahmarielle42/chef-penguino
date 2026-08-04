@@ -81,14 +81,17 @@ const PRESET_AVATARS = [
 
 const GUEST_PROFILE = null
 
-// waving_free defaults to false for a genuinely new signup (see
-// supabase/migration_onboarding.sql: `default false`, only backfilled to
-// true for pre-migration grandfathered accounts) - true here would make
-// isOwned('waving') report the emote as already "owned" via the free-grant
-// path and permanently fail isEligibleForOnboardingCoin()'s `if
-// (isOwned('waving')) return false` check, so this preset would silently
-// never actually be eligible despite its name.
-const ELIGIBLE_PROFILE = {
+// Onboarding v2.5.0.0: ONE unified tour flow for everyone (see
+// buildOnboardingSteps() in main.js) - these three presets are now just
+// three different WRITE shapes going into the same walk, not three
+// different step sequences. See CLAUDE.md rule 4a.
+
+// A brand-new signed-in signup: 0 pizzas, owns nothing, waving_free false
+// (the column's real default for a post-migration signup). The tour's
+// coin-popup/buy-waving steps run their full real-purchase path for this
+// preset - complete_onboarding_purchase() grants the coin AND appends
+// 'waving' (see the fixture RPC stub below).
+const FRESH_SIGNUP_PROFILE = {
   id: 'user-1',
   display_name: 'Keefe',
   friend_code: 'KEEFE01',
@@ -105,15 +108,16 @@ const ELIGIBLE_PROFILE = {
 }
 
 // The important preset: reproduces a real, long-tenured signed-in chef's
-// account - Lv ~10-ish (29 lifetime pizzas), already holds a coin (so
-// isEligibleForOnboardingCoin() genuinely returns false - see main.js
-// ~line 8210: coinsEarned() = floor(29/12) = 2 >= 1 already disqualifies
-// it, and owned_emotes containing 'waving' + waving_free:false double-
-// disqualifies via isOwned('waving') too, belt-and-braces), but with
-// onboarding_done:false so the tour still auto-starts on Home. Seven
+// account - Lv ~10-ish (29 lifetime pizzas), already owns waving (via
+// owned_emotes AND waving_free - belt-and-braces), but with
+// onboarding_done:false so the tour still auto-starts on Home. The tour's
+// buy-waving step still renders Locked/buyable for this owner too (the
+// render-time override - see renderShop()), but
+// complete_onboarding_purchase() is a no-coin, no-array-change no-op for
+// them (already an owner) - only onboarding_coin_claimed flips. Seven
 // same-day sessions with varied times/tasks reproduces the busy day-sheet
 // that was breaking the calendar/tour.
-const INELIGIBLE_PROFILE = {
+const OWNER_PROFILE = {
   id: 'user-1',
   display_name: 'Keefe',
   friend_code: 'KEEFE01',
@@ -126,7 +130,7 @@ const INELIGIBLE_PROFILE = {
   level_seen: 10,
   waving_free: false,
   onboarding_done: false,
-  onboarding_coin_claimed: true,
+  onboarding_coin_claimed: false,
 }
 
 // Relative to "now" (hoursAgo), not fixed clock times - a fixed 1:30pm etc.
@@ -135,7 +139,7 @@ const INELIGIBLE_PROFILE = {
 // most recent) and was exactly what made tourLogId's old "guess the
 // newest entry" resolution unreliable. All within a few hours of "now" so
 // they stay on today's SGT calendar cell (see hoursAgo's clamp).
-const INELIGIBLE_SESSIONS = [
+const OWNER_SESSIONS = [
   makeSessionRowAgo('s-1', 'replying tutors n stu', 38, 1, 1),
   makeSessionRowAgo('s-2', 'test', 0, 0, 2),
   makeSessionRowAgo('s-3', 'test', 0, 0, 3),
@@ -143,19 +147,6 @@ const INELIGIBLE_SESSIONS = [
   makeSessionRowAgo('s-5', 'test', 0, 0, 5),
   makeSessionRowAgo('s-6', 'lesson prep', 25, 1, 6),
   makeSessionRowAgo('s-7', 'grading', 45, 1, 7),
-]
-
-// S2: a guest who already earned a coin locally (coinsEarned() = floor(14/12)
-// = 1 >= 1), so guestWouldQualify() is false and the tour must NOT promise a
-// coin it can't grant after sign-in. A few same-day sessions so the day
-// sheet/delete-flow steps have real rows to work with, same as the other
-// non-empty presets. Does not own waving (guest waving is always "free"
-// visually, but ownedEmotes doesn't include it, matching a real guest who
-// hasn't purchased it).
-const GUEST_EARNED_SESSIONS = [
-  makeSessionRowAgo('gs-1', 'reading', 40, 1, 1),
-  makeSessionRowAgo('gs-2', 'writing', 25, 1, 2),
-  makeSessionRowAgo('gs-3', 'test', 0, 0, 3),
 ]
 
 const PRESETS = {
@@ -166,28 +157,20 @@ const PRESETS = {
     // A truly fresh guest: captureGuestWavingFreeIfNeeded() would have run
     // at boot with no prior activity, so this is false - nothing owned,
     // nothing equipped, must buy waving with the tour coin like a new
-    // signed-in signup.
+    // signed-in signup. completeOnboardingPurchase()'s guest branch does
+    // the real local write (state.ownedEmotes/coinAdjustment/
+    // onboardingCoinClaimed) for this preset.
     guestState: { pizzas: 0, ownedEmotes: [], guestWavingFree: false },
   },
-  'guest-earned-coin': {
-    user: null,
-    profile: GUEST_PROFILE,
-    sessions: GUEST_EARNED_SESSIONS,
-    // Guest state (pizzas/ownedEmotes) lives in main.js's localStorage-backed
-    // `state`, not in the fixture profile/sessions tables - applyPreset's
-    // guestState passthrough (below) seeds it directly. Legacy guest (had
-    // activity before the guestWavingFree flag existed) - keeps free waving.
-    guestState: { pizzas: 14, ownedEmotes: [], guestWavingFree: true },
-  },
-  'signed-in-eligible': {
+  'fresh-signup': {
     user: { id: 'user-1', email: 'keefe@example.com' },
-    profile: ELIGIBLE_PROFILE,
+    profile: FRESH_SIGNUP_PROFILE,
     sessions: [],
   },
-  'signed-in-ineligible-many-sessions': {
+  'owner-many-sessions': {
     user: { id: 'user-1', email: 'keefe@example.com' },
-    profile: INELIGIBLE_PROFILE,
-    sessions: INELIGIBLE_SESSIONS,
+    profile: OWNER_PROFILE,
+    sessions: OWNER_SESSIONS,
   },
 }
 
@@ -329,27 +312,33 @@ function fakeFrom(table) {
 }
 
 function fakeRpc(name, args) {
-  // claim_onboarding_coin needs REAL behaviour, not a benign no-op: the
-  // onboarding tour's buy-waving step reads coinBalance() (derived from the
-  // profile's coin_adjustment) to decide whether the forced purchase is
-  // affordable. Mirrors supabase/migration_onboarding.sql's function
-  // exactly - same refusal conditions, same +1 coin_adjustment grant on
-  // success - so the fixture layer models the coin actually landing.
-  if (name === 'claim_onboarding_coin') {
+  // complete_onboarding_purchase needs REAL behaviour, not a benign no-op:
+  // the tour's buy-waving step's watch() only advances once
+  // tour.wavingPurchased is set, which completeOnboardingPurchase() (see
+  // main.js) only does after this call resolves - a no-op RPC would strand
+  // the tour here forever. Mirrors
+  // supabase/migration_onboarding_v2.sql's function exactly: guarded by
+  // onboarding_coin_claimed (idempotent no-op once true), no-coin/no-array-
+  // change if already an owner (waving_free or owned_emotes already has
+  // 'waving'), otherwise the single atomic +1 coin_adjustment / append
+  // 'waving' / equip / claim write.
+  if (name === 'complete_onboarding_purchase') {
     const me = tables.profiles[0]
-    if (!me) return Promise.resolve({ data: false, error: { message: 'No profile' } })
-    const alreadyDisqualified = me.onboarding_coin_claimed
-      || Math.floor(Math.floor(me.pizzas || 0) / 12) >= 1
-      || (me.coin_adjustment || 0) !== 0
-      || (me.owned_emotes || []).includes('waving')
-      || me.waving_free
-    if (alreadyDisqualified) {
+    if (!me) return Promise.resolve({ data: null, error: { message: 'No profile' } })
+    if (me.onboarding_coin_claimed) return Promise.resolve({ data: null, error: null })
+    const alreadyOwns = me.waving_free || (me.owned_emotes || []).includes('waving')
+    if (alreadyOwns) {
+      // Mirrors the SQL: the rebuy re-equips waving (buying auto-equips),
+      // no coin, no owned_emotes change.
       me.onboarding_coin_claimed = true
-      return Promise.resolve({ data: false, error: null })
+      me.equipped_emote = 'waving'
+    } else {
+      me.coin_adjustment = (me.coin_adjustment || 0) + 1
+      me.owned_emotes = [...(me.owned_emotes || []), 'waving']
+      me.equipped_emote = 'waving'
+      me.onboarding_coin_claimed = true
     }
-    me.coin_adjustment = (me.coin_adjustment || 0) + 1
-    me.onboarding_coin_claimed = true
-    return Promise.resolve({ data: true, error: null })
+    return Promise.resolve({ data: null, error: null })
   }
   // No other RPC behaviour is required by the current renderers list;
   // resolve benignly so any incidental call doesn't throw and stall a
@@ -388,8 +377,7 @@ function applyPreset(name) {
   // Guest-only local state (pizzas/ownedEmotes/log) lives in main.js's
   // module-level `state` object, not in the fixture profile/sessions
   // tables - those only model what a SIGNED-IN chef's data looks like.
-  // Presets that need to seed a guest's coinsEarned()/ownedEmotes() (e.g.
-  // guest-earned-coin) mutate it directly here.
+  // The `guest` preset's guestState seeds it directly here.
   if (installedState) {
     installedState.pizzas = preset.guestState?.pizzas ?? 0
     installedState.ownedEmotes = preset.guestState?.ownedEmotes ? preset.guestState.ownedEmotes.slice() : []
@@ -405,7 +393,7 @@ function applyPreset(name) {
   }
 }
 
-export function installReviewHarness({ supabase, setUser, renderers, state }) {
+export function installReviewHarness({ supabase, setUser, renderers, state, getCoinBalance, getIsOwned }) {
   installedSupabase = supabase
   installedSetUser = setUser
   installedRenderers = renderers
@@ -421,9 +409,13 @@ export function installReviewHarness({ supabase, setUser, renderers, state }) {
     profile: null,
     sessions: [],
     presetAvatars: PRESET_AVATARS,
+    // Numeric test hooks for tour.mjs's onboarding-economics assertions -
+    // see the comment at this options object's call site in main.js.
+    coinBalance: () => getCoinBalance?.(),
+    isOwned: (id) => getIsOwned?.(id),
   }
 
-  applyPreset('signed-in-eligible')
+  applyPreset('fresh-signup')
 
   window.__review = async function (screenName) {
     const renderer = renderers[screenName]

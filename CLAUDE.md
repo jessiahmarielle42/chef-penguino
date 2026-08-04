@@ -50,24 +50,27 @@ long run of "fixed" onboarding bugs shipped broken.
 ### 4a. Test the user's ACTUAL state, not the easiest state
 The single biggest source of false "verified" claims in this repo: testing
 as a **guest with one session** when the reporter is a **signed-in chef with
-many sessions**. Different code path, different bugs. Guests skip whole
-branches of the onboarding tour entirely, so a clean guest run proves
-almost nothing about a signed-in report.
+many sessions**. Different code path, different bugs.
 
-Before claiming anything is fixed, run the fixture preset that matches the
-reporter. Four personas cover the onboarding tour's real branch points, and
-**every onboarding change must pass all four end-to-end before shipping**:
-- `guest` (S1) — brand-new guest, not signed in, empty log, would qualify
-  for the onboarding coin once they sign in (`guestWouldQualify()` true).
-- `guest-earned-coin` (S2) — guest replaying who already earned a coin
-  locally (`guestWouldQualify()` false) — must NOT be promised a coin the
-  post-signin merge would refuse to grant.
-- `signed-in-eligible` (S4) — brand-new signup, qualifies for the
-  onboarding coin (`isEligibleForOnboardingCoin()` true).
-- `signed-in-ineligible-many-sessions` (S3) — the admin's real account
-  shape: Lv 10, already holds coins (`isEligibleForOnboardingCoin()` is
-  false, which SKIPS several tour steps), and ~7 sessions dated today so
-  the day sheet has many rows.
+Since v2.5.0.0 the onboarding tour is ONE unified step list — identical for
+signed-in or guest, owner or not (see `buildOnboardingSteps()` in
+`app/src/main.js`). There are no more branch personas to cover; what
+differs between chefs is only what `completeOnboardingPurchase()` ends up
+writing at the real "Yes, unlock it" tap (nothing is written anywhere
+before that — abandon the tour and nothing was granted or forfeited).
+Three fixture presets cover those write shapes, and **every onboarding
+change must pass all three end-to-end before shipping**:
+- `guest` — brand-new guest, not signed in, empty log, owns nothing
+  (`guestWavingFree` false). Completes the purchase as a purely local write
+  (`state.ownedEmotes`/`coinAdjustment`/`onboardingCoinClaimed`).
+- `fresh-signup` — brand-new signed-in signup, 0 pizzas, owns nothing,
+  `waving_free` false (the real column default post-migration). Exercises
+  `complete_onboarding_purchase()`'s real coin-grant branch.
+- `owner-many-sessions` — the admin's real account shape: Lv 10, already
+  owns waving, ~7 sessions dated today so the day sheet has many rows.
+  Exercises the RPC's no-coin/no-array-change branch — the shop still
+  shows Waving Locked/buyable for them (render-time illusion only), but
+  the real purchase is a no-op besides the claimed flag.
 
 Drive the full flow with `node app/review/tour.mjs <preset>` and read the
 per-step log + screenshots. If a report is about a signed-in user, a guest
