@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.1.3'
+const APP_VERSION = 'v2.5.1.4'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -1448,6 +1448,31 @@ const scrollMemory = new Map()
 // re-rendering the same screen, etc).
 let screenTeardown = null
 
+// The single source of truth for how tall the tab bar actually is right now,
+// published to CSS as --tabbar-h. Everything that must sit directly above the
+// tab bar - the .scroll bottom padding, the bug FAB, the soundtrack mini-
+// player - anchors to this measured value instead of a hardcoded
+// "7.1rem + env(safe-area-inset-bottom)" guess. That guess was the root of a
+// whole family of device-only bugs: env() reads 0 in the headless harness so
+// nothing could verify it, and on a real iPhone the home-indicator inset made
+// the tab bar taller AND pushed those fixed guesses higher, leaving the FAB
+// and player floating well above the bar with a gap the track rows showed
+// through (which read as "transparent"). offsetHeight is measured on the real
+// device, inset included, so anchoring to it is correct everywhere.
+// Re-run on viewport resize too: iOS Safari's dynamic bottom toolbar and
+// rotation both change the tab bar's rendered height without any screen
+// re-mount, which would otherwise leave --tabbar-h stale.
+function syncTabbarHeight() {
+  const tb = app.querySelector('.tabbar')
+  if (tb && tb.offsetHeight) document.documentElement.style.setProperty('--tabbar-h', tb.offsetHeight + 'px')
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', syncTabbarHeight)
+} else {
+  window.addEventListener('resize', syncTabbarHeight)
+}
+window.addEventListener('orientationchange', () => setTimeout(syncTabbarHeight, 100))
+
 function mountScreen(active, contentHtml, after, opts = {}) {
   if (screenTeardown) { const t = screenTeardown; screenTeardown = null; t() }
   const key = opts.key || active
@@ -1462,18 +1487,7 @@ function mountScreen(active, contentHtml, after, opts = {}) {
       ${tabBarHtml(active)}
     </div>
   `
-  // .scroll's bottom padding (--tabbar-h below) exists to keep the tab bar
-  // - fixed, so it's out of normal flow - from covering the last row of
-  // content. It used to be a hardcoded rem guess kept in sync BY HAND with
-  // .tabbar's own padding in a separate CSS rule; the two drifted apart
-  // across two independent fixes and left a ~28px dead band above the tab
-  // bar on every screen (device-reported, confirmed identically in both
-  // Chromium and WebKit - not an iOS quirk, a flat constant mismatch). The
-  // tab bar's height is static (no transition) so a synchronous read here,
-  // right after it's in the DOM, is already the true settled value - no
-  // rAF needed, unlike the mini-player's height (which slides in).
-  const tb = app.querySelector('.tabbar')
-  if (tb) document.documentElement.style.setProperty('--tabbar-h', tb.offsetHeight + 'px')
+  syncTabbarHeight()
   mountedScreenKey = key
   const newScroll = app.querySelector('.scroll')
   if (newScroll && carryTop) {

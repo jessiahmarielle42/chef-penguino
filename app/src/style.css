@@ -2695,11 +2695,14 @@ img.shop-image {
      only thing that changed; the mechanics (visibility, popup, capture)
      are untouched. */
   right: 0.9rem;
-  /* Clears the tab bar on every device. A fixed 6.2rem was fine while
-     env(safe-area-inset-bottom) still resolved to 0, but once viewport-fit=cover
-     made the inset real the tab bar grew by the home-indicator height and this
-     button ended up sitting on top of it. Tracks the inset like .tabbar does. */
-  bottom: calc(7.1rem + env(safe-area-inset-bottom, 0px));
+  /* Sits just above the tab bar's REAL measured height (--tabbar-h, set by
+     syncTabbarHeight() in main.js), NOT a hardcoded 7.1rem + env() guess.
+     The old guess couldn't be verified headlessly (env reads 0) and floated
+     the FAB ~34px too high on a real iPhone once the home-indicator inset was
+     added on top of it. --tabbar-h already includes that inset (it's measured
+     on-device), so this is correct everywhere; the 5.5rem fallback only
+     applies for the first paint before the first measurement lands. */
+  bottom: calc(var(--tabbar-h, 5.5rem) + 0.6rem);
   z-index: 65;
   width: 2.6rem; height: 2.6rem; border-radius: 50%;
   background: linear-gradient(180deg, #FFB25E, var(--fire) 55%, var(--fire-deep));
@@ -3323,11 +3326,14 @@ body:has(#tour-root:not([hidden])) :focus { outline: none; }
    bug-report html2canvas capture of .app includes this player natively. */
 .st-mini {
   position: absolute; left:0; right:0;
-  /* var(--safe-bottom), not a bare env() - it resolves to the same inset but
-     can be overridden, which is the only way the headless review harness can
-     reproduce an iPhone's home-indicator inset and measure this player
-     against the toast/FAB the way it actually stacks on device. */
-  bottom: calc(7.1rem + var(--safe-bottom, 0px));
+  /* Docks FLUSH on top of the tab bar's real measured height (--tabbar-h),
+     not a hardcoded 7.1rem + inset guess. The old guess floated the player
+     ~20-54px above the tab bar with a gap the track rows showed through -
+     which read as the player being "transparent" and "too high" on a real
+     iPhone (the player itself is fully opaque; it was the gap). Anchoring to
+     the measured tab bar height docks it directly against the bar on every
+     device. 5.5rem fallback is first-paint only. */
+  bottom: var(--tabbar-h, 5.5rem);
   z-index: 40; box-sizing: border-box;
   background: var(--card-2); border-top:1px solid var(--line); border-radius:0.875rem 0.875rem 0 0;
   box-shadow: 0 -8px 24px -12px rgba(0,0,0,0.4);
@@ -3401,16 +3407,16 @@ body.soundtrack-mini-open {
    extra rule needed. Nothing to write here; kept as a comment so a future
    session doesn't reintroduce the lift as an accidental "fix".
    The toast still lifts below - unrelated element, untouched. */
-/* The toast's own lift: mini-player's bottom (7.1rem) + its height + the
-   FAB's own height (2.6rem, matching its width/height in the rule below) +
-   two small gaps - the FAB is z-index 65 against the toast's 45, so if the
-   toast didn't clear the FAB too, the FAB would paint over it and eat its
-   first word. The safe-area term is not optional: the player's own bottom
-   tracks the inset, so on a device with a home indicator it rises ~34px -
-   a toast pinned to a bare rem value would not follow, which is exactly how
-   the "Saved" toast previously ended up underneath the player. */
+/* The toast's own lift: the mini-player now docks at var(--tabbar-h) with
+   its own measured height --st-mini-h, so its top edge is
+   (--tabbar-h + --st-mini-h). The toast clears that plus a small gap. The
+   FAB (bottom-right, at --tabbar-h + 0.6rem, height 2.6rem) tops out lower
+   than the player, so clearing the player clears the FAB too - no separate
+   FAB term needed anymore. Everything derives from the same measured
+   --tabbar-h, so on a device with a home indicator the whole stack moves
+   together instead of the toast sliding under the player. */
 body.soundtrack-mini-open .toast {
-  bottom: calc(7.1rem + var(--st-mini-h) + 0.375rem + 2.6rem + 0.375rem + var(--safe-bottom, 0px));
+  bottom: calc(var(--tabbar-h, 5.5rem) + var(--st-mini-h) + 0.6rem);
 }
 
 @media (prefers-reduced-motion: reduce) {
