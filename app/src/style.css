@@ -3392,19 +3392,23 @@ body:has(#tour-root:not([hidden])) :focus { outline: none; }
 body.soundtrack-mini-open {
   --st-mini-h: 6.5rem;
 }
-/* mini-player's own bottom (7.1rem) + its height + a small gap. */
-body.soundtrack-mini-open #bug-fab {
-  bottom: calc(7.1rem + var(--st-mini-h) + 0.375rem + var(--safe-bottom, 0px));
-}
-/* The FAB's own lift above, PLUS the FAB's own height (2.6rem, matching its
-   width/height in the rule below) PLUS another small gap - clears both the
-   mini-player and the now-correctly-sized FAB above it. The FAB is z-index
-   65 against the toast's 45, so any overlap doesn't just look untidy - the
-   FAB paints over the toast and eats its first word. The safe-area term is
-   not optional: the player's own bottom tracks the inset, so on a device
-   with a home indicator it rises ~34px - a toast pinned to a bare rem value
-   would not follow, which is exactly how the "Saved" toast previously ended
-   up underneath the player. Everything in this stack has to move together. */
+/* The FAB no longer lifts clear of the mini-player (it used to, via a
+   bottom offset derived from --st-mini-h). Per Keefe's Aug 2026 request the
+   FAB now sits at its normal bottom-right spot and HOVERS OVER the player
+   instead - it's body-level at z-index 65, the player lives inside .app at
+   z-index 40 (capped at .app's own z-index 2 from outside that stacking
+   context), so the FAB already wins the overlap by plain z-index with no
+   extra rule needed. Nothing to write here; kept as a comment so a future
+   session doesn't reintroduce the lift as an accidental "fix".
+   The toast still lifts below - unrelated element, untouched. */
+/* The toast's own lift: mini-player's bottom (7.1rem) + its height + the
+   FAB's own height (2.6rem, matching its width/height in the rule below) +
+   two small gaps - the FAB is z-index 65 against the toast's 45, so if the
+   toast didn't clear the FAB too, the FAB would paint over it and eat its
+   first word. The safe-area term is not optional: the player's own bottom
+   tracks the inset, so on a device with a home indicator it rises ~34px -
+   a toast pinned to a bare rem value would not follow, which is exactly how
+   the "Saved" toast previously ended up underneath the player. */
 body.soundtrack-mini-open .toast {
   bottom: calc(7.1rem + var(--st-mini-h) + 0.375rem + 2.6rem + 0.375rem + var(--safe-bottom, 0px));
 }
