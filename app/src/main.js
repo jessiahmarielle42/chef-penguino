@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.1.1'
+const APP_VERSION = 'v2.5.1.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -9321,10 +9321,14 @@ function tourApplyBlockers(rect, pad, vp, cornerRadiusPx) {
   // rectangle exactly at the hole's bounding box, behind every rounded
   // spotlighted button. A quarter-circle "cap" patch at each hole corner -
   // same dim colour, rounded only on the corner facing the hole's centre -
-  // fills exactly that gap, so the dim boundary reads as rounded no matter
-  // the target's shape. Sized to the ring's own radius so the two curves
-  // are identical, not just visually close.
-  const r = Math.max(0, Math.min(cornerRadiusPx || 0, (x1 - x0) / 2, (y1 - y0) / 2))
+  // fills exactly that gap. Sized to `pad` (the hole's own inset from the
+  // target rect) - NOT the ring's full corner radius, which was the bug:
+  // a pill/rounded button's ring radius is often much larger than the 10px
+  // gap between the hole edge and the button's own edge, so capping to it
+  // painted dim colour past the hole boundary and onto the button's own
+  // face/corners. `pad` is the one value guaranteed to fit inside the gap
+  // on every side.
+  const r = Math.max(0, Math.min(pad || 0, (x1 - x0) / 2, (y1 - y0) / 2))
   const tl = document.getElementById('tour-corner-tl')
   const tr = document.getElementById('tour-corner-tr')
   const bl = document.getElementById('tour-corner-bl')
