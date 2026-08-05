@@ -2690,7 +2690,11 @@ img.shop-image {
 /* ---------- Bug report FAB ---------- */
 #bug-fab {
   position: fixed;
-  left: 0.9rem;
+  /* Bottom-RIGHT corner, per Keefe's screenshot (Aug 2026) - previously
+     bottom-left. Same 0.9rem edge inset, just mirrored. Position is the
+     only thing that changed; the mechanics (visibility, popup, capture)
+     are untouched. */
+  right: 0.9rem;
   /* Clears the tab bar on every device. A fixed 6.2rem was fine while
      env(safe-area-inset-bottom) still resolved to 0, but once viewport-fit=cover
      made the inset real the tab bar grew by the home-indicator height and this
