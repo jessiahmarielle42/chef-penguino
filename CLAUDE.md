@@ -171,6 +171,18 @@ When the user reports errors/bugs live, fix and commit them immediately.
 contains the literal trigger word **"push"** — then push everything queued
 at once, in one go.
 
+## 8a. Version numbering — always 4 digits
+`APP_VERSION` in `app/src/main.js` is always **4 dot-separated numbers**
+(`vMAJOR.MINOR.FEATURE.FIX`), never 3. When bumping it, always land on a
+4th digit — `v2.5.1.0`, not `v2.5.1`. Concurrent sessions on different
+branches bump this independently and collide constantly at merge time;
+resolving the conflict by just taking the higher-looking number has
+repeatedly produced a 3-digit version (e.g. `v2.5.1` instead of
+`v2.5.1.0`) that silently breaks the convention. When resolving an
+`APP_VERSION` merge conflict, land on a 4-digit number one FIX-digit above
+whichever side is newer — never keep a 3-digit result, and never touch a
+version another session already pushed higher than yours.
+
 ## 9. SQL migrations
 Any new SQL (schema changes, RPCs, RLS, storage buckets) is written as a
 `.sql` file in `supabase/` — never run by Claude. Paste the full SQL near
