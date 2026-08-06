@@ -243,6 +243,7 @@ function makeQuery(table) {
     single() { wantSingle = true; return api },
     maybeSingle() { wantMaybeSingle = true; return api },
     insert(rows) { mode = 'insert'; insertRows = Array.isArray(rows) ? rows : [rows]; return api },
+    upsert(rows) { mode = 'upsert'; insertRows = Array.isArray(rows) ? rows : [rows]; return api },
     update(vals) { mode = 'update'; updateVals = vals; return api },
     delete() { mode = 'delete'; return api },
     then(resolve, reject) {
@@ -261,6 +262,22 @@ function makeQuery(table) {
       const inserted = insertRows.map(r => ({ id: r.id || `${table}-${Math.random().toString(36).slice(2, 9)}`, ...r }))
       store.push(...inserted)
       return { data: clone(inserted), error: null }
+    }
+
+    // upsert: replace an existing row with the same primary key, else insert.
+    // emote_meta keys on emote_id (not a generated id), so match on that when
+    // present; fall back to id. Mirrors Postgres ON CONFLICT DO UPDATE enough
+    // for the admin emote-tagging flow the harness needs to exercise.
+    if (mode === 'upsert') {
+      const upserted = insertRows.map(r => {
+        const key = r.emote_id != null ? 'emote_id' : 'id'
+        const existing = r[key] != null ? store.find(x => x[key] === r[key]) : null
+        if (existing) { Object.assign(existing, r); return existing }
+        const row = { id: r.id || `${table}-${Math.random().toString(36).slice(2, 9)}`, ...r }
+        store.push(row)
+        return row
+      })
+      return { data: clone(upserted), error: null }
     }
 
     if (mode === 'update') {

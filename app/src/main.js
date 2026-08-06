@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.2.0'
+const APP_VERSION = 'v2.5.2.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -2427,6 +2427,12 @@ function pizzaImagePath(count) {
 // recently-added emotes first (a natural default for a shop).
 let shopSort = 'newest'
 let shopType = 'all'   // 'all' or an emote_tags id
+
+// Admin emote-management filters (Admin Dashboard -> Emotes). Kept module-
+// level so a re-render (e.g. after tagging one) preserves the admin's search
+// and type filter instead of resetting to everything.
+let adminEmoteSearch = ''
+let adminEmoteFilter = 'all'   // 'all' | 'untagged' | an emote_tags id
 const SORT_LABELS = { owned: 'Owned', az: 'A-Z', newest: 'Newest' }
 
 function sortedShopEmotes() {
@@ -6420,6 +6426,12 @@ function renderAdminEmotes() {
       </div>
       <div class="group">
         <p class="glab">Tag Emotes</p>
+        <div class="adm-search-card">
+          <span class="adm-search-ic" aria-hidden="true">🔍</span>
+          <input id="adm-emote-search" type="text" placeholder="Search emotes by name" autocomplete="off" />
+        </div>
+        <div class="adm-filter-row" id="adm-emote-filter"></div>
+        <div class="adm-list-count" id="adm-emote-count"></div>
         <div class="glist" id="adm-emote-list"></div>
       </div>
     </div>
@@ -6430,6 +6442,9 @@ function renderAdminEmotes() {
     loadEmoteData(true).then(renderAdminEmoteTypes)
     app.querySelector('[data-action="add-tag"]').addEventListener('click', addEmoteTag)
     app.querySelector('#adm-new-tag').addEventListener('keydown', (e) => { if (e.key === 'Enter') addEmoteTag() })
+    const searchEl = app.querySelector('#adm-emote-search')
+    searchEl.value = adminEmoteSearch
+    searchEl.addEventListener('input', (e) => { adminEmoteSearch = e.target.value; renderAdminEmoteList() })
   }, { key: 'admin-emotes' })
 }
 
@@ -7750,28 +7765,70 @@ function renderAdminEmoteTypes() {
     }))
   }
 
-  const listEl = app.querySelector('#adm-emote-list')
-  if (listEl) {
-    listEl.innerHTML = EMOTES.map(e => {
-      const tagId = emoteTagId(e)
-      const typeChip = tagId
-        ? `<span class="adm-emote-type">${escapeHtml(tagNameById(tagId) || '—')}</span>`
-        : `<span class="adm-emote-type none">No type</span>`
-      // Emotes have no still thumbnail - only the clip - so the preview is a
-      // muted video parked on its first frame (preload=metadata, never played).
-      // Without it the admin is renaming/tagging rows by title alone with no
-      // idea which animation they're actually looking at.
-      return `
-        <div class="adm-emote-row" data-emote-id="${e.id}" role="button" tabindex="0">
-          <video class="adm-emote-thumb" src="${BASE}assets/${e.clip}#t=0.1" muted playsinline preload="metadata" tabindex="-1" aria-hidden="true"></video>
-          <div class="adm-emote-info"><div class="adm-emote-name">${escapeHtml(emoteName(e))}</div><div class="adm-emote-sub">${escapeHtml(emoteDesc(e))}</div></div>
-          <div class="adm-emote-right">${typeChip}<span class="chevron" aria-hidden="true">›</span></div>
-        </div>`
-    }).join('')
-    listEl.querySelectorAll('[data-emote-id]').forEach(row => {
-      row.addEventListener('click', () => openEmoteEditPopup(EMOTE_BY_ID[row.dataset.emoteId]))
-    })
+  // Type filter chips: All · Untagged · <each type>. 'Untagged' surfaces the
+  // emotes still needing a tag - the admin's actual working set here. A
+  // filter whose tag was just deleted falls back to 'all' so nothing renders
+  // an empty list with no active chip.
+  const filterEl = app.querySelector('#adm-emote-filter')
+  if (filterEl) {
+    if (adminEmoteFilter !== 'all' && adminEmoteFilter !== 'untagged' && !emoteTags.some(t => t.id === adminEmoteFilter)) {
+      adminEmoteFilter = 'all'
+    }
+    const chips = [{ id: 'all', label: 'All' }, { id: 'untagged', label: 'Untagged' }, ...emoteTags.map(t => ({ id: t.id, label: t.name }))]
+    filterEl.innerHTML = chips.map(c =>
+      `<button type="button" class="adm-filter-chip ${adminEmoteFilter === c.id ? 'active' : ''}" data-filter="${escapeHtml(c.id)}">${escapeHtml(c.label)}</button>`
+    ).join('')
+    filterEl.querySelectorAll('[data-filter]').forEach(b => b.addEventListener('click', () => {
+      adminEmoteFilter = b.dataset.filter
+      filterEl.querySelectorAll('.adm-filter-chip').forEach(c => c.classList.toggle('active', c.dataset.filter === adminEmoteFilter))
+      renderAdminEmoteList()
+    }))
   }
+
+  renderAdminEmoteList()
+}
+
+// Renders the emote roster filtered by the admin's search text + type chip.
+// Split out of renderAdminEmoteTypes so typing/filtering re-renders only the
+// list, not the tag chips above it (which would blur the search input).
+function renderAdminEmoteList() {
+  const listEl = app.querySelector('#adm-emote-list')
+  if (!listEl) return
+  const q = adminEmoteSearch.trim().toLowerCase()
+  const rows = EMOTES.filter(e => {
+    const tagId = emoteTagId(e)
+    if (adminEmoteFilter === 'untagged') { if (tagId) return false }
+    else if (adminEmoteFilter !== 'all') { if (tagId !== adminEmoteFilter) return false }
+    if (!q) return true
+    return emoteName(e).toLowerCase().includes(q) || emoteDesc(e).toLowerCase().includes(q)
+  })
+
+  const countEl = app.querySelector('#adm-emote-count')
+  if (countEl) countEl.textContent = `${rows.length} of ${EMOTES.length} emote${EMOTES.length === 1 ? '' : 's'}`
+
+  if (!rows.length) {
+    listEl.innerHTML = '<p class="log-empty" style="padding:1.25rem 0.9375rem">No emotes match.</p>'
+    return
+  }
+  listEl.innerHTML = rows.map(e => {
+    const tagId = emoteTagId(e)
+    const typeChip = tagId
+      ? `<span class="adm-emote-type">${escapeHtml(tagNameById(tagId) || '—')}</span>`
+      : `<span class="adm-emote-type none">No type</span>`
+    // Emotes have no still thumbnail - only the clip - so the preview is a
+    // muted video parked on its first frame (preload=metadata, never played).
+    // Without it the admin is renaming/tagging rows by title alone with no
+    // idea which animation they're actually looking at.
+    return `
+      <div class="adm-emote-row" data-emote-id="${e.id}" role="button" tabindex="0">
+        <video class="adm-emote-thumb" src="${BASE}assets/${e.clip}#t=0.1" muted playsinline preload="metadata" tabindex="-1" aria-hidden="true"></video>
+        <div class="adm-emote-info"><div class="adm-emote-name">${escapeHtml(emoteName(e))}</div><div class="adm-emote-sub">${escapeHtml(emoteDesc(e))}</div></div>
+        <div class="adm-emote-right">${typeChip}<span class="chevron" aria-hidden="true">›</span></div>
+      </div>`
+  }).join('')
+  listEl.querySelectorAll('[data-emote-id]').forEach(row => {
+    row.addEventListener('click', () => openEmoteEditPopup(EMOTE_BY_ID[row.dataset.emoteId]))
+  })
 }
 
 async function addEmoteTag() {
