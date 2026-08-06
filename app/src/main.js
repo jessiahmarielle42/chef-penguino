@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.1.10'
+const APP_VERSION = 'v2.5.2.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -446,7 +446,6 @@ function load() {
     pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', lastSeenCoins: null,
     lightMode: false, taskTypeLabels: {}, deleteAnimations: true, onboardingDone: false,
     lastHomescreenPromptAt: null, homescreenPromptDismissedForever: false,
-    lastReinstallPromptAt: null, reinstallPromptDismissedForever: false,
     // Undefined until captureGuestWavingFreeCaptured() runs once at boot -
     // NOT defaulted true/false here so that helper can tell "never captured
     // yet" apart from an already-decided false.
@@ -1806,7 +1805,6 @@ async function renderHome() {
     wireLogSwipe(app.querySelector('#home-log'))
     maybeShowCoinMilestone()
     maybeShowAddToHomescreenPrompt()
-    maybeShowReinstallPrompt()
   })
 }
 
@@ -1912,56 +1910,6 @@ function maybeShowAddToHomescreenPrompt() {
   o.querySelector('[data-action="never"]').addEventListener('click', () => {
     o.remove()
     state.homescreenPromptDismissedForever = true
-    save()
-    playDeleteClip()
-  })
-}
-
-// One-shot nudge for LEGACY inset installs: an iOS Home-Screen icon added
-// while the manifest was still visible to iOS got the inset webview
-// permanently (~a status bar of unpaintable dead screen below the tab bar -
-// see iosInsetStandaloneStrip()). The webview geometry is frozen at
-// Add-to-Home-Screen time, so no CSS/JS can ever reclaim that strip on an
-// existing install; the only real fix is removing the icon and re-adding it
-// (new installs go through the meta-tag path, which is full-screen). This
-// detects the inset state live and asks the chef to do exactly that. Fires
-// at most once every 24h, dismissable forever; a healthy (full-screen)
-// install measures strip=0 and never sees it.
-const REINSTALL_PROMPT_INTERVAL_MS = 24 * 60 * 60 * 1000
-let reinstallPromptShownThisSession = false
-function maybeShowReinstallPrompt() {
-  if (reinstallPromptShownThisSession) return
-  if (!iosInsetStandaloneStrip()) return
-  if (state.reinstallPromptDismissedForever) return
-  if (state.timer) return
-  if (tour) return
-  if (document.querySelector('.overlay.show')) return
-  const last = state.lastReinstallPromptAt
-  if (last && Date.now() - last < REINSTALL_PROMPT_INTERVAL_MS) return
-
-  reinstallPromptShownThisSession = true
-  state.lastReinstallPromptAt = Date.now()
-  save()
-
-  const o = overlay(`
-    <button class="popup-close" type="button" data-action="close" aria-label="Close">✕</button>
-    <h3>Fix that empty bar at the bottom?</h3>
-    <p>Your installed app has an old layout that wastes a strip of screen under the tab bar. A quick re-install fixes it for good:</p>
-    <ol class="reinstall-steps">
-      <li>Hold the Chef Penguino icon on your Home Screen and remove it (this won't delete your data)</li>
-      <li>Open the app's website in Safari</li>
-      <li>Tap Share, then <b>Add to Home Screen</b></li>
-    </ol>
-    <div class="home-btn-col">
-      <button type="button" data-action="close">Got it</button>
-      <button type="button" class="btn-secondary" data-action="never">Don't show again</button>
-    </div>
-  `, { popupClass: 'popup-wide' })
-
-  o.querySelectorAll('[data-action="close"]').forEach(b => b.addEventListener('click', () => o.remove()))
-  o.querySelector('[data-action="never"]').addEventListener('click', () => {
-    o.remove()
-    state.reinstallPromptDismissedForever = true
     save()
     playDeleteClip()
   })

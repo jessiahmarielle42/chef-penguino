@@ -1,10 +1,14 @@
-// Verifies the inset-install detection + reinstall nudge in BOTH engines.
+// Verifies the iOS inset-standalone handling in BOTH engines. The dead strip
+// under the tab bar comes from an install whose webview iOS runs INSET (short
+// of the physical screen); index.html hides the manifest from iOS so new
+// Add-to-Home-Screen installs take the full-screen meta-tag path instead.
 // Cases per engine:
 //  1. inset standalone (navigator.standalone=true, screen.height = innerHeight+47)
-//     -> ios-inset-standalone class set, reinstall popup shows, tabbar bottom == innerHeight
-//  2. healthy full-screen standalone (strip=0) -> no class, NO popup
-//  3. plain browser tab (no navigator.standalone) -> NO popup, manifest link PRESENT
-//  Also: inset case -> manifest link removed (iOS path).
+//     -> ios-inset-standalone class set, manifest removed, tab bar bottom flush
+//        with innerHeight (no gap INSIDE the webview)
+//  2. healthy full-screen standalone (strip=0) -> no inset class
+//  3. plain browser tab (no navigator.standalone) -> manifest link PRESENT
+//     so Android's install path still works
 import { chromium, webkit, devices } from 'playwright'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
@@ -39,7 +43,7 @@ async function runCase(browserType, engineName, mode) {
   const ctx = await browser.newContext(ctxOpts)
   const page = await ctx.newPage()
   // Mark onboarding done so the fresh-guest tour doesn't auto-start and
-  // (correctly) suppress the reinstall nudge for that first visit.
+  // cover the tab bar the geometry assertions measure.
   await page.addInitScript(() => {
     localStorage.setItem('chef-penguino-save', JSON.stringify({ onboardingDone: true }))
   })
@@ -58,7 +62,6 @@ async function runCase(browserType, engineName, mode) {
   const data = await page.evaluate(() => ({
     insetClass: document.documentElement.classList.contains('ios-inset-standalone'),
     popupText: document.querySelector('.overlay .popup h3')?.textContent || null,
-    hasReinstallPopup: !!document.querySelector('.reinstall-steps'),
     manifestPresent: !!document.querySelector('link[rel="manifest"]'),
     tabbarBottom: Math.round(document.querySelector('.tabbar').getBoundingClientRect().bottom),
     innerH: window.innerHeight,
@@ -68,15 +71,12 @@ async function runCase(browserType, engineName, mode) {
   const tag = `${engineName}/${mode}`
   if (mode === 'inset') {
     check(`${tag} ios-inset-standalone class set`, data.insetClass)
-    check(`${tag} reinstall popup shown`, data.hasReinstallPopup, `h3="${data.popupText}"`)
     check(`${tag} manifest link removed`, !data.manifestPresent)
     check(`${tag} tabbar bottom == innerHeight (no gap)`, data.tabbarBottom === data.innerH, `bottom=${data.tabbarBottom} vh=${data.innerH} tbh=${data.tabbarH}`)
     await page.screenshot({ path: `/tmp/claude-0/-home-user-chef-penguino/cb91145d-799f-5264-8422-ab1f01853fb6/scratchpad/${engineName}-inset.png` })
   } else if (mode === 'healthy') {
     check(`${tag} no inset class`, !data.insetClass)
-    check(`${tag} NO reinstall popup`, !data.hasReinstallPopup, `popup="${data.popupText}"`)
   } else {
-    check(`${tag} NO reinstall popup in browser tab`, !data.hasReinstallPopup)
     // navigator.standalone natively exists in WebKit's iOS emulation, so the
     // manifest is (correctly) removed there; only Chromium models a non-iOS tab.
     if (engineName === 'chromium') check(`${tag} manifest link kept in non-iOS tab`, data.manifestPresent)
