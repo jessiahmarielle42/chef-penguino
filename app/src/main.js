@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.1.6'
+const APP_VERSION = 'v2.5.1.7'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -496,9 +496,56 @@ function applyTheme() {
 // style.css), which only sets background-image; backgroundColor stays
 // 'rgba(0, 0, 0, 0)' regardless of theme, so reading it would silently do
 // nothing.
+// True only for the one configuration that shows a dead strip under the tab
+// bar: an iOS Home-Screen (standalone) install whose webview iOS runs INSET -
+// shorter than the physical screen - so ~a status bar's worth of screen at
+// the bottom sits OUTSIDE the webview where no CSS can paint. Which installs
+// get the inset webview depends on the iOS version the app was added under
+// (Apple moved standalone rendering to the manifest around iOS 16.4 and
+// changed status-bar handling with it), so two iPhones on the same code can
+// disagree. Detected from geometry, not UA sniffing:
+//   - navigator.standalone === true  -> iOS standalone ONLY (property doesn't
+//     exist on Android/desktop, false in Safari tabs) - Android and every
+//     browser tab are excluded by construction and stay untouched
+//   - portrait                       -> screen.height on iOS is orientation-
+//     fixed; comparing it to innerHeight in landscape would false-positive
+//   - strip > 20px                   -> full-screen installs measure 0 and
+//     stay untouched (the healthy case keeps its exact current behaviour)
+function iosInsetStandaloneStrip() {
+  if (typeof navigator.standalone === 'undefined' || navigator.standalone !== true) return 0
+  if (innerWidth > innerHeight) return 0
+  const strip = (screen.height || 0) - innerHeight
+  return strip > 20 ? strip : 0
+}
+
+// The strip can't be painted, but iOS colours it with the page's theme-color
+// (device-verified: the strip sampled exactly #120c09 in dark mode - the
+// theme-color value - on the affected iPhone 13 Pro Max). So when the strip
+// exists, publish the TAB BAR's colour as theme-color instead of the page
+// background: the strip then reads as the tab bar extending to the physical
+// bottom edge and the seam disappears. The tab bar's CSS colour is
+// translucent (backdrop blur), so composite it over the page bg first to get
+// the solid colour iOS needs.
+function resolvedTabbarColor(pageBg) {
+  const tb = app.querySelector('.tabbar')
+  if (!tb) return null
+  const raw = getComputedStyle(tb).backgroundColor
+  const m = raw.match(/rgba?\(([\d.]+)[, ]+([\d.]+)[, ]+([\d.]+)(?:[,/ ]+([\d.]+))?\)/)
+  if (!m) return null
+  const a = m[4] === undefined ? 1 : parseFloat(m[4])
+  const pm = pageBg.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i)
+  const base = pm ? [parseInt(pm[1], 16), parseInt(pm[2], 16), parseInt(pm[3], 16)] : [0, 0, 0]
+  const ch = (i) => Math.round(parseFloat(m[1 + i]) * a + base[i] * (1 - a))
+  return `rgb(${ch(0)}, ${ch(1)}, ${ch(2)})`
+}
+
 function syncThemeColorMeta() {
-  const bg = getComputedStyle(document.documentElement).getPropertyValue('--page-bg').trim()
+  let bg = getComputedStyle(document.documentElement).getPropertyValue('--page-bg').trim()
   if (!bg) return
+  if (iosInsetStandaloneStrip()) {
+    const tbColor = resolvedTabbarColor(bg)
+    if (tbColor) bg = tbColor
+  }
   // index.html ships a light/dark `prefers-color-scheme`-scoped theme-color
   // pair so the very first paint is right before this script runs. Those
   // MUST be removed the moment we take over: the browser uses the FIRST
@@ -1466,6 +1513,10 @@ let screenTeardown = null
 function syncTabbarHeight() {
   const tb = app.querySelector('.tabbar')
   if (tb && tb.offsetHeight) document.documentElement.style.setProperty('--tabbar-h', tb.offsetHeight + 'px')
+  // Re-derive theme-color too: on an inset iOS standalone install it's the
+  // tab bar's colour (see syncThemeColorMeta), which can only be resolved
+  // once the tab bar exists - the boot-time call runs before first mount.
+  syncThemeColorMeta()
 }
 if (window.visualViewport) {
   window.visualViewport.addEventListener('resize', syncTabbarHeight)
