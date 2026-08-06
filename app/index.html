@@ -8,7 +8,22 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/assets/favicon-16.png" />
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
-    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="manifest" href="/manifest.webmanifest" id="manifest-link" />
+    <!-- iOS only: remove the manifest so Add-to-Home-Screen installs from the
+         apple-* meta tags below instead. Root cause of the dead strip under
+         the tab bar on newer installs: when iOS installs from a manifest with
+         display:standalone it IGNORES apple-mobile-web-app-status-bar-style
+         black-translucent and runs the webview INSET (short of the physical
+         screen by a status bar's height - measured 879 vs 926 on the affected
+         iPhone; nothing inside the webview can paint that strip). Installing
+         from the meta tags honours black-translucent and gives the true
+         full-screen webview (how the older, healthy installs behave).
+         navigator.standalone exists only on iOS, so Android keeps the
+         manifest its install path needs. Runs inline before parsing finishes
+         so the share sheet never sees the link on iOS. -->
+    <script>
+      if (typeof navigator.standalone !== 'undefined') document.getElementById('manifest-link').remove()
+    </script>
     <!-- Static first-paint theme-color pair, read BEFORE main.js has run (so
          there's no flash of the wrong colour on first load) - hexes are
          style.css's --page-bg for each theme (light: :root[data-theme="light"],
