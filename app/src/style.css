@@ -893,12 +893,18 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   bottom: 0; width: 100%; max-width:28.75rem; z-index: 3;
   display: grid; grid-template-columns: 1fr 1fr 0.9fr 1fr 1fr;
   align-items: end;
-  /* Bottom padding is the home-indicator inset ONLY - no extra padding on
-     top of it. Since the webview went fullscreen (black-translucent status
-     bar), that inset became a real ~34px, and adding 0.5rem on top of it
-     read as a dead band under the tab bar. The inset itself cannot be
-     removed: the icons must clear the home indicator. */
-  padding:0.5rem 0.5rem env(safe-area-inset-bottom);
+  /* Bottom reserve = the home-indicator inset, counted ONCE across the whole
+     bar. Every column already ends with 0.5rem of its own bottom padding
+     (.tab's `padding:0.5rem 0`, .tab-fab-wrap's `padding-bottom:0.5rem`), so
+     putting a full env(safe-area-inset-bottom) here stacked ON TOP of that
+     and left 0.5rem + 34px = ~42px of dead space below the labels on a
+     full-screen iOS install - read as "an extra empty bar under the nav
+     bar". Subtracting that shared 0.5rem makes the gap from the label
+     baseline to the screen edge exactly the 34px the home indicator needs,
+     with nothing double-counted. max() keeps the normal 0.5rem look
+     everywhere the inset is 0 (browser tabs, Android, desktop), where the
+     subtraction would otherwise go negative. */
+  padding:0.5rem 0.5rem max(0.5rem, calc(env(safe-area-inset-bottom, 0px) - 0.5rem));
   background: var(--tabbar-bg); backdrop-filter: blur(16px);
   border-top: 1px solid var(--line);
 }
