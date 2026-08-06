@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Chef Penguino — iOS canvas test (lime)</title>
+    <!-- DIAGNOSTIC PAGE. Not linked from the app; delete once answered
+         (CLAUDE.md 8b: no debug scaffolding left shipped).
+
+         Purpose: distinguish "layout viewport is short but the CANVAS is full
+         926" (fixable in CSS) from "the screen genuinely ends at 879" (not
+         reachable from the page). iostest.html could not tell these apart
+         because its background was near-black, the same colour as the dead
+         zone. This page paints BRIGHT LIME everywhere. Add to Home Screen,
+         open from the icon, and look BELOW the dark stripe:
+           - lime below the stripe  -> the canvas extends past innerHeight; the
+                                        strip is paintable and this is a CSS fix
+           - black below the stripe -> real out-of-webview screen; the install
+                                        path / status-bar mode is the cause -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <style>
+      /* Lime on EVERY box that could conceivably paint the bottom region, so
+         whichever one iOS lets reach the physical edge shows through. */
+      html, body { margin: 0; height: 100%; background: #7CFC00; color: #10240a;
+        font-family: -apple-system, system-ui, sans-serif; }
+      body { display: flex; flex-direction: column; min-height: 100%; }
+      .pad { padding: calc(env(safe-area-inset-top, 0px) + 1rem) 1rem 1rem; }
+      h1 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+      p { font-size: 0.8rem; line-height: 1.45; color: #2c4a12; margin: 0 0 1rem; }
+      #verdict { font-size: 1.5rem; font-weight: 800; margin: 0.5rem 0 1rem; line-height: 1.3; }
+      pre { font-family: ui-monospace, Menlo, monospace; font-size: 0.95rem;
+        line-height: 1.6; color: #10240a; margin: 0; white-space: pre-wrap; }
+      /* A DARK stripe fixed to the bottom edge. Anything BELOW it that is lime
+         = paintable canvas; anything black = beyond the webview. */
+      .bar { position: fixed; left: 0; right: 0; bottom: 0; height: 3.5rem;
+        background: #10240a; color: #7CFC00; display: flex; align-items: center;
+        justify-content: center; font-weight: 800; }
+    </style>
+  </head>
+  <body>
+    <div class="pad">
+      <h1>iOS canvas test (lime background)</h1>
+      <p>Add to Home Screen, open from the icon, screenshot. Look at the colour
+        BELOW the dark stripe.</p>
+      <div id="verdict">…</div>
+      <pre id="out"></pre>
+    </div>
+    <div class="bar">below this stripe: lime = paintable · black = off-screen</div>
+    <script>
+      function render() {
+        var strip = (screen.height || 0) - window.innerHeight
+        var standalone = navigator.standalone === true
+        var v = document.getElementById('verdict')
+        if (!standalone) { v.textContent = 'Open from the Home Screen icon (not Safari)' }
+        else if (strip > 20) { v.textContent = 'Inset ' + strip + 'px — is it lime or black below?' }
+        else { v.textContent = 'Full screen' }
+        document.getElementById('out').textContent =
+          'innerHeight = ' + window.innerHeight + '\n' +
+          'screen.height = ' + screen.height + '\n' +
+          'strip lost = ' + strip + '\n' +
+          'standalone = ' + standalone + '\n' +
+          'dpr = ' + window.devicePixelRatio
+      }
+      render()
+      addEventListener('resize', render)
+      addEventListener('orientationchange', render)
+    </script>
+  </body>
+</html>
