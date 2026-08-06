@@ -6191,7 +6191,7 @@ function renderSoundtrackPicker() {
         sec.innerHTML = `
           <div class="sanc-card">
             <div class="sanc-head">
-              <div class="sanc-logo">🎵</div>
+              <img class="sanc-logo" src="${BASE}assets/sanctify-icon.png" alt="Sanctify" />
               <div><div class="sanc-name">Sanctify</div><div class="sanc-tag">Stream any song from your library</div></div>
             </div>
             <button type="button" class="btn-connect" id="sanc-connect"><span class="gicon">G</span> Connect with Google</button>
