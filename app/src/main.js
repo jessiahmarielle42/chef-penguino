@@ -6008,7 +6008,7 @@ function renderSoundtrackPicker() {
       soundtrackPreviewBoost = true
       soundtrackPreviewPaused = false
       stLoading = true
-      showMini({ art: song.cover || `${BASE}assets/icon-512.png`, title: song.title })
+      showMini({ art: coverSrc(song), title: song.title })
       paint()
       const signed = await sanctifySignedAudioUrl(song.path)
       if (previewSanctify?.path !== song.path) return // user moved on while signing
@@ -6129,12 +6129,22 @@ function renderSoundtrackPicker() {
     })
 
     // ---- Sanctify section (admin only): connect card OR connected + search ----
-    const cover = (url) => (typeof url === 'string' && /^https?:\/\//.test(url)) ? url : `${BASE}assets/icon-512.png`
+    // Sanctify stores cover_url as a full public URL when uploaded, but some
+    // rows hold a bare 'covers' object path (and some songs have none at all).
+    // Resolve to a usable URL, or null so render can fall back to a Sanctify
+    // placeholder - never the Chef Penguino icon.
+    const SANCTIFY_ICON = `${BASE}assets/sanctify-icon.png`
+    const publicCover = (v) => {
+      if (typeof v !== 'string' || !v) return null
+      if (/^https?:\/\//.test(v)) return v
+      try { return getSanctifyClient().storage.from('covers').getPublicUrl(v).data.publicUrl || null } catch { return null }
+    }
+    const coverSrc = (song) => song.cover || SANCTIFY_ICON
 
     function sanctifyRowHtml(song, savedRow) {
       return `
         <button type="button" class="st-row st-sanctify-row" data-path="${escapeHtml(song.path)}"${savedRow ? '' : ` data-sidx="${sanctifyResults.indexOf(song)}"`}>
-          <img class="st-art" src="${cover(song.cover)}" alt="" />
+          <img class="st-art" src="${coverSrc(song)}" alt="" />
           <span class="st-meta"><span class="st-title">${escapeHtml(song.title)}</span><span class="st-artist">${escapeHtml(song.artist || 'Sanctify')} · Sanctify</span></span>
           <span class="st-bars" aria-hidden="true"><i></i><i></i><i></i></span>
           <span class="st-tick" aria-hidden="true">✓</span>
@@ -6171,12 +6181,14 @@ function renderSoundtrackPicker() {
       try {
         const { data, error } = await getSanctifyClient()
           .from('songs')
-          .select('id,title,audio_url,cover_url,duration_seconds,artist:artists(name)')
+          .select('id,title,audio_url,cover_url,duration_seconds,artist:artists(name,profile_image_url)')
           .eq('status', 'approved').not('audio_url', 'is', null)
           .ilike('title', `%${q}%`).limit(20)
         if (error) { sanctifyResults = []; renderSanctifyResults(); return }
         sanctifyResults = (data || []).map(s => ({
-          path: s.audio_url, title: s.title, artist: s.artist?.name || '', cover: s.cover_url || null,
+          path: s.audio_url, title: s.title, artist: s.artist?.name || '',
+          // Prefer the song's own cover, fall back to the artist's photo.
+          cover: publicCover(s.cover_url) || publicCover(s.artist?.profile_image_url),
         }))
         renderSanctifyResults()
       } catch { sanctifyResults = []; renderSanctifyResults() }
