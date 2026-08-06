@@ -65,7 +65,7 @@ const DELETE_CLIP_ACTIONS = ['remove-friend', 'leave-group', 'delete-group', 'de
 // Client-side hiding of the Admin Dashboard entry point only - real
 // enforcement lives in Supabase RLS (see migration_admin.sql), which checks
 // auth.email() server-side and can't be spoofed from here.
-const ADMIN_EMAILS = ['keefefons@gmail.com', 'jessiahmairelle@gmail.com']
+const ADMIN_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
 function isAdmin() { return ADMIN_EMAILS.includes(currentUser?.email) }
 
 let currentUser = null
