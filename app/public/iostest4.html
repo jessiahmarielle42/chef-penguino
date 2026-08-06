@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Chef Penguino — bottom anchor test</title>
+    <!-- DIAGNOSTIC PAGE. Not linked from the app; delete once answered
+         (CLAUDE.md 8b).
+
+         iostest2 proved the full 926px screen is PAINTABLE (lime everywhere) -
+         the 47px "dead strip" in the app is just page background showing below
+         a tab bar that is position:fixed;bottom:0, which iOS anchors to the
+         879px LAYOUT viewport, 47px above the physical bottom. iostest3 proved
+         the status-bar mode is NOT the cause (default is inset too).
+
+         This page paints lime (so the physical bottom edge is visible) and
+         drops TWO candidate bars. --strip is set by JS to
+         screen.height - innerHeight (47 on the affected device).
+           RED  = current app: position:fixed; bottom:0
+           BLUE = candidate fix: bottom:-strip (reach the real canvas bottom)
+                  PLUS padding-bottom:env(safe-area-inset-bottom) so its white
+                  "button row" clears the home indicator.
+         Screenshot it. Two questions the picture answers:
+           1. Which bar's bottom edge is FLUSH with the physical screen bottom
+              (no lime sliver beneath)? -> that anchor is the fix.
+           2. On the BLUE bar, does the white button row sit ABOVE the home
+              indicator pill? -> confirms the padding keeps taps clear. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #7CFC00; color: #10240a;
+        font-family: -apple-system, system-ui, sans-serif; }
+      .pad { padding: calc(env(safe-area-inset-top, 0px) + 1rem) 1rem 1rem; }
+      h1 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+      p { font-size: 0.8rem; line-height: 1.45; color: #2c4a12; margin: 0 0 1rem; }
+      pre { font-family: ui-monospace, Menlo, monospace; font-size: 0.95rem;
+        line-height: 1.6; color: #10240a; margin: 0; white-space: pre-wrap; }
+      .cand { position: fixed; width: 50%; height: 9rem; box-sizing: border-box;
+        color: #fff; font-weight: 800; font-size: 0.72rem; text-align: center;
+        display: flex; flex-direction: column; }
+      .cap { padding-top: 0.4rem; }
+      /* The "button row": a white bar pinned to the bottom of the candidate,
+         inside its padding, standing in for the tappable tab icons+labels. */
+      .btnrow { margin-top: auto; height: 2.2rem; background: #ffffff;
+        color: #111; display: flex; align-items: center; justify-content: center;
+        font-size: 0.7rem; }
+      /* A: current app behaviour - anchored to the layout viewport (879). */
+      #A { left: 0;  bottom: 0; background: #C0392B; }
+      /* B: candidate fix - down onto the real canvas + indicator clearance. */
+      #B { right: 0; bottom: calc(-1 * var(--strip, 0px)); background: #1F6FEB;
+        padding-bottom: env(safe-area-inset-bottom, 0px); }
+    </style>
+  </head>
+  <body>
+    <div class="pad">
+      <h1>Bottom anchor test</h1>
+      <p>Which bar reaches the very bottom of the screen (no lime below)? Red =
+        current. Blue = candidate fix. On blue, is the white row above the home
+        indicator? Screenshot it.</p>
+      <pre id="out"></pre>
+    </div>
+    <div class="cand" id="A"><div class="cap">RED<br>bottom:0<br>(current)</div><div class="btnrow">button row</div></div>
+    <div class="cand" id="B"><div class="cap">BLUE<br>bottom:-strip<br>(candidate)</div><div class="btnrow">button row</div></div>
+    <script>
+      function render() {
+        var strip = Math.max(0, (screen.height || 0) - window.innerHeight)
+        document.documentElement.style.setProperty('--strip', strip + 'px')
+        document.getElementById('out').textContent =
+          'innerHeight = ' + window.innerHeight + '\n' +
+          'screen.height = ' + screen.height + '\n' +
+          'strip = ' + strip + '\n' +
+          'standalone = ' + (navigator.standalone === true) + '\n' +
+          'dpr = ' + window.devicePixelRatio
+      }
+      render()
+      addEventListener('resize', render)
+      addEventListener('orientationchange', render)
+    </script>
+  </body>
+</html>
