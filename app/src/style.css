@@ -960,6 +960,10 @@ html.ios-inset-standalone .tabbar { padding-bottom: 0.5rem; }
 .popup p { color: var(--muted); font-size:0.875rem; margin:0 0 1.25rem; line-height: 1.5; }
 .popup button { width: 100%; border: none; cursor: pointer; font-family: var(--font-display); font-weight: 800; font-size:1rem; color: #4d360a; padding:0.875rem; border-radius:1rem; background: linear-gradient(180deg, #FFD873, var(--gold) 60%, var(--gold-deep)); }
 .popup .home-btn-col { display: flex; flex-direction: column; gap:0.625rem; max-width: none; margin: 0; }
+/* Numbered steps inside the inset-install reinstall nudge (maybeShowReinstallPrompt) */
+.popup .reinstall-steps { color: var(--muted); font-size:0.875rem; line-height: 1.5; text-align: left; margin:0 0 1.25rem; padding-left:1.25rem; }
+.popup .reinstall-steps li { margin-bottom:0.375rem; }
+.popup .reinstall-steps b { color: var(--cream); }
 .popup button.btn-secondary { background: var(--card-2); color: var(--cream); box-shadow: none; }
 .popup button.btn-danger { background: linear-gradient(180deg, #E4571C, var(--ember)); color: #fff; }
 .popup button.btn-success { background: linear-gradient(180deg, #6FD3A0, var(--owned)); color: #0d2c1c; }
