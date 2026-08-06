@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.1.7'
+const APP_VERSION = 'v2.5.1.8'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -1511,6 +1511,15 @@ let screenTeardown = null
 // rotation both change the tab bar's rendered height without any screen
 // re-mount, which would otherwise leave --tabbar-h stale.
 function syncTabbarHeight() {
+  // On an inset iOS standalone install the home indicator sits in the dead
+  // strip BELOW the webview, yet iOS still reports a ~34px bottom safe-area
+  // inset inside it - so the tab bar was padding itself for an indicator
+  // that isn't over it, stacking ~34px of in-app dead space on top of the
+  // ~47px strip. Flag the state on <html>; the CSS drops the bogus padding.
+  // Must happen BEFORE measuring offsetHeight so --tabbar-h reflects it,
+  // and everything derived from --tabbar-h (FAB, mini-player, scroll
+  // padding) follows automatically.
+  document.documentElement.classList.toggle('ios-inset-standalone', !!iosInsetStandaloneStrip())
   const tb = app.querySelector('.tabbar')
   if (tb && tb.offsetHeight) document.documentElement.style.setProperty('--tabbar-h', tb.offsetHeight + 'px')
   // Re-derive theme-color too: on an inset iOS standalone install it's the
