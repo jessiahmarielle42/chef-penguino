@@ -171,6 +171,22 @@ When the user reports errors/bugs live, fix and commit them immediately.
 contains the literal trigger word **"push"** — then push everything queued
 at once, in one go.
 
+## 8b. Live app with real users — never disrupt them
+The app is deployed and in active use by real users (not just the admin).
+Every update must be backward-safe and non-disruptive to people already on
+it:
+- Guard new DB columns/reads so the app works BEFORE its migration is run
+  (pattern: `currentProfile?.newColumn` treated as the safe default), and
+  never change the shape of saved local/remote state out from under an
+  existing user.
+- Layout/UI changes reach `main` only after dual-engine verification
+  (Chromium + WebKit-iPhone) — a bad CSS change hits every user at once.
+- Debug tooling must be invisible to normal users (URL/flag-gated overlays,
+  hidden toggles) AND removed once the investigation it served is done —
+  never leave debug scaffolding in the shipped app.
+- Prefer additive, reversible changes; when a change could regress existing
+  behaviour, verify the old path still works, not just the new one.
+
 ## 8a. Version numbering — always 4 digits
 `APP_VERSION` in `app/src/main.js` is always **4 dot-separated numbers**
 (`vMAJOR.MINOR.FEATURE.FIX`), never 3. When bumping it, always land on a
