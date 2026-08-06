@@ -6134,10 +6134,15 @@ function renderSoundtrackPicker() {
     // Resolve to a usable URL, or null so render can fall back to a Sanctify
     // placeholder - never the Chef Penguino icon.
     const SANCTIFY_ICON = `${BASE}assets/sanctify-icon.png`
+    // Covers + artist photos live in Sanctify's PUBLIC `images` bucket (keys
+    // like `covers/<slug>.jpg` / `artists/<slug>.jpg`). cover_url is sometimes
+    // stored as a full URL, sometimes as a bare (or `assets/`-prefixed) path -
+    // handle all three, always resolving a path against `images`.
     const publicCover = (v) => {
       if (typeof v !== 'string' || !v) return null
       if (/^https?:\/\//.test(v)) return v
-      try { return getSanctifyClient().storage.from('covers').getPublicUrl(v).data.publicUrl || null } catch { return null }
+      const key = v.replace(/^\/+/, '').replace(/^assets\//, '')
+      try { return getSanctifyClient().storage.from('images').getPublicUrl(key).data.publicUrl || null } catch { return null }
     }
     const coverSrc = (song) => song.cover || SANCTIFY_ICON
 
