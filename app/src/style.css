@@ -609,6 +609,28 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 }
 .adm-user-scroll .glist { border-radius:1rem; }
 .adm-list-count { font-size:0.6875rem; color: var(--muted-2); font-weight: 800; letter-spacing: 0.02em; margin:0.75rem 0.25rem 0; }
+
+/* Emote type filter: a single horizontally-scrollable row of pills, so the
+   list stays compact no matter how many types exist. Scrollbar hidden; the
+   row still swipes/drag-scrolls. Active pill uses the app's fire accent, the
+   same treatment as the shop's own sort/type chips. */
+.adm-filter-row {
+  display: flex; gap:0.4375rem; margin-top:0.75rem;
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  padding-bottom:0.125rem; scrollbar-width: none;
+}
+.adm-filter-row::-webkit-scrollbar { display: none; }
+.adm-filter-chip {
+  flex: none; cursor: pointer; font-family: inherit; font-weight: 800; font-size:0.8125rem;
+  color: var(--muted); background: var(--card); border: 1px solid var(--line);
+  border-radius:62.4375rem; padding:0.4375rem 0.875rem; white-space: nowrap;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.adm-filter-chip.active {
+  color: var(--fire); border-color: rgba(251,122,46,0.5);
+  background: linear-gradient(160deg, rgba(251,122,46,0.16), var(--card-2));
+}
+.adm-filter-chip:active, .adm-filter-chip.pressed { transform: scale(0.96); }
 .adm-userrow { display: flex; align-items: center; gap:0.75rem; padding:0.75rem 0.9375rem; cursor: pointer; }
 .adm-userrow + .adm-userrow { border-top: 1px solid var(--line); }
 .adm-userrow img { width:2.75rem; height:2.75rem; border-radius: 50%; object-fit: cover; border: 2px solid var(--line); flex: none; }
