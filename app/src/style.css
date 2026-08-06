@@ -880,6 +880,12 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   background: var(--tabbar-bg); backdrop-filter: blur(16px);
   border-top: 1px solid var(--line);
 }
+/* Inset iOS standalone installs (html class set by syncTabbarHeight): the
+   home indicator is in the dead strip BELOW the webview, so the safe-area
+   padding above would double-pad for an indicator that isn't over the app.
+   Drop it to a normal 0.5rem; --tabbar-h re-measures and everything
+   anchored to it follows. */
+html.ios-inset-standalone .tabbar { padding-bottom: 0.5rem; }
 .tab {
   background: none; border: none; cursor: pointer; color: var(--muted-2);
   display: flex; flex-direction: column; align-items: center; gap:0.25rem; padding:0.5rem 0;
