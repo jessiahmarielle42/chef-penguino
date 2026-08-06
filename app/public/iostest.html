@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Chef Penguino — iOS webview test</title>
+    <!-- DIAGNOSTIC PAGE. Not linked from the app; delete once the inset-webview
+         question is settled (CLAUDE.md 8b: no debug scaffolding left shipped).
+
+         ONE variable vs the real app: this document's SERVED MARKUP contains
+         no <link rel="manifest"> at all. index.html ships the link and deletes
+         it with an inline script, which assumes iOS harvests install metadata
+         from the post-JS DOM - the assumption that just failed on device (a
+         fresh re-add still measured innerHeight 879 against a 926 screen).
+         Everything else here is copied from index.html verbatim: same apple
+         meta tags, same viewport. So if Add-to-Home-Screen from THIS page
+         measures 926, the manifest link in the markup is the cause and the
+         fix is to stop emitting it for iOS. If it still measures 879, the
+         manifest is irrelevant and the inset comes from somewhere else. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #120c09; color: #EDE3D4;
+        font-family: -apple-system, system-ui, sans-serif; }
+      body { display: flex; flex-direction: column; }
+      .pad { padding: calc(env(safe-area-inset-top, 0px) + 1rem) 1rem 1rem; }
+      h1 { font-size: 1.05rem; margin: 0 0 0.75rem; }
+      p { font-size: 0.8rem; line-height: 1.45; color: #b9a894; margin: 0 0 1rem; }
+      #verdict { font-size: 1.6rem; font-weight: 800; margin: 0.5rem 0 1rem; line-height: 1.3; }
+      .good { color: #6FD3A0; } .bad { color: #FF8A5B; }
+      pre { font-family: ui-monospace, Menlo, monospace; font-size: 0.95rem;
+        line-height: 1.6; color: #7CFC6A; margin: 0; white-space: pre-wrap; }
+      /* Mirrors the app's tab bar: fixed to the bottom edge, so any strip of
+         screen the webview cannot reach shows up as a band BELOW the stripe. */
+      .bar { position: fixed; left: 0; right: 0; bottom: 0; height: 3.5rem;
+        background: #E4571C; display: flex; align-items: center;
+        justify-content: center; font-weight: 800; }
+    </style>
+  </head>
+  <body>
+    <div class="pad">
+      <h1>iOS webview height test</h1>
+      <p>Add THIS page to your Home Screen (Share → Add to Home Screen), open it
+        from the icon, and screenshot what's below.</p>
+      <div id="verdict">…</div>
+      <pre id="out"></pre>
+    </div>
+    <div class="bar">bottom edge of the page</div>
+    <script>
+      function render() {
+        var strip = (screen.height || 0) - window.innerHeight
+        var standalone = navigator.standalone === true
+        var probe = document.createElement('div')
+        probe.style.cssText = 'position:fixed;padding-bottom:env(safe-area-inset-bottom);' +
+          'padding-top:env(safe-area-inset-top);visibility:hidden'
+        document.body.appendChild(probe)
+        var cs = getComputedStyle(probe)
+        var sb = parseFloat(cs.paddingBottom) || 0
+        var st = parseFloat(cs.paddingTop) || 0
+        probe.remove()
+
+        var v = document.getElementById('verdict')
+        if (!standalone) {
+          v.textContent = 'Open from the Home Screen icon (not Safari)'
+          v.className = ''
+        } else if (strip > 20) {
+          v.textContent = 'STILL INSET (' + strip + 'px lost)'
+          v.className = 'bad'
+        } else {
+          v.textContent = 'FULL SCREEN — fixed'
+          v.className = 'good'
+        }
+        document.getElementById('out').textContent =
+          'innerHeight = ' + window.innerHeight + '\n' +
+          'screen.height = ' + screen.height + '\n' +
+          'strip lost = ' + strip + '\n' +
+          'safe top = ' + st.toFixed(1) + '  bottom = ' + sb.toFixed(1) + '\n' +
+          'standalone = ' + standalone + '\n' +
+          'manifest link = ' + (document.querySelector('link[rel=manifest]') ? 'PRESENT' : 'none') + '\n' +
+          'dpr = ' + window.devicePixelRatio
+      }
+      render()
+      addEventListener('resize', render)
+      addEventListener('orientationchange', render)
+    </script>
+  </body>
+</html>
