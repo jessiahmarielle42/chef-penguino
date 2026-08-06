@@ -1,12 +1,36 @@
 import './style.css'
 import { supabase } from './supabaseClient.js'
+import { getSanctifyClient } from './sanctifyClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
+
+// ---------- Sanctify OAuth return capture (MUST run synchronously, first) ----
+// When the admin connects Sanctify we redirect the whole page to Google and
+// back to `${origin}${BASE}?cpsanctify=1&code=...`. Both Supabase clients would
+// otherwise fight over that `?code`: Penguino's client (detectSessionInUrl on)
+// would try to exchange a code minted for the SANCTIFY project against its own,
+// fail, and strip the code before our Sanctify client ever sees it. So here,
+// synchronously at module load - before Penguino's client's async _initialize
+// reads the URL - we capture the code and scrub it from the URL when (and only
+// when) our marker is present. boot() then hands it to the Sanctify client.
+let sanctifyReturnCode = null
+;(() => {
+  try {
+    const u = new URL(window.location.href)
+    if (u.searchParams.get('cpsanctify') === '1') {
+      sanctifyReturnCode = u.searchParams.get('code')
+      u.searchParams.delete('cpsanctify')
+      u.searchParams.delete('code')
+      u.searchParams.delete('state')
+      window.history.replaceState({}, '', u.pathname + u.search + u.hash)
+    }
+  } catch { /* non-browser / malformed URL - nothing to capture */ }
+})()
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.2.1'
+const APP_VERSION = 'v2.5.3.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -582,6 +606,12 @@ new MutationObserver(syncThemeColorMeta).observe(document.documentElement, {
 // A GainNode's gain still works there since it's just math on the samples.
 const bgMusic = new Audio(`${BASE}assets/bg-music.mp3`)
 bgMusic.loop = true
+// Required for the Sanctify connector: a cross-origin remote track routed
+// through createMediaElementSource() below outputs SILENCE unless the media
+// element is CORS-enabled AND the host sends CORS headers (Supabase signed
+// URLs do). Harmless for the same-origin local presets. Set once here, before
+// the graph is wired, so switching src to a remote song never taints the node.
+bgMusic.crossOrigin = 'anonymous'
 
 const AudioContextClass = window.AudioContext || window.webkitAudioContext
 const audioCtx = AudioContextClass ? new AudioContextClass() : null
@@ -671,6 +701,72 @@ const SOUNDTRACKS = [
 ]
 function soundtrackById(id) { return SOUNDTRACKS.find(t => (t.id || null) === (id || null)) || SOUNDTRACKS[0] }
 
+// ---------- Sanctify soundtrack encoding (backward-safe, no DB migration) ----
+// A Sanctify pick is stored INSIDE the existing `soundtrack` text column as
+// `sanctify:<json>` carrying everything needed to render + play it on any
+// device: { path (private-bucket object path), title, artist, cover }. Old or
+// un-migrated clients pass this straight through soundtrackById() which finds
+// no match and returns the default track - so they simply hear the default
+// theme, never an error. Only the admin's own profile can ever hold this value.
+const SANCTIFY_PREFIX = 'sanctify:'
+function parseSanctifyPick(val) {
+  if (typeof val !== 'string' || !val.startsWith(SANCTIFY_PREFIX)) return null
+  try { return JSON.parse(val.slice(SANCTIFY_PREFIX.length)) } catch { return null }
+}
+function encodeSanctifyPick(pick) {
+  return SANCTIFY_PREFIX + JSON.stringify({ path: pick.path, title: pick.title, artist: pick.artist, cover: pick.cover || null })
+}
+
+// Mint a fresh 1-hour signed URL for a private-bucket audio object path.
+async function sanctifySignedAudioUrl(path) {
+  try {
+    const { data, error } = await getSanctifyClient().storage.from('audio').createSignedUrl(path, 3600)
+    if (error || !data?.signedUrl) return null
+    return data.signedUrl
+  } catch { return null }
+}
+
+// Applied-soundtrack refresh timer: a signed URL dies after 1h, so a long
+// focus session looping a Sanctify song would eventually 403. Re-mint well
+// before expiry and hot-swap the src without interrupting the loop.
+let sanctifyRefreshTimer = null
+function clearSanctifyRefresh() {
+  if (sanctifyRefreshTimer) { clearTimeout(sanctifyRefreshTimer); sanctifyRefreshTimer = null }
+}
+// Re-sign ~5 min before the 1h TTL and hot-swap the src, preserving position,
+// but only while this exact pick is still the applied soundtrack.
+function scheduleSanctifyRefresh(pick) {
+  clearSanctifyRefresh()
+  sanctifyRefreshTimer = setTimeout(async () => {
+    if (parseSanctifyPick(currentProfile?.soundtrack)?.path !== pick.path) return
+    const fresh = await sanctifySignedAudioUrl(pick.path)
+    if (fresh) { const t = bgMusic.currentTime; currentTrackSrc = fresh; bgMusic.src = fresh; bgMusic.currentTime = t || 0; syncMusic() }
+    scheduleSanctifyRefresh(pick) // keep re-signing for arbitrarily long sessions
+  }, 55 * 60 * 1000)
+}
+async function applySanctifySoundtrack(pick) {
+  clearSanctifyRefresh()
+  const signed = await sanctifySignedAudioUrl(pick.path)
+  if (!signed) {
+    // Not connected on this device, or signing failed - fall back to default
+    // theme rather than dead air. Clear the marker so a later connect re-applies.
+    delete bgMusic.dataset.sanctifyPath
+    const def = SOUNDTRACKS[0]
+    currentTrackSrc = soundtrackAbsUrl(def.src)
+    bgMusic.src = currentTrackSrc
+    bgMusic.loop = true
+    updateMediaSessionTrack(def.title)
+    syncMusic()
+    return
+  }
+  currentTrackSrc = signed
+  bgMusic.src = signed
+  bgMusic.loop = true
+  updateMediaSessionTrack(pick.title)
+  syncMusic()
+  scheduleSanctifyRefresh(pick)
+}
+
 // The src bgMusic is *supposed* to be playing right now, per the signed-in
 // chef's saved profile (or the default, for guests/no-selection). Tracked
 // separately from bgMusic.src itself because the picker temporarily points
@@ -695,6 +791,17 @@ function updateMediaSessionTrack(title) {
 // refresh (e.g. the realtime resync in subscribeToSocial()) doesn't restart
 // playback from 0:00 on every poll.
 function applySavedSoundtrack() {
+  const pick = parseSanctifyPick(currentProfile?.soundtrack)
+  if (pick) {
+    // Already streaming this exact Sanctify song? (signed URLs are unique each
+    // mint, so compare by the stable object path, not the volatile src.)
+    if (bgMusic.dataset.sanctifyPath === pick.path) return
+    bgMusic.dataset.sanctifyPath = pick.path
+    applySanctifySoundtrack(pick)
+    return
+  }
+  delete bgMusic.dataset.sanctifyPath
+  clearSanctifyRefresh()
   const saved = soundtrackById(currentProfile?.soundtrack)
   const abs = soundtrackAbsUrl(saved.src)
   if (abs === currentTrackSrc) return
@@ -914,6 +1021,23 @@ async function boot() {
   checkPendingCoinGifts()
   checkPendingWarnings()
   installUiDebug()
+  if (sanctifyReturnCode) handleSanctifyReturn()
+}
+
+// Finish a Sanctify connect: exchange the captured OAuth code (see the
+// synchronous capture block at the top of this file) for a Sanctify session,
+// then land the admin back on the Background Music picker to search right away.
+async function handleSanctifyReturn() {
+  const code = sanctifyReturnCode
+  sanctifyReturnCode = null
+  if (!code) return
+  let ok = false
+  try {
+    const { error } = await getSanctifyClient().auth.exchangeCodeForSession(code)
+    ok = !error
+  } catch { ok = false }
+  toast(ok ? 'Sanctify connected 🎵' : "Couldn't connect Sanctify — try again")
+  if (isSignedIn()) renderSoundtrackPicker()
 }
 
 // ---------------------------------------------------------------
@@ -5697,7 +5821,8 @@ function teardownSoundtrackPreview() {
   if (stPreviewTrackId !== undefined && bgMusic.src !== currentTrackSrc) {
     bgMusic.src = currentTrackSrc
     bgMusic.loop = true
-    updateMediaSessionTrack(soundtrackById(currentProfile?.soundtrack).title)
+    const savedPick = parseSanctifyPick(currentProfile?.soundtrack)
+    updateMediaSessionTrack(savedPick ? savedPick.title : soundtrackById(currentProfile?.soundtrack).title)
   }
   stPreviewTrackId = undefined
   syncMusic()
@@ -5705,8 +5830,12 @@ function teardownSoundtrackPreview() {
 
 function renderSoundtrackPicker() {
   if (!isSignedIn()) { renderSettings(); return }
-  let savedId = currentProfile?.soundtrack ?? null
-  let previewId // undefined until a row is tapped this visit; may be null (the default track)
+  const admin = isAdmin()
+  let savedRaw = currentProfile?.soundtrack ?? null
+  let savedPick = parseSanctifyPick(savedRaw) // non-null when the saved track is a Sanctify song
+  let previewId // undefined until a preset row is tapped this visit; may be null (the default track)
+  let previewSanctify = null // the Sanctify song object currently previewing, or null
+  let sanctifyResults = [] // in-memory search results, rows index into this
   let stLoading = false // true while a freshly-picked track is still buffering
 
   const rows = SOUNDTRACKS.map((t, i) => `
@@ -5721,17 +5850,25 @@ function renderSoundtrackPicker() {
   const content = `
     <div class="back-link" role="button" tabindex="0" data-action="back-to-settings">‹ Settings</div>
     <div class="section-h" style="margin-top:2px"><h2>Background Music</h2></div>
-    <p class="gs st-sub">Tap a track to hear it. Save to make it yours.</p>
+    <p class="gs st-sub">${admin ? 'Search Sanctify or pick a preset. Tap to preview.' : 'Tap a track to hear it. Save to make it yours.'}</p>
     <div class="st-savebar">
       <button type="button" class="st-save" id="st-save" disabled>Save as my soundtrack</button>
     </div>
+    ${admin ? '<div id="sanctify-sec"></div>' : ''}
+    ${admin ? '<div class="st-divider">Presets</div>' : ''}
     <div class="st-list">${rows}</div>
     <div style="height:6.5rem"></div>
   `
 
   mountScreen('settings', content, () => {
-    const rowEls = Array.from(app.querySelectorAll('.st-row'))
+    const rowEls = Array.from(app.querySelectorAll('.st-list .st-row'))
     const saveBtn = app.querySelector('#st-save')
+
+    // A single "active preview" spans presets and Sanctify songs. Stable
+    // comparison keys let one Save button + one highlight pass serve both.
+    const previewKey = () => previewSanctify ? 'S:' + previewSanctify.path : previewId !== undefined ? 'P:' + (previewId || '') : null
+    const savedKey = () => savedPick ? 'S:' + savedPick.path : 'P:' + (savedRaw || '')
+    const hasPreview = () => previewId !== undefined || previewSanctify != null
 
     // Mini-player lives INSIDE .app (position:absolute against .app's own
     // position:relative), NOT on document.body. It used to live on body "to
@@ -5782,15 +5919,25 @@ function renderSoundtrackPicker() {
     }
 
     function paint() {
+      const pk = previewKey(), sk = savedKey()
       rowEls.forEach((r, i) => {
         const t = SOUNDTRACKS[i]
-        const isSaved = (t.id || null) === (savedId || null)
-        const isPreviewing = previewId !== undefined && (t.id || null) === (previewId || null)
-        r.classList.toggle('is-selected', isSaved)
+        const key = 'P:' + (t.id || '')
+        const isPreviewing = pk === key
+        r.classList.toggle('is-selected', sk === key)
         r.classList.toggle('is-playing', isPreviewing)
         r.classList.toggle('paused', isPreviewing && bgMusic.paused)
       })
-      saveBtn.disabled = previewId === undefined || (previewId || null) === (savedId || null)
+      // Sanctify rows (search results + the saved "your song" row) highlight
+      // off the same keys - a preset preview clears them, and vice-versa.
+      app.querySelectorAll('.st-sanctify-row').forEach(r => {
+        const key = 'S:' + r.dataset.path
+        const isPreviewing = pk === key
+        r.classList.toggle('is-selected', sk === key)
+        r.classList.toggle('is-playing', isPreviewing)
+        r.classList.toggle('paused', isPreviewing && bgMusic.paused)
+      })
+      saveBtn.disabled = !pk || pk === sk
       playBtn.classList.toggle('loading', stLoading)
       playBtn.innerHTML = stLoading ? '' : (bgMusic.paused ? '&#9654;' : '&#10074;&#10074;')
     }
@@ -5830,6 +5977,7 @@ function renderSoundtrackPicker() {
           return
         }
         previewId = t.id
+        previewSanctify = null // a preset preview supersedes any Sanctify preview
         stPreviewTrackId = previewId
         soundtrackPreviewBoost = true // audible even if the chef has muted - see syncMusic()
         soundtrackPreviewPaused = false
@@ -5845,8 +5993,38 @@ function renderSoundtrackPicker() {
       })
     })
 
+    // Preview a Sanctify song: sign its audio URL, then play through the same
+    // bgMusic pipeline + mini-player as presets. Async, so the mini shows a
+    // loading spinner while the URL is minted.
+    async function previewSanctifySong(song) {
+      if (previewSanctify && previewSanctify.path === song.path) {
+        soundtrackPreviewBoost = true
+        soundtrackPreviewPaused = !bgMusic.paused
+        syncMusic(); paint(); return
+      }
+      previewId = undefined
+      previewSanctify = song
+      stPreviewTrackId = 'S:' + song.path
+      soundtrackPreviewBoost = true
+      soundtrackPreviewPaused = false
+      stLoading = true
+      showMini({ art: song.cover || `${BASE}assets/icon-512.png`, title: song.title })
+      paint()
+      const signed = await sanctifySignedAudioUrl(song.path)
+      if (previewSanctify?.path !== song.path) return // user moved on while signing
+      if (!signed) { stLoading = false; toast("Couldn't load that song — reconnect Sanctify?"); paint(); return }
+      song.signedUrl = signed
+      bgMusic.src = signed
+      bgMusic.loop = true
+      bgMusic.currentTime = 0
+      updateMediaSessionTrack(song.title)
+      syncMusic()
+      bgMusic.play().catch(() => {})
+      paint()
+    }
+
     playBtn.addEventListener('click', () => {
-      if (previewId === undefined) return
+      if (!hasPreview()) return
       soundtrackPreviewBoost = true
       soundtrackPreviewPaused = !bgMusic.paused
       syncMusic()
@@ -5864,7 +6042,7 @@ function renderSoundtrackPicker() {
       return p
     }
     scrubEl.addEventListener('pointerdown', (e) => {
-      if (previewId === undefined) return
+      if (!hasPreview()) return
       scrubbing = true
       scrubEl.setPointerCapture(e.pointerId)
       seekAt(e.clientX)
@@ -5917,19 +6095,142 @@ function renderSoundtrackPicker() {
     // on-device bug where the player sat on top of the bug-report popup).
 
     saveBtn.addEventListener('click', async () => {
-      if (previewId === undefined) return
+      if (!hasPreview()) return
+      if (previewSanctify) {
+        const song = previewSanctify
+        const encoded = encodeSanctifyPick(song)
+        const { error } = await supabase.from('profiles').update({ soundtrack: encoded }).eq('id', currentUser.id)
+        if (error) { toast("Couldn't save — try again"); return }
+        currentProfile.soundtrack = encoded
+        savedRaw = encoded
+        savedPick = parseSanctifyPick(encoded)
+        // The preview IS now the applied track - keep it streaming, don't
+        // restart. currentTrackSrc holds the signed URL so teardown restores
+        // it, and dataset.sanctifyPath stops applySavedSoundtrack re-signing.
+        currentTrackSrc = song.signedUrl || bgMusic.src
+        bgMusic.dataset.sanctifyPath = song.path
+        scheduleSanctifyRefresh(song)
+        renderSanctifyResults() // repaint the saved-song row into place
+        paint()
+        toast(`Saved — "${song.title}" is your soundtrack`)
+        return
+      }
       const track = soundtrackById(previewId)
       const { error } = await supabase.from('profiles').update({ soundtrack: previewId }).eq('id', currentUser.id)
       if (error) { toast("Couldn't save — try again"); return }
       currentProfile.soundtrack = previewId
       currentTrackSrc = soundtrackAbsUrl(track.src) // the preview IS now the saved/applied track
-      savedId = previewId
+      savedRaw = previewId
+      savedPick = null
+      delete bgMusic.dataset.sanctifyPath
+      clearSanctifyRefresh()
       paint()
       toast(`Saved — "${track.title}" is your soundtrack`)
     })
 
+    // ---- Sanctify section (admin only): connect card OR connected + search ----
+    const cover = (url) => (typeof url === 'string' && /^https?:\/\//.test(url)) ? url : `${BASE}assets/icon-512.png`
+
+    function sanctifyRowHtml(song, savedRow) {
+      return `
+        <button type="button" class="st-row st-sanctify-row" data-path="${escapeHtml(song.path)}"${savedRow ? '' : ` data-sidx="${sanctifyResults.indexOf(song)}"`}>
+          <img class="st-art" src="${cover(song.cover)}" alt="" />
+          <span class="st-meta"><span class="st-title">${escapeHtml(song.title)}</span><span class="st-artist">${escapeHtml(song.artist || 'Sanctify')} · Sanctify</span></span>
+          <span class="st-bars" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="st-tick" aria-hidden="true">✓</span>
+        </button>`
+    }
+
+    function renderSanctifyResults() {
+      const box = app.querySelector('#sanctify-results')
+      if (!box) return
+      let html = ''
+      // Show the saved Sanctify song pinned at top (unless it's already in the
+      // live results), so the admin always sees what's currently set.
+      if (savedPick && !sanctifyResults.some(s => s.path === savedPick.path)) {
+        html += `<div class="st-divider">Your Sanctify song</div>` + sanctifyRowHtml({ path: savedPick.path, title: savedPick.title, artist: savedPick.artist, cover: savedPick.cover }, true)
+      }
+      if (sanctifyResults.length) {
+        html += (savedPick ? `<div class="st-divider">Results</div>` : '') + sanctifyResults.map(s => sanctifyRowHtml(s, false)).join('')
+      }
+      box.innerHTML = html
+      box.querySelectorAll('.st-sanctify-row').forEach(r => {
+        r.addEventListener('click', () => {
+          const idx = r.dataset.sidx
+          const song = idx != null ? sanctifyResults[+idx] : { path: savedPick.path, title: savedPick.title, artist: savedPick.artist, cover: savedPick.cover }
+          previewSanctifySong(song)
+        })
+      })
+      paint()
+    }
+
+    let searchTimer = null
+    async function runSearch(q) {
+      q = q.trim()
+      if (!q) { sanctifyResults = []; renderSanctifyResults(); return }
+      try {
+        const { data, error } = await getSanctifyClient()
+          .from('songs')
+          .select('id,title,audio_url,cover_url,duration_seconds,artist:artists(name)')
+          .eq('status', 'approved').not('audio_url', 'is', null)
+          .ilike('title', `%${q}%`).limit(20)
+        if (error) { sanctifyResults = []; renderSanctifyResults(); return }
+        sanctifyResults = (data || []).map(s => ({
+          path: s.audio_url, title: s.title, artist: s.artist?.name || '', cover: s.cover_url || null,
+        }))
+        renderSanctifyResults()
+      } catch { sanctifyResults = []; renderSanctifyResults() }
+    }
+
+    async function mountSanctifySection() {
+      const sec = app.querySelector('#sanctify-sec')
+      if (!sec) return
+      let connected = false
+      try { connected = !!(await getSanctifyClient().auth.getSession()).data.session } catch { connected = false }
+      if (!connected) {
+        sec.innerHTML = `
+          <div class="sanc-card">
+            <div class="sanc-head">
+              <div class="sanc-logo">🎵</div>
+              <div><div class="sanc-name">Sanctify</div><div class="sanc-tag">Stream any song from your library</div></div>
+            </div>
+            <button type="button" class="btn-connect" id="sanc-connect"><span class="gicon">G</span> Connect with Google</button>
+          </div>`
+        sec.querySelector('#sanc-connect').addEventListener('click', async () => {
+          await getSanctifyClient().auth.signInWithOAuth({
+            provider: 'google',
+            options: { redirectTo: window.location.origin + BASE + '?cpsanctify=1', queryParams: { prompt: 'select_account' } },
+          })
+        })
+        return
+      }
+      let email = ''
+      try { email = (await getSanctifyClient().auth.getUser()).data.user?.email || '' } catch {}
+      sec.innerHTML = `
+        <div class="conn-bar">
+          <span class="conn-dot"></span>
+          <span class="conn-txt">Sanctify connected${email ? ` <span class="conn-email">· ${escapeHtml(email)}</span>` : ''}</span>
+          <span class="disc" role="button" tabindex="0" id="sanc-disconnect">Disconnect</span>
+        </div>
+        <div class="st-search"><span class="sicon" aria-hidden="true">🔍</span><input id="sanc-search" type="search" placeholder="Search songs on Sanctify…" autocomplete="off" /></div>
+        <div id="sanctify-results"></div>`
+      sec.querySelector('#sanc-disconnect').addEventListener('click', async () => {
+        try { await getSanctifyClient().auth.signOut() } catch {}
+        sanctifyResults = []
+        toast('Sanctify disconnected')
+        mountSanctifySection()
+      })
+      sec.querySelector('#sanc-search').addEventListener('input', (e) => {
+        clearTimeout(searchTimer)
+        const v = e.target.value
+        searchTimer = setTimeout(() => runSearch(v), 250)
+      })
+      renderSanctifyResults()
+    }
+
     app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
 
+    if (admin) mountSanctifySection()
     stPreviewTrackId = previewId
     paint()
     screenTeardown = teardownSoundtrackPreview
