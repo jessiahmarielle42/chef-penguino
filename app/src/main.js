@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.1.5'
+const APP_VERSION = 'v2.5.1.6'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -4922,7 +4922,7 @@ function renderSettings(highlightProfile, highlightHomescreen) {
           <div><div class="gt">Legal and Disclaimers</div><div class="gs">We do not own the copyright</div></div>
           <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
         </div>
-        <div class="grow"><div><div class="gt">Version</div><div class="gs">${APP_VERSION}</div></div></div>
+        <div class="grow" id="version-row"><div><div class="gt">Version</div><div class="gs">${APP_VERSION}</div></div></div>
         ${isAdmin() ? `
         <div class="grow" role="button" tabindex="0" data-action="admin-dashboard">
           <div><div class="gt">Admin Dashboard</div></div>
@@ -4937,6 +4937,25 @@ function renderSettings(highlightProfile, highlightHomescreen) {
   mountScreen('settings', content, () => {
     app.querySelector('[data-action="task-types"]')?.addEventListener('click', renderTaskTypesEditor)
     app.querySelector('[data-action="lore"]')?.addEventListener('click', renderLore)
+    // Hidden toggle for the ?uidebug=1 layout readout: 5 quick taps on the
+    // Version row. Needed because the URL param only works in a Safari tab -
+    // the standalone Home Screen app (where iOS layout bugs actually differ)
+    // always launches the bare start_url and keeps its own storage, so there
+    // was no way to enable the diagnostic in the exact mode being debugged.
+    const versionRow = app.querySelector('#version-row')
+    if (versionRow) {
+      let taps = 0, tapTimer = null
+      versionRow.addEventListener('click', () => {
+        taps++
+        clearTimeout(tapTimer)
+        tapTimer = setTimeout(() => { taps = 0 }, 1200)
+        if (taps >= 5) {
+          taps = 0
+          toggleUiDebug()
+          toast(uiDebugEnabled() ? 'Layout debug ON' : 'Layout debug OFF')
+        }
+      })
+    }
     app.querySelector('[data-action="add-to-homescreen"]')?.addEventListener('click', triggerAddToHomescreen)
     app.querySelector('[data-action="replay-tutorial"]')?.addEventListener('click', () => {
       startOnboardingTour()
@@ -9029,8 +9048,24 @@ function uiDebugEnabled() {
     return localStorage.getItem('cp-uidebug') === '1'
   } catch { return false }
 }
+let uiDebugInterval = null
+function removeUiDebug() {
+  if (uiDebugInterval) { clearInterval(uiDebugInterval); uiDebugInterval = null }
+  document.getElementById('ui-debug')?.remove()
+  document.getElementById('ui-debug-probe')?.remove()
+}
+// Flip the persisted flag AND apply it live (no reload needed - the standalone
+// webapp can't be relaunched with a URL param anyway). See the version-row
+// tap handler in renderSettings.
+function toggleUiDebug() {
+  try {
+    if (localStorage.getItem('cp-uidebug') === '1') { localStorage.removeItem('cp-uidebug'); removeUiDebug() }
+    else { localStorage.setItem('cp-uidebug', '1'); installUiDebug() }
+  } catch {}
+}
 function installUiDebug() {
   if (!uiDebugEnabled()) return
+  if (document.getElementById('ui-debug')) return // idempotent - already shown
   const el = document.createElement('pre')
   el.id = 'ui-debug'
   el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;margin:0;padding:6px 8px;' +
@@ -9039,6 +9074,7 @@ function installUiDebug() {
   document.body.appendChild(el)
   // Probe element to read the real env(safe-area-inset-*) values as computed px.
   const probe = document.createElement('div')
+  probe.id = 'ui-debug-probe'
   probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;' +
     'padding-bottom:env(safe-area-inset-bottom);padding-top:env(safe-area-inset-top);visibility:hidden'
   document.body.appendChild(probe)
@@ -9067,10 +9103,9 @@ function installUiDebug() {
       `standalone=${standalone}`
   }
   render()
-  const iv = setInterval(render, 500)
+  uiDebugInterval = setInterval(render, 500)
   ;['resize', 'scroll', 'orientationchange'].forEach(e => window.addEventListener(e, render, { passive: true }))
   if (window.visualViewport) window.visualViewport.addEventListener('resize', render)
-  window.addEventListener('pagehide', () => clearInterval(iv))
 }
 
 // Diagnostic readout, opt-in via ?tourdebug=1 (persisted). Renders the
