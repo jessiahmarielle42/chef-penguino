@@ -6,7 +6,7 @@ const BASE = import.meta.env.BASE_URL
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.1.4'
+const APP_VERSION = 'v2.5.1.5'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -866,6 +866,7 @@ async function boot() {
   checkPendingNoots()
   checkPendingCoinGifts()
   checkPendingWarnings()
+  installUiDebug()
 }
 
 // ---------------------------------------------------------------
@@ -9010,6 +9011,66 @@ function tourMount() {
     if (external) tourSync()
   })
   tour.obs.observe(document.body, { childList: true, subtree: true })
+}
+
+// Bottom-layout diagnostic, opt-in via ?uidebug=1 (persisted). The gap BELOW
+// the tab bar on real iOS cannot be reproduced in a headless browser (there
+// the tab bar's bottom lands exactly at innerHeight in both engines), so this
+// prints the real device's own numbers on screen for a single screenshot to
+// diagnose from - which of these is true decides the fix:
+//   tabbarBottom < vh      -> fixed bottom:0 isn't reaching the true bottom
+//   vh < visualViewport    -> a UI band (Safari toolbar) is eating the bottom
+//   safeBottom large/odd   -> the home-indicator inset is the whole gap
+// Pinned to the TOP so the very gap it's diagnosing can't hide it.
+function uiDebugEnabled() {
+  try {
+    if (new URLSearchParams(location.search).get('uidebug') === '1') localStorage.setItem('cp-uidebug', '1')
+    if (new URLSearchParams(location.search).get('uidebug') === '0') localStorage.removeItem('cp-uidebug')
+    return localStorage.getItem('cp-uidebug') === '1'
+  } catch { return false }
+}
+function installUiDebug() {
+  if (!uiDebugEnabled()) return
+  const el = document.createElement('pre')
+  el.id = 'ui-debug'
+  el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;margin:0;padding:6px 8px;' +
+    'background:rgba(0,0,0,0.85);color:#0f0;font:11px/1.35 ui-monospace,monospace;white-space:pre-wrap;' +
+    'pointer-events:none;text-shadow:0 1px 1px #000'
+  document.body.appendChild(el)
+  // Probe element to read the real env(safe-area-inset-*) values as computed px.
+  const probe = document.createElement('div')
+  probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;' +
+    'padding-bottom:env(safe-area-inset-bottom);padding-top:env(safe-area-inset-top);visibility:hidden'
+  document.body.appendChild(probe)
+  const render = () => {
+    const vv = window.visualViewport
+    const tb = document.querySelector('.tabbar')
+    const tbr = tb ? tb.getBoundingClientRect() : null
+    const appEl = document.getElementById('app')
+    const ar = appEl ? appEl.getBoundingClientRect() : null
+    const ps = getComputedStyle(probe)
+    const safeBottom = parseFloat(ps.paddingBottom) || 0
+    const safeTop = parseFloat(ps.paddingTop) || 0
+    const tbhVar = getComputedStyle(document.documentElement).getPropertyValue('--tabbar-h').trim()
+    const standalone = (matchMedia('(display-mode: standalone)').matches) ||
+      (typeof navigator.standalone !== 'undefined' && navigator.standalone)
+    el.textContent =
+      `vh(innerHeight)=${innerHeight}  screen=${screen.height}  dpr=${devicePixelRatio}\n` +
+      `visualViewport h=${vv ? Math.round(vv.height) : '-'} offsetTop=${vv ? Math.round(vv.offsetTop) : '-'}\n` +
+      `docEl.clientHeight=${document.documentElement.clientHeight}\n` +
+      `safe-area bottom=${safeBottom.toFixed(1)}  top=${safeTop.toFixed(1)}\n` +
+      `--tabbar-h=${tbhVar || '(unset)'}\n` +
+      `tabbar: top=${tbr ? Math.round(tbr.top) : '-'} bottom=${tbr ? Math.round(tbr.bottom) : '-'} h=${tbr ? Math.round(tbr.height) : '-'}\n` +
+      `GAP below tabbar (vh - bottom)=${tbr ? Math.round(innerHeight - tbr.bottom) : '-'}\n` +
+      `GAP below tabbar (vv - bottom)=${tbr && vv ? Math.round(vv.height - tbr.bottom) : '-'}\n` +
+      `#app: bottom=${ar ? Math.round(ar.bottom) : '-'} h=${ar ? Math.round(ar.height) : '-'}\n` +
+      `standalone=${standalone}`
+  }
+  render()
+  const iv = setInterval(render, 500)
+  ;['resize', 'scroll', 'orientationchange'].forEach(e => window.addEventListener(e, render, { passive: true }))
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', render)
+  window.addEventListener('pagehide', () => clearInterval(iv))
 }
 
 // Diagnostic readout, opt-in via ?tourdebug=1 (persisted). Renders the
