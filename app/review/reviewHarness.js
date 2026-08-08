@@ -430,6 +430,10 @@ export function installReviewHarness({ supabase, setUser, renderers, state, getC
     if (partial.preset) {
       applyPreset(partial.preset)
     }
+    if (partial.user) {
+      Object.assign(window.__reviewFixtures.user || (window.__reviewFixtures.user = {}), partial.user)
+      if (installedSetUser) installedSetUser(window.__reviewFixtures.user, window.__reviewFixtures.profile)
+    }
     if (partial.profile) {
       Object.assign(tables.profiles[0] || (tables.profiles[0] = {}), partial.profile)
       window.__reviewFixtures.profile = clone(tables.profiles[0])

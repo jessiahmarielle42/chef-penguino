@@ -403,6 +403,13 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .badge-equip:active { transform: scale(0.95); }
 .badge-equip.equipped { background: rgba(86,192,138,0.85); color: #0d2c1c; border-color: rgba(86,192,138,0.6); }
 .anim-top .lock { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(10,6,4,0.55); font-size:1.875rem; }
+/* While a preview clip is actively playing, drop the greyed/locked look so
+   the clip is clearly visible - restored the instant the clip ends (or
+   another preview takes over). Gated behind featureOn('shopPreviewFix') -
+   see the `[data-preview]` handler in renderShop(), which only ever adds
+   'previewing-nogrey' (as opposed to the pre-existing, ungated 'previewing'
+   glow class) when the flag is on for the signed-in chef. */
+.anim-top.previewing-nogrey .lock { display: none; }
 .anim-body { padding:0.8125rem 0.875rem; display: flex; align-items: center; gap:0.625rem; }
 .anim-info { flex: 1; min-width: 0; }
 .anim-body .nm { font-family: var(--font-display); font-weight: 800; font-size:0.9375rem; color: var(--cream); }

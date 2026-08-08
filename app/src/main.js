@@ -44,6 +44,15 @@ const DELETE_CLIP_ACTIONS = ['remove-friend', 'leave-group', 'delete-group', 'de
 const ADMIN_EMAIL = 'keefefons@gmail.com'
 function isAdmin() { return currentUser?.email === ADMIN_EMAIL }
 
+// Preview-only feature flags: PREVIEW_EMAILS is deliberately NOT wired into
+// isAdmin() or any admin power - it only ever gates featureOn() checks below,
+// which are cosmetic/behavioural toggles for signed-in chefs testing
+// in-flight work before it ships to everyone. 'preview' = only PREVIEW_EMAILS
+// see it; 'all' = shipped to everyone; flip a key to 'all' once verified.
+const PREVIEW_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
+const FEATURES = { shopPreviewFix: 'preview' }  // 'preview' | 'all'
+function featureOn(key) { return FEATURES[key] === 'all' || (FEATURES[key] === 'preview' && PREVIEW_EMAILS.includes(currentUser?.email)) }
+
 let currentUser = null
 let currentProfile = null
 
@@ -1049,6 +1058,37 @@ const EMOTES = [
 ]
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
 
+// Per-emote still-frame timestamp (seconds) used for shop-card thumbnails -
+// see emoteThumbSrc()/buildEmoteThumbEl() below. Every clip opens on the
+// same generic "chef standing at the display case" establishing shot, which
+// looks identical across emotes and tells the chef nothing about what the
+// move actually does - so most entries here pick a later moment where the
+// clip's own hero action/prop is on screen. Emotes not listed default to
+// t=0 (chosen by checking their first frame is already representative,
+// e.g. chef-mouse/chef-mouse-hamster open right on Meelo/the hamster).
+const EMOTE_THUMB_SEEK = {
+  waving: 1.5,
+  inspection: 2.5,
+  'spin-wheel': 2.5,
+  eating: 2.5,
+  'lovey-talk': 2.5,
+  'show-off': 2.5,
+  'phase-through': 1.5,
+  'happy-feet': 1.5,
+  fireworks: 2.5,
+  'happy-birthday': 2.5,
+  'bang-bang': 1.5,
+  'spilt-wine': 1.5,
+  'say-grace': 1.5,
+  'whack-a-meelo': 1.5,
+  'lightsaber-battle': 2.5,
+  'meelo-omelette': 2.5,
+  'meelo-milo': 3.0,
+  'meelo-pizza': 2.5,
+  'rat-in-the-kitchen': 3.5,
+  ratatouille: 2.5,
+}
+
 // Admin-managed emote metadata: a single Type tag plus optional Title/
 // Description overrides per emote, loaded from Supabase (see
 // migration_emote_tags.sql). Empty until loadEmoteData() runs; the accessors
@@ -1306,6 +1346,27 @@ function autoplayEmoteWhenReady(imgEl, emoteId, revertSrc) {
   if (v.readyState >= 4) { start(); return }
   v.addEventListener('canplaythrough', start)
   timer = setTimeout(start, 2500)
+}
+
+// Shop-card static thumbnail: a real still frame from the emote's own clip
+// rather than a shared generic image, derived at runtime (no extra image
+// assets) via the browser's native "#t=<seconds>" media fragment - loading
+// with preload="metadata" decodes and displays just that one frame without
+// downloading or playing the whole clip. See EMOTE_THUMB_SEEK above for why
+// most emotes don't use the (often blank/generic) first frame.
+function emoteThumbSrc(id) {
+  const e = EMOTE_BY_ID[id]
+  const t = EMOTE_THUMB_SEEK[id] ?? 0
+  return `${BASE}assets/${e.clip}#t=${t}`
+}
+function buildEmoteThumbEl(id, className, elId) {
+  const v = document.createElement('video')
+  v.className = className || 'anim-still'
+  if (elId) v.id = elId
+  v.src = emoteThumbSrc(id)
+  v.muted = true; v.playsInline = true; v.preload = 'metadata'
+  v.setAttribute('aria-hidden', 'true')
+  return v
 }
 
 // Swap an <img> for the equipped/given emote clip, play it, then revert.
@@ -2511,6 +2572,7 @@ async function renderShop(scrollTop) {
   await loadEmoteData()
 
   const thumb = `${BASE}assets/display-case/shop-preview.jpg`
+  const shopPreviewFixOn = featureOn('shopPreviewFix')
   const shopList = sortedShopEmotes()
   // Render-time override, never persisted: while the tour is active and
   // hasn't completed the waving purchase yet, Waving renders Locked/buyable
@@ -2532,10 +2594,14 @@ async function renderShop(scrollTop) {
 
     const action = owned ? '' : `<button class="btn btn-buy" type="button" data-buy="${e.id}">${coinImg()}1</button>`
 
+    const still = shopPreviewFixOn
+      ? `<video class="anim-still" src="${emoteThumbSrc(e.id)}" muted playsinline preload="metadata" aria-hidden="true"></video>`
+      : `<img class="anim-still" src="${thumb}" alt="${escapeHtml(emoteName(e))}" />`
+
     return `
       <div class="anim-card">
         <div class="anim-top" data-emote="${e.id}">
-          <img class="anim-still" src="${thumb}" alt="${escapeHtml(emoteName(e))}" />
+          ${still}
           ${badge}${lock}
         </div>
         <div class="anim-body">
@@ -2577,10 +2643,24 @@ async function renderShop(scrollTop) {
       btn.addEventListener('click', () => {
         const id = btn.dataset.preview
         const top = btn.closest('.anim-card').querySelector('.anim-top')
-        const img = top.querySelector('.anim-still')
-        if (img && img.tagName === 'IMG') {
+        const stillEl = top.querySelector('.anim-still')
+        if (stillEl) {
+          const className = stillEl.className, elId = stillEl.id
           top.classList.remove('previewing'); void top.offsetWidth; top.classList.add('previewing')
-          playEmoteInto(img, id, thumb)
+          if (shopPreviewFixOn) top.classList.add('previewing-nogrey')
+          // 'previewing-nogrey' hides the lock/dim overlay (see
+          // .anim-top.previewing-nogrey .lock in style.css) for the duration
+          // of the clip, gated behind featureOn('shopPreviewFix') - restore
+          // it the instant the clip ends, whether naturally or because
+          // another preview (or a screen change) interrupted it first.
+          // playEmoteInto() always reverts to a plain <img>(revertSrc)
+          // internally - when the fix is on, swap that back out for the real
+          // per-emote thumbnail video (see buildEmoteThumbEl) instead of
+          // leaving the generic placeholder showing.
+          playEmoteInto(stillEl, id, thumb, (img) => {
+            top.classList.remove('previewing', 'previewing-nogrey')
+            if (shopPreviewFixOn) img.replaceWith(buildEmoteThumbEl(id, className, elId))
+          })
           toast(`▶ Previewing ${emoteName(EMOTE_BY_ID[id])}…`)
         }
       })
