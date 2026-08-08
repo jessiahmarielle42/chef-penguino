@@ -187,6 +187,29 @@ it:
 - Prefer additive, reversible changes; when a change could regress existing
   behaviour, verify the old path still works, not just the new one.
 
+## 8c. Preview gating — EVERY change ships dark until the admin releases it
+Standing process for ALL user-visible changes — new features AND bugfixes
+alike (a bugfix can itself have problems that must not reach all users):
+- `main.js` holds the gate:
+  `PREVIEW_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']`
+  and a `FEATURES = { key: 'preview' | 'all' }` map, checked via a single
+  `featureOn(key)` helper. New user-visible behaviour renders only when its
+  flag is `'all'`, or `'preview'` and the signed-in email is in
+  PREVIEW_EMAILS.
+- Every new change lands with its flag at `'preview'`, so pushing `main`
+  deploys it dark: only the two preview accounts see it live.
+- The admin tests on the preview accounts, then says to release it; the
+  rollout is flipping that one flag to `'all'` — a one-line commit, no other
+  code changes, so what was tested is exactly what ships.
+- Once a flag has been `'all'` for a while and the change is settled,
+  remove the flag and the gate branches for it (dead flags rot).
+- PREVIEW_EMAILS is NOT an admin list: it must never feed `isAdmin()` or
+  grant dashboard/moderation powers. `jessiahmarielle@gmail.com` previews
+  features but is not a full admin.
+- Limit: preview needs a signed-in email, so guest-only paths can't be
+  previewed on-device; verify those via the harness `guest` preset and
+  re-check on-device after the flip.
+
 ## 8a. Version numbering — always 4 digits
 `APP_VERSION` in `app/src/main.js` is always **4 dot-separated numbers**
 (`vMAJOR.MINOR.FEATURE.FIX`), never 3. When bumping it, always land on a
