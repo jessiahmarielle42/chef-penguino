@@ -5,3 +5,5 @@ build/
 .env.local
 .DS_Store
 *.log
+.claude/
+app/review/*.local.mjs
