@@ -73,7 +73,7 @@ function isAdmin() { return ADMIN_EMAILS.includes(currentUser?.email) }
 // PREVIEW_EMAILS is deliberately NEVER fed into isAdmin() - preview access
 // is not admin access.
 const PREVIEW_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
-const FEATURES = { shopPreviewFix: 'preview', wishlist: 'preview' }  // 'preview' | 'all'
+const FEATURES = { shopPreviewFix: 'preview', wishlist: 'preview', emoteSeries: 'preview' }  // 'preview' | 'all'
 function featureOn(key) { return FEATURES[key] === 'all' || (FEATURES[key] === 'preview' && PREVIEW_EMAILS.includes(currentUser?.email)) }
 
 let currentUser = null
@@ -141,7 +141,7 @@ async function refreshProfile() {
   // fine and soundtrackById(undefined) treats it as the default track.
   let { data } = await supabase
     .from('profiles')
-    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels, level_seen, waving_free, onboarding_done, onboarding_coin_claimed, soundtrack')
+    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels, level_seen, waving_free, onboarding_done, onboarding_coin_claimed, soundtrack, emote_series')
     .eq('id', currentUser.id)
     .single()
   if (!data) {
@@ -475,7 +475,7 @@ function load() {
   const defaults = {
     pizzas: 0, muted: false, volume: 0.5, lastVolume: 0.5, darkenLevel: 1, autoDarken: true,
     timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null,
-    pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', lastSeenCoins: null,
+    pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', emoteSeries: [], lastSeenCoins: null,
     lightMode: false, taskTypeLabels: {}, deleteAnimations: true, onboardingDone: false,
     lastHomescreenPromptAt: null, homescreenPromptDismissedForever: false,
     // Undefined until captureGuestWavingFreeCaptured() runs once at boot -
@@ -1423,6 +1423,87 @@ async function equipEmote(id) {
   }
 }
 
+// =================================================================
+//  Emote Series (preview feature - see FEATURES.emoteSeries)
+// =================================================================
+// An ordered list of 1-5 OWNED emote ids the hero card cycles through.
+// Slot 1 IS the equipped emote - one concept, not two - so every write
+// here also writes the existing equipped-emote field to series[0], and old
+// clients / not-yet-migrated columns keep seeing the right main emote.
+// Raw stored value, no fallback - null/[] both mean "no series set".
+function rawEmoteSeries() {
+  return (currentProfile ? currentProfile.emote_series : state.emoteSeries) || []
+}
+
+// The series to actually use for cycling/rendering: the stored series if
+// one exists, else the single equipped emote (today's behaviour), else
+// empty (owns nothing yet).
+function mySeries() {
+  const raw = rawEmoteSeries()
+  if (raw.length) return raw
+  const eq = equippedEmote()
+  return eq ? [eq] : []
+}
+
+// Same fallback shape as mySeries(), generalized to any profile row (e.g. a
+// friend's) - mirrors effectiveEmoteFor()'s generalization of equippedEmote().
+function seriesFor(profileRow) {
+  const raw = profileRow?.emote_series
+  if (Array.isArray(raw) && raw.length) return raw
+  const eq = effectiveEmoteFor(profileRow)
+  return eq ? [eq] : []
+}
+
+// Persists a new series AND mirrors series[0] into the existing equipped-
+// emote field in the same write, so the invariant "equipped == series[0]"
+// never drifts and old clients/visitors still see the right main emote.
+async function setEmoteSeries(next) {
+  const equip = next[0] || null
+  if (currentUser && currentProfile) {
+    const { error } = await supabase.from('profiles').update({ emote_series: next, equipped_emote: equip }).eq('id', currentUser.id)
+    if (error) { toast(error.message); return false }
+    currentProfile.emote_series = next
+    currentProfile.equipped_emote = equip
+  } else {
+    state.emoteSeries = next
+    state.equippedEmote = equip
+    save()
+  }
+  return true
+}
+
+// Appends an owned emote to the first empty slot. Duplicates and the 5-slot
+// cap are both blocked. Returns the toast message to show - callers must
+// show it AFTER their own re-render (mountScreen() replaces app.innerHTML
+// wholesale, which would wipe a toast fired before the re-render - see
+// confirmBuy() for the same convention).
+async function addToSeries(id) {
+  if (!isOwned(id)) return null
+  const current = mySeries()
+  if (current.includes(id)) return '✓ In series'
+  if (current.length >= 5) return 'Series full (max 5)'
+  const ok = await setEmoteSeries([...current, id])
+  return ok ? 'Added to series' : null
+}
+
+// Removes a slot; later slots shift up (array filter does this for free).
+// Blocked below 1 remaining slot - a series can't go empty. Same
+// return-a-toast-message convention as addToSeries() above.
+async function removeFromSeries(id) {
+  const current = mySeries()
+  if (current.length <= 1) return 'Keep at least 1 emote'
+  await setEmoteSeries(current.filter(x => x !== id))
+  return null
+}
+
+// Hero-card tap-cycle position within the active emote series (preview
+// feature - see FEATURES.emoteSeries). Transient, module-level, and reset
+// to 0 whenever the Home or a friend's Pizzeria screen (re)mounts - see
+// renderHome()/renderFriendHome() - so leaving and returning always starts
+// back at slot 1 (which autoplay already plays on arrival). Index 0 means
+// "slot 1 was the last thing played"; each tap advances it before playing.
+let heroCycleIndex = 0
+
 // Preloaded emote clips so tapping starts playback instantly.
 const preloadedEmotes = {}
 for (const e of EMOTES) {
@@ -1945,6 +2026,7 @@ function toast(msg) {
 // =================================================================
 async function renderHome() {
   afterLogChange = renderHome
+  heroCycleIndex = 0
   const lifetime = displayPizzas()
   const stash = stashCount()
   const toNext = 12 - stash
@@ -1968,6 +2050,10 @@ async function renderHome() {
   // reads "Tap to emote", but tapping just toasts a nudge to the Shop
   // instead of navigating (no clip to play).
   const myEmote = equippedEmote()
+  // Series feature (preview): the hero card cycles through the whole series
+  // on tap. Flag off (or no series set) this is just [myEmote] - a single-
+  // item list taps back into itself, i.e. today's replay-on-tap behaviour.
+  const heroSeries = featureOn('emoteSeries') ? mySeries() : (myEmote ? [myEmote] : [])
   const heroTapHtml = `<button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>`
 
   const content = `
@@ -2009,15 +2095,20 @@ async function renderHome() {
     app.querySelector('[data-action="stash-info"]')?.addEventListener('click', openStashInfo)
     app.querySelector('[data-action="emote-info"]')?.addEventListener('click', (e) => { e.stopPropagation(); openEmoteInfo() })
 
-    // Tap the shopfront to play the equipped emote, then revert to the still.
-    // If the chef owns no emote yet, tapping just nudges toward the Shop via
-    // toast - no navigation, no clip to play.
+    // Tap the shopfront to play the next emote in the series, looping back
+    // to slot 1 after the last (see heroCycleIndex). A 1-item series (flag
+    // off, or on but only one emote) just replays itself - today's
+    // behaviour, unchanged. If the chef owns no emote yet, tapping just
+    // nudges toward the Shop via toast - no navigation, no clip to play.
     const attachEmoteTap = (btnHost) => {
       btnHost.addEventListener('click', () => {
-        if (!myEmote) { toast('Equip emotes in shop'); return }
+        if (!heroSeries.length) { toast('Equip emotes in shop'); return }
+        heroCycleIndex = (heroCycleIndex + 1) % heroSeries.length
+        const nextId = heroSeries[heroCycleIndex]
+        window.__emoteDebug.lastHeroTapId = nextId
         const img = app.querySelector('#hero-card .hero-still')
         if (img && img.tagName === 'IMG') {
-          playEmoteInto(img, myEmote, heroSrc)
+          playEmoteInto(img, nextId, heroSrc)
         }
       })
     }
@@ -2688,6 +2779,32 @@ function sortedShopEmotes() {
 
 function typeLabel() { return shopType === 'all' ? 'All' : (tagNameById(shopType) || 'All') }
 
+// "My Series" editor tray shown above the emote grid (preview only - see
+// featureOn('emoteSeries')). 5 slots, filled in add order (no drag), slot 1
+// tagged MAIN since it's also the equipped emote. Tapping a filled slot
+// removes it; empty slots are just dashed placeholders.
+function renderSeriesTray(series, thumb) {
+  const slots = Array.from({ length: 5 }, (_, i) => {
+    const id = series[i]
+    if (!id) return '<div class="series-slot empty" aria-hidden="true"></div>'
+    const e = EMOTE_BY_ID[id]
+    const label = e ? emoteName(e) : id
+    return `
+      <button type="button" class="series-slot filled" data-series-remove="${id}" aria-label="Remove ${escapeHtml(label)} from series">
+        <img src="${thumb}" alt="" />
+        <span class="series-slot-num">${i + 1}</span>
+        ${i === 0 ? '<span class="series-slot-main">MAIN</span>' : ''}
+      </button>
+    `
+  }).join('')
+  return `
+    <div class="series-tray">
+      <div class="series-tray-h">My Series</div>
+      <div class="series-slots">${slots}</div>
+    </div>
+  `
+}
+
 function openSortMenu() {
   const opts = [
     { id: 'owned', label: 'Owned' },
@@ -2757,13 +2874,21 @@ async function renderShop(scrollTop) {
   // instant tour.wavingPurchased flips true, this stops overriding and the
   // card reflects real ownership again (which, for an owner, was never
   // touched - see completeOnboardingPurchase()).
+  const seriesOn = featureOn('emoteSeries')
+  const currentSeries = seriesOn ? mySeries() : []
+
   const cards = shopList.length ? shopList.map(e => {
     const tourLocked = !!(tour && e.id === 'waving' && !tour.wavingPurchased)
     const owned = tourLocked ? false : isOwned(e.id)
     const equipped = tourLocked ? false : equippedEmote() === e.id
 
     let badge
-    if (equipped) badge = `<button class="badge badge-equip equipped" type="button" data-equip="${e.id}">✓ Equipped</button>`
+    if (seriesOn) {
+      const inSeries = owned && currentSeries.includes(e.id)
+      if (inSeries) badge = `<button class="badge badge-equip equipped" type="button" disabled>✓ In series</button>`
+      else if (owned) badge = `<button class="badge badge-equip" type="button" data-series-add="${e.id}">＋ Series</button>`
+      else badge = '<span class="badge">Locked</span>'
+    } else if (equipped) badge = `<button class="badge badge-equip equipped" type="button" data-equip="${e.id}">✓ Equipped</button>`
     else if (owned) badge = `<button class="badge badge-equip" type="button" data-equip="${e.id}">Equip</button>`
     else badge = '<span class="badge">Locked</span>'
     const lock = (!owned) ? '<div class="lock">🔒</div>' : ''
@@ -2814,6 +2939,7 @@ async function renderShop(scrollTop) {
         <div class="s">Unlock new moves for your chef.</div>
       </div>
     </div>
+    ${seriesOn ? renderSeriesTray(currentSeries, thumb) : ''}
     <div class="shop-sort-row">
       ${wishlistToggle}
       <button class="sort-btn" type="button" data-action="sort">Sort by: <b>${SORT_LABELS[shopSort]}</b> <span class="chev">▼</span></button>
@@ -2896,6 +3022,25 @@ async function renderShop(scrollTop) {
         renderShop(y)
       })
     })
+    app.querySelectorAll('[data-series-add]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const y = app.querySelector('.scroll')?.scrollTop
+        const msg = await addToSeries(btn.dataset.seriesAdd)
+        // Await the re-render (mountScreen() replaces app.innerHTML
+        // wholesale) BEFORE toasting, or the toast node gets wiped out
+        // by the mount that lands right after it - see setEmoteSeries().
+        await renderShop(y)
+        if (msg) toast(msg)
+      })
+    })
+    app.querySelectorAll('[data-series-remove]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const y = app.querySelector('.scroll')?.scrollTop
+        const msg = await removeFromSeries(btn.dataset.seriesRemove)
+        await renderShop(y)
+        if (msg) toast(msg)
+      })
+    })
   })
 }
 
@@ -2914,7 +3059,17 @@ function confirmBuy(id) {
   o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
     o.remove()
     await buyEmote(id)
-    equipEmote(id)
+    // No automatic "add to series" on purchase (per spec: purchase never
+    // touches the series) - but a chef's very first-ever emote still needs
+    // to become the equipped/main one, same as today, so seed a 1-slot
+    // series for them. Anyone who already has a series (or a plain
+    // equipped emote pre-series) keeps it untouched; they add the new
+    // purchase to their series explicitly via the "+ Series" control.
+    if (featureOn('emoteSeries')) {
+      if (!rawEmoteSeries().length) await setEmoteSeries([id])
+    } else {
+      equipEmote(id)
+    }
     shopSort = 'owned'
     renderShop()
     toast(`Unlocked! ${coinImg('toast-coin')} −1`)
@@ -3391,7 +3546,7 @@ async function loadFriendsList() {
 // unfiltered pre-migration query - which only ever contained accepted rows
 // anyway - so the board still loads if that migration hasn't been run yet.
 async function fetchAcceptedFriends() {
-  const sel = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote, owned_emotes, waving_free, baking_since)'
+  const sel = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote, owned_emotes, waving_free, baking_since, emote_series)'
   let { data, error } = await supabase.from('friends').select(sel).eq('status', 'accepted')
   // Fall back twice: once without the status filter (pre-friend-requests DB),
   // then without baking_since (pre-migration_baking_now DB), so the board
@@ -4473,6 +4628,7 @@ function openNootCooldownInfo(name) {
 }
 
 function renderFriendHome(friend) {
+  heroCycleIndex = 0
   const stash = Math.floor(friend.pizzas) % 12
   const toNext = 12 - stash
   const pct = Math.round((stash / 12) * 100)
@@ -4481,6 +4637,9 @@ function renderFriendHome(friend) {
   // never assume the raw equipped_emote DB field is playable, since a new
   // signup who hasn't bought anything yet still has it defaulted to 'waving'.
   const friendEmote = effectiveEmoteFor(friend)
+  // Series feature (preview): cycle through the visited chef's own series.
+  // Flag off (or no series set) this is just [friendEmote], same as today.
+  const friendSeries = featureOn('emoteSeries') ? seriesFor(friend) : (friendEmote ? [friendEmote] : [])
 
   const content = `
     <div class="viewing-banner" id="viewing-banner" role="button" tabindex="0" aria-label="Back to Chefs">
@@ -4521,9 +4680,12 @@ function renderFriendHome(friend) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); renderFriends() }
     })
     app.querySelector('#hero-card')?.addEventListener('click', () => {
-      if (!friendEmote) return
+      if (!friendSeries.length) return
+      heroCycleIndex = (heroCycleIndex + 1) % friendSeries.length
+      const nextId = friendSeries[heroCycleIndex]
+      window.__emoteDebug.lastHeroTapId = nextId
       const img = app.querySelector('#hero-card .hero-still')
-      if (img && img.tagName === 'IMG') playEmoteInto(img, friendEmote, heroSrc)
+      if (img && img.tagName === 'IMG') playEmoteInto(img, nextId, heroSrc)
     })
     // Same welcome on a friend's Pizzeria: preload, then play once. Skip
     // entirely if the friend owns no emote - nothing to preload or play.

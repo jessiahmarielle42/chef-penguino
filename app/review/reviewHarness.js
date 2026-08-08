@@ -449,17 +449,12 @@ export function installReviewHarness({ supabase, setUser, renderers, state, getC
     if (partial.preset) {
       applyPreset(partial.preset)
     }
-<<<<<<< HEAD
-    if (partial.user) {
-      Object.assign(window.__reviewFixtures.user || (window.__reviewFixtures.user = {}), partial.user)
-=======
     // Lets a Playwright run swap the signed-in email on top of a preset
     // (e.g. to switch a fresh-signup preset between a PREVIEW_EMAILS
     // account and an ordinary one) without a whole new preset - used by
-    // the wishlist preview-flag checks.
+    // the wishlist/series preview-flag checks.
     if (partial.user) {
       window.__reviewFixtures.user = { ...(window.__reviewFixtures.user || {}), ...partial.user }
->>>>>>> worktree-agent-a5890840728ca4c56
       if (installedSetUser) installedSetUser(window.__reviewFixtures.user, window.__reviewFixtures.profile)
     }
     if (partial.profile) {

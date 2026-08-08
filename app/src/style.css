@@ -378,6 +378,31 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .popup .sort-option.active { border-color: rgba(251,122,46,0.5); background: linear-gradient(160deg, rgba(251,122,46,0.14), var(--card-2)); color: var(--fire); }
 .shop-empty { text-align: center; color: var(--muted); font-size:0.875rem; padding:2rem 1rem; }
 
+/* "My Series" editor tray (preview feature - FEATURES.emoteSeries) */
+.series-tray {
+  background: var(--card); border: 1px solid var(--line); border-radius:1.125rem;
+  padding:0.9375rem; margin-top:1.25rem;
+}
+.series-tray-h { font-family: var(--font-display); font-weight: 800; font-size:0.875rem; color: var(--cream); margin-bottom:0.75rem; }
+.series-slots { display: grid; grid-template-columns: repeat(5, 1fr); gap:0.5rem; }
+.series-slot {
+  position: relative; aspect-ratio: 1/1; border-radius:0.75rem; overflow: hidden;
+  padding: 0; cursor: pointer; isolation: isolate;
+}
+.series-slot.empty { border: 1.5px dashed var(--line); background: transparent; cursor: default; }
+.series-slot.filled { border: 1px solid var(--line); background: var(--card-2); }
+.series-slot.filled img { width:100%; height:100%; object-fit: cover; display: block; }
+.series-slot.filled:active { transform: scale(0.94); }
+.series-slot-num {
+  position: absolute; bottom:0.25rem; right:0.3125rem; font-size:0.625rem; font-weight: 800;
+  color: var(--scrim-text); text-shadow: 0 1px 2px rgba(0,0,0,0.7);
+}
+.series-slot-main {
+  position: absolute; top:0.25rem; left:0.25rem; font-size:0.5rem; font-weight: 800; letter-spacing: 0.05em;
+  padding:0.125rem 0.3125rem; border-radius:62.4375rem; background: rgba(251,122,46,0.9); color:#2a1608;
+}
+.badge-equip[disabled] { cursor: default; }
+
 .anim-card {
   background: var(--card); border: 1px solid var(--line); border-radius:1.125rem; overflow: hidden; margin-top:0.75rem;
   display: flex; flex-direction: column;
