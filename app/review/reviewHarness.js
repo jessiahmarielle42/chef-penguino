@@ -105,6 +105,7 @@ const FRESH_SIGNUP_PROFILE = {
   waving_free: false,
   onboarding_done: false,
   onboarding_coin_claimed: false,
+  wishlist: [],
 }
 
 // The important preset: reproduces a real, long-tenured signed-in chef's
@@ -131,6 +132,7 @@ const OWNER_PROFILE = {
   waving_free: false,
   onboarding_done: false,
   onboarding_coin_claimed: false,
+  wishlist: [],
 }
 
 // Relative to "now" (hoursAgo), not fixed clock times - a fixed 1:30pm etc.
@@ -243,6 +245,7 @@ function makeQuery(table) {
     single() { wantSingle = true; return api },
     maybeSingle() { wantMaybeSingle = true; return api },
     insert(rows) { mode = 'insert'; insertRows = Array.isArray(rows) ? rows : [rows]; return api },
+    upsert(rows) { mode = 'upsert'; insertRows = Array.isArray(rows) ? rows : [rows]; return api },
     update(vals) { mode = 'update'; updateVals = vals; return api },
     delete() { mode = 'delete'; return api },
     then(resolve, reject) {
@@ -261,6 +264,22 @@ function makeQuery(table) {
       const inserted = insertRows.map(r => ({ id: r.id || `${table}-${Math.random().toString(36).slice(2, 9)}`, ...r }))
       store.push(...inserted)
       return { data: clone(inserted), error: null }
+    }
+
+    // upsert: replace an existing row with the same primary key, else insert.
+    // emote_meta keys on emote_id (not a generated id), so match on that when
+    // present; fall back to id. Mirrors Postgres ON CONFLICT DO UPDATE enough
+    // for the admin emote-tagging flow the harness needs to exercise.
+    if (mode === 'upsert') {
+      const upserted = insertRows.map(r => {
+        const key = r.emote_id != null ? 'emote_id' : 'id'
+        const existing = r[key] != null ? store.find(x => x[key] === r[key]) : null
+        if (existing) { Object.assign(existing, r); return existing }
+        const row = { id: r.id || `${table}-${Math.random().toString(36).slice(2, 9)}`, ...r }
+        store.push(row)
+        return row
+      })
+      return { data: clone(upserted), error: null }
     }
 
     if (mode === 'update') {
@@ -430,8 +449,17 @@ export function installReviewHarness({ supabase, setUser, renderers, state, getC
     if (partial.preset) {
       applyPreset(partial.preset)
     }
+<<<<<<< HEAD
     if (partial.user) {
       Object.assign(window.__reviewFixtures.user || (window.__reviewFixtures.user = {}), partial.user)
+=======
+    // Lets a Playwright run swap the signed-in email on top of a preset
+    // (e.g. to switch a fresh-signup preset between a PREVIEW_EMAILS
+    // account and an ordinary one) without a whole new preset - used by
+    // the wishlist preview-flag checks.
+    if (partial.user) {
+      window.__reviewFixtures.user = { ...(window.__reviewFixtures.user || {}), ...partial.user }
+>>>>>>> worktree-agent-a5890840728ca4c56
       if (installedSetUser) installedSetUser(window.__reviewFixtures.user, window.__reviewFixtures.profile)
     }
     if (partial.profile) {

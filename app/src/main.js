@@ -1,12 +1,36 @@
 import './style.css'
 import { supabase } from './supabaseClient.js'
+import { getSanctifyClient } from './sanctifyClient.js'
 
 const app = document.querySelector('#app')
 const BASE = import.meta.env.BASE_URL
+
+// ---------- Sanctify OAuth return capture (MUST run synchronously, first) ----
+// When the admin connects Sanctify we redirect the whole page to Google and
+// back to `${origin}${BASE}?cpsanctify=1&code=...`. Both Supabase clients would
+// otherwise fight over that `?code`: Penguino's client (detectSessionInUrl on)
+// would try to exchange a code minted for the SANCTIFY project against its own,
+// fail, and strip the code before our Sanctify client ever sees it. So here,
+// synchronously at module load - before Penguino's client's async _initialize
+// reads the URL - we capture the code and scrub it from the URL when (and only
+// when) our marker is present. boot() then hands it to the Sanctify client.
+let sanctifyReturnCode = null
+;(() => {
+  try {
+    const u = new URL(window.location.href)
+    if (u.searchParams.get('cpsanctify') === '1') {
+      sanctifyReturnCode = u.searchParams.get('code')
+      u.searchParams.delete('cpsanctify')
+      u.searchParams.delete('code')
+      u.searchParams.delete('state')
+      window.history.replaceState({}, '', u.pathname + u.search + u.hash)
+    }
+  } catch { /* non-browser / malformed URL - nothing to capture */ }
+})()
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.2.3'
+const APP_VERSION = 'v2.5.3.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -41,16 +65,15 @@ const DELETE_CLIP_ACTIONS = ['remove-friend', 'leave-group', 'delete-group', 'de
 // Client-side hiding of the Admin Dashboard entry point only - real
 // enforcement lives in Supabase RLS (see migration_admin.sql), which checks
 // auth.email() server-side and can't be spoofed from here.
-const ADMIN_EMAIL = 'keefefons@gmail.com'
-function isAdmin() { return currentUser?.email === ADMIN_EMAIL }
+const ADMIN_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
+function isAdmin() { return ADMIN_EMAILS.includes(currentUser?.email) }
 
-// Preview-only feature flags: PREVIEW_EMAILS is deliberately NOT wired into
-// isAdmin() or any admin power - it only ever gates featureOn() checks below,
-// which are cosmetic/behavioural toggles for signed-in chefs testing
-// in-flight work before it ships to everyone. 'preview' = only PREVIEW_EMAILS
-// see it; 'all' = shipped to everyone; flip a key to 'all' once verified.
+// Preview gating (see CLAUDE.md 8c) - every new user-visible change ships
+// dark behind FEATURES[key] = 'preview' until the admin flips it to 'all'.
+// PREVIEW_EMAILS is deliberately NEVER fed into isAdmin() - preview access
+// is not admin access.
 const PREVIEW_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
-const FEATURES = { shopPreviewFix: 'preview' }  // 'preview' | 'all'
+const FEATURES = { shopPreviewFix: 'preview', wishlist: 'preview' }  // 'preview' | 'all'
 function featureOn(key) { return FEATURES[key] === 'all' || (FEATURES[key] === 'preview' && PREVIEW_EMAILS.includes(currentUser?.email)) }
 
 let currentUser = null
@@ -465,6 +488,9 @@ function load() {
     // balance and idempotent across a re-run, exactly like the signed-in RPC.
     coinAdjustment: 0,
     onboardingCoinClaimed: false,
+    // Guest-side wishlist (shop emote ids) - signed-in chefs use
+    // profiles.wishlist instead, see wishlist()/toggleWishlist().
+    wishlist: [],
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -591,6 +617,12 @@ new MutationObserver(syncThemeColorMeta).observe(document.documentElement, {
 // A GainNode's gain still works there since it's just math on the samples.
 const bgMusic = new Audio(`${BASE}assets/bg-music.mp3`)
 bgMusic.loop = true
+// Required for the Sanctify connector: a cross-origin remote track routed
+// through createMediaElementSource() below outputs SILENCE unless the media
+// element is CORS-enabled AND the host sends CORS headers (Supabase signed
+// URLs do). Harmless for the same-origin local presets. Set once here, before
+// the graph is wired, so switching src to a remote song never taints the node.
+bgMusic.crossOrigin = 'anonymous'
 
 const AudioContextClass = window.AudioContext || window.webkitAudioContext
 const audioCtx = AudioContextClass ? new AudioContextClass() : null
@@ -680,6 +712,72 @@ const SOUNDTRACKS = [
 ]
 function soundtrackById(id) { return SOUNDTRACKS.find(t => (t.id || null) === (id || null)) || SOUNDTRACKS[0] }
 
+// ---------- Sanctify soundtrack encoding (backward-safe, no DB migration) ----
+// A Sanctify pick is stored INSIDE the existing `soundtrack` text column as
+// `sanctify:<json>` carrying everything needed to render + play it on any
+// device: { path (private-bucket object path), title, artist, cover }. Old or
+// un-migrated clients pass this straight through soundtrackById() which finds
+// no match and returns the default track - so they simply hear the default
+// theme, never an error. Only the admin's own profile can ever hold this value.
+const SANCTIFY_PREFIX = 'sanctify:'
+function parseSanctifyPick(val) {
+  if (typeof val !== 'string' || !val.startsWith(SANCTIFY_PREFIX)) return null
+  try { return JSON.parse(val.slice(SANCTIFY_PREFIX.length)) } catch { return null }
+}
+function encodeSanctifyPick(pick) {
+  return SANCTIFY_PREFIX + JSON.stringify({ path: pick.path, title: pick.title, artist: pick.artist, cover: pick.cover || null })
+}
+
+// Mint a fresh 1-hour signed URL for a private-bucket audio object path.
+async function sanctifySignedAudioUrl(path) {
+  try {
+    const { data, error } = await getSanctifyClient().storage.from('audio').createSignedUrl(path, 3600)
+    if (error || !data?.signedUrl) return null
+    return data.signedUrl
+  } catch { return null }
+}
+
+// Applied-soundtrack refresh timer: a signed URL dies after 1h, so a long
+// focus session looping a Sanctify song would eventually 403. Re-mint well
+// before expiry and hot-swap the src without interrupting the loop.
+let sanctifyRefreshTimer = null
+function clearSanctifyRefresh() {
+  if (sanctifyRefreshTimer) { clearTimeout(sanctifyRefreshTimer); sanctifyRefreshTimer = null }
+}
+// Re-sign ~5 min before the 1h TTL and hot-swap the src, preserving position,
+// but only while this exact pick is still the applied soundtrack.
+function scheduleSanctifyRefresh(pick) {
+  clearSanctifyRefresh()
+  sanctifyRefreshTimer = setTimeout(async () => {
+    if (parseSanctifyPick(currentProfile?.soundtrack)?.path !== pick.path) return
+    const fresh = await sanctifySignedAudioUrl(pick.path)
+    if (fresh) { const t = bgMusic.currentTime; currentTrackSrc = fresh; bgMusic.src = fresh; bgMusic.currentTime = t || 0; syncMusic() }
+    scheduleSanctifyRefresh(pick) // keep re-signing for arbitrarily long sessions
+  }, 55 * 60 * 1000)
+}
+async function applySanctifySoundtrack(pick) {
+  clearSanctifyRefresh()
+  const signed = await sanctifySignedAudioUrl(pick.path)
+  if (!signed) {
+    // Not connected on this device, or signing failed - fall back to default
+    // theme rather than dead air. Clear the marker so a later connect re-applies.
+    delete bgMusic.dataset.sanctifyPath
+    const def = SOUNDTRACKS[0]
+    currentTrackSrc = soundtrackAbsUrl(def.src)
+    bgMusic.src = currentTrackSrc
+    bgMusic.loop = true
+    updateMediaSessionTrack(def.title)
+    syncMusic()
+    return
+  }
+  currentTrackSrc = signed
+  bgMusic.src = signed
+  bgMusic.loop = true
+  updateMediaSessionTrack(pick.title)
+  syncMusic()
+  scheduleSanctifyRefresh(pick)
+}
+
 // The src bgMusic is *supposed* to be playing right now, per the signed-in
 // chef's saved profile (or the default, for guests/no-selection). Tracked
 // separately from bgMusic.src itself because the picker temporarily points
@@ -704,6 +802,17 @@ function updateMediaSessionTrack(title) {
 // refresh (e.g. the realtime resync in subscribeToSocial()) doesn't restart
 // playback from 0:00 on every poll.
 function applySavedSoundtrack() {
+  const pick = parseSanctifyPick(currentProfile?.soundtrack)
+  if (pick) {
+    // Already streaming this exact Sanctify song? (signed URLs are unique each
+    // mint, so compare by the stable object path, not the volatile src.)
+    if (bgMusic.dataset.sanctifyPath === pick.path) return
+    bgMusic.dataset.sanctifyPath = pick.path
+    applySanctifySoundtrack(pick)
+    return
+  }
+  delete bgMusic.dataset.sanctifyPath
+  clearSanctifyRefresh()
   const saved = soundtrackById(currentProfile?.soundtrack)
   const abs = soundtrackAbsUrl(saved.src)
   if (abs === currentTrackSrc) return
@@ -923,6 +1032,23 @@ async function boot() {
   checkPendingCoinGifts()
   checkPendingWarnings()
   installUiDebug()
+  if (sanctifyReturnCode) handleSanctifyReturn()
+}
+
+// Finish a Sanctify connect: exchange the captured OAuth code (see the
+// synchronous capture block at the top of this file) for a Sanctify session,
+// then land the admin back on the Background Music picker to search right away.
+async function handleSanctifyReturn() {
+  const code = sanctifyReturnCode
+  sanctifyReturnCode = null
+  if (!code) return
+  let ok = false
+  try {
+    const { error } = await getSanctifyClient().auth.exchangeCodeForSession(code)
+    ok = !error
+  } catch { ok = false }
+  toast(ok ? 'Sanctify connected 🎵' : "Couldn't connect Sanctify — try again")
+  if (isSignedIn()) renderSoundtrackPicker()
 }
 
 // ---------------------------------------------------------------
@@ -1140,6 +1266,44 @@ function isOwned(id) {
   if (id === 'waving') return wavingFreeForCurrentUser() || ownedEmotes().includes(id)
   return ownedEmotes().includes(id)
 }
+
+// Shop wishlist (preview feature, see FEATURES.wishlist). Same
+// guest-vs-signed-in split as ownedEmotes(): guests keep it in
+// state.wishlist, signed-in chefs in profiles.wishlist (guarded with `?? []`
+// so the app works before that column's migration is run). On sign-in the
+// real profile row always wins over any local guest list - no merge, MVP.
+function wishlist() {
+  return (currentProfile ? currentProfile.wishlist : state.wishlist) || []
+}
+function isWishlisted(id) { return wishlist().includes(id) }
+async function toggleWishlist(id) {
+  const cur = wishlist()
+  const next = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]
+  if (currentUser && currentProfile) {
+    const { error } = await supabase.from('profiles').update({ wishlist: next }).eq('id', currentUser.id)
+    if (error) { toast(error.message); return }
+    currentProfile.wishlist = next
+  } else {
+    state.wishlist = next
+    save()
+  }
+  return next.includes(id)
+}
+// Silently drops `id` from the wishlist without a toast - used by buyEmote()
+// so a purchase auto-clears it (spec: no announcement, it's just tidy-up).
+async function removeFromWishlistSilently(id) {
+  const cur = wishlist()
+  if (!cur.includes(id)) return
+  const next = cur.filter(x => x !== id)
+  if (currentUser && currentProfile) {
+    const { error } = await supabase.from('profiles').update({ wishlist: next }).eq('id', currentUser.id)
+    if (!error) currentProfile.wishlist = next
+  } else {
+    state.wishlist = next
+    save()
+  }
+}
+
 function coinsEarned() { return Math.floor(Math.floor(displayPizzas()) / 12) }
 // coin_adjustment is the net of coins gifted away (-) and received (+), PLUS
 // the +1 the onboarding tour's free coin credits when it grants waving (see
@@ -1244,6 +1408,7 @@ async function buyEmote(id) {
     state.ownedEmotes = next
     save()
   }
+  if (featureOn('wishlist')) removeFromWishlistSilently(id)
 }
 
 async function equipEmote(id) {
@@ -2488,6 +2653,16 @@ function pizzaImagePath(count) {
 // recently-added emotes first (a natural default for a shop).
 let shopSort = 'newest'
 let shopType = 'all'   // 'all' or an emote_tags id
+// Wishlist filter toggle (preview feature, see FEATURES.wishlist). Not
+// persisted across navigation per spec - always starts off on a fresh
+// renderShop() call chain, e.g. after leaving and re-entering the Shop tab.
+let shopWishlistOnly = false
+
+// Admin emote-management filters (Admin Dashboard -> Emotes). Kept module-
+// level so a re-render (e.g. after tagging one) preserves the admin's search
+// and type filter instead of resetting to everything.
+let adminEmoteSearch = ''
+let adminEmoteFilter = 'all'   // 'all' | 'untagged' | an emote_tags id
 const SORT_LABELS = { owned: 'Owned', az: 'A-Z', newest: 'Newest' }
 
 function sortedShopEmotes() {
@@ -2507,6 +2682,7 @@ function sortedShopEmotes() {
     list = [...EMOTES].reverse()
   }
   if (shopType !== 'all') list = list.filter(e => emoteTagId(e) === shopType)
+  if (featureOn('wishlist') && shopWishlistOnly) list = list.filter(e => isWishlisted(e.id))
   return list
 }
 
@@ -2593,6 +2769,12 @@ async function renderShop(scrollTop) {
     const lock = (!owned) ? '<div class="lock">🔒</div>' : ''
 
     const action = owned ? '' : `<button class="btn btn-buy" type="button" data-buy="${e.id}">${coinImg()}1</button>`
+    // Star only ever renders on an unowned card - see spec point 1 - and
+    // only while the preview flag is on for this user.
+    const wishlisted = !owned && featureOn('wishlist') && isWishlisted(e.id)
+    const star = (!owned && featureOn('wishlist'))
+      ? `<button class="wishlist-star ${wishlisted ? 'active' : ''}" type="button" data-wishlist="${e.id}" aria-label="${wishlisted ? 'Remove from wishlist' : 'Add to wishlist'}" aria-pressed="${wishlisted}">${wishlisted ? '★' : '☆'}</button>`
+      : ''
 
     const still = shopPreviewFixOn
       ? `<video class="anim-still" src="${emoteThumbSrc(e.id)}" muted playsinline preload="metadata" aria-hidden="true"></video>`
@@ -2602,7 +2784,7 @@ async function renderShop(scrollTop) {
       <div class="anim-card">
         <div class="anim-top" data-emote="${e.id}">
           ${still}
-          ${badge}${lock}
+          ${badge}${lock}${star}
         </div>
         <div class="anim-body">
           <div class="anim-info"><div class="nm">${escapeHtml(emoteName(e))}</div><div class="ds">${escapeHtml(emoteDesc(e))}</div></div>
@@ -2613,7 +2795,15 @@ async function renderShop(scrollTop) {
         </div>
       </div>
     `
-  }).join('') : '<p class="shop-empty">No emotes to show here yet.</p>'
+  }).join('') : (
+    (featureOn('wishlist') && shopWishlistOnly)
+      ? '<p class="shop-empty">No wishlisted emotes yet — tap the ☆ on any emote to save it here.</p>'
+      : '<p class="shop-empty">No emotes to show here yet.</p>'
+  )
+
+  const wishlistToggle = featureOn('wishlist')
+    ? `<button class="sort-btn wishlist-toggle ${shopWishlistOnly ? 'active' : ''}" type="button" data-action="wishlist-filter" aria-pressed="${shopWishlistOnly}">${shopWishlistOnly ? '★' : '☆'} Wishlist</button>`
+    : ''
 
   const content = `
     <div class="shop-banner" role="button" tabindex="0" data-action="shop-coin-info">
@@ -2625,6 +2815,7 @@ async function renderShop(scrollTop) {
       </div>
     </div>
     <div class="shop-sort-row">
+      ${wishlistToggle}
       <button class="sort-btn" type="button" data-action="sort">Sort by: <b>${SORT_LABELS[shopSort]}</b> <span class="chev">▼</span></button>
       <button class="sort-btn" type="button" data-action="type">Type: <b>${escapeHtml(typeLabel())}</b> <span class="chev">▼</span></button>
     </div>
@@ -2638,6 +2829,32 @@ async function renderShop(scrollTop) {
     app.querySelector('[data-action="shop-coin-info"]')?.addEventListener('click', openCoinInfo)
     app.querySelector('[data-action="sort"]')?.addEventListener('click', openSortMenu)
     app.querySelector('[data-action="type"]')?.addEventListener('click', openTypeMenu)
+    app.querySelector('[data-action="wishlist-filter"]')?.addEventListener('click', () => {
+      const y = app.querySelector('.scroll')?.scrollTop
+      shopWishlistOnly = !shopWishlistOnly
+      renderShop(y)
+    })
+
+    app.querySelectorAll('[data-wishlist]').forEach(btn => {
+      // stopPropagation: the star sits inside .anim-top, which also carries
+      // the preview-tap wiring further down - without this a star tap would
+      // also start playing the clip underneath it.
+      btn.addEventListener('click', async (ev) => {
+        ev.stopPropagation()
+        const id = btn.dataset.wishlist
+        const nowOn = await toggleWishlist(id)
+        toast(nowOn ? 'Added to wishlist' : 'Removed from wishlist')
+        btn.classList.toggle('active', nowOn)
+        btn.textContent = nowOn ? '★' : '☆'
+        btn.setAttribute('aria-pressed', String(nowOn))
+        btn.setAttribute('aria-label', nowOn ? 'Remove from wishlist' : 'Add to wishlist')
+        // Only re-render the whole grid if the wishlist filter is active -
+        // toggling a star elsewhere shouldn't yank the card out from under
+        // the chef's thumb mid-tap; the filtered view needs the full
+        // re-render since the card must disappear.
+        if (shopWishlistOnly) { const y = app.querySelector('.scroll')?.scrollTop; renderShop(y) }
+      })
+    })
 
     app.querySelectorAll('[data-preview]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -5771,7 +5988,8 @@ function teardownSoundtrackPreview() {
   if (stPreviewTrackId !== undefined && bgMusic.src !== currentTrackSrc) {
     bgMusic.src = currentTrackSrc
     bgMusic.loop = true
-    updateMediaSessionTrack(soundtrackById(currentProfile?.soundtrack).title)
+    const savedPick = parseSanctifyPick(currentProfile?.soundtrack)
+    updateMediaSessionTrack(savedPick ? savedPick.title : soundtrackById(currentProfile?.soundtrack).title)
   }
   stPreviewTrackId = undefined
   syncMusic()
@@ -5779,8 +5997,12 @@ function teardownSoundtrackPreview() {
 
 function renderSoundtrackPicker() {
   if (!isSignedIn()) { renderSettings(); return }
-  let savedId = currentProfile?.soundtrack ?? null
-  let previewId // undefined until a row is tapped this visit; may be null (the default track)
+  const admin = isAdmin()
+  let savedRaw = currentProfile?.soundtrack ?? null
+  let savedPick = parseSanctifyPick(savedRaw) // non-null when the saved track is a Sanctify song
+  let previewId // undefined until a preset row is tapped this visit; may be null (the default track)
+  let previewSanctify = null // the Sanctify song object currently previewing, or null
+  let sanctifyResults = [] // in-memory search results, rows index into this
   let stLoading = false // true while a freshly-picked track is still buffering
 
   const rows = SOUNDTRACKS.map((t, i) => `
@@ -5795,17 +6017,25 @@ function renderSoundtrackPicker() {
   const content = `
     <div class="back-link" role="button" tabindex="0" data-action="back-to-settings">‹ Settings</div>
     <div class="section-h" style="margin-top:2px"><h2>Background Music</h2></div>
-    <p class="gs st-sub">Tap a track to hear it. Save to make it yours.</p>
+    <p class="gs st-sub">${admin ? 'Search Sanctify or pick a preset. Tap to preview.' : 'Tap a track to hear it. Save to make it yours.'}</p>
     <div class="st-savebar">
       <button type="button" class="st-save" id="st-save" disabled>Save as my soundtrack</button>
     </div>
+    ${admin ? '<div id="sanctify-sec"></div>' : ''}
+    ${admin ? '<div class="st-divider">Presets</div>' : ''}
     <div class="st-list">${rows}</div>
     <div style="height:6.5rem"></div>
   `
 
   mountScreen('settings', content, () => {
-    const rowEls = Array.from(app.querySelectorAll('.st-row'))
+    const rowEls = Array.from(app.querySelectorAll('.st-list .st-row'))
     const saveBtn = app.querySelector('#st-save')
+
+    // A single "active preview" spans presets and Sanctify songs. Stable
+    // comparison keys let one Save button + one highlight pass serve both.
+    const previewKey = () => previewSanctify ? 'S:' + previewSanctify.path : previewId !== undefined ? 'P:' + (previewId || '') : null
+    const savedKey = () => savedPick ? 'S:' + savedPick.path : 'P:' + (savedRaw || '')
+    const hasPreview = () => previewId !== undefined || previewSanctify != null
 
     // Mini-player lives INSIDE .app (position:absolute against .app's own
     // position:relative), NOT on document.body. It used to live on body "to
@@ -5856,15 +6086,25 @@ function renderSoundtrackPicker() {
     }
 
     function paint() {
+      const pk = previewKey(), sk = savedKey()
       rowEls.forEach((r, i) => {
         const t = SOUNDTRACKS[i]
-        const isSaved = (t.id || null) === (savedId || null)
-        const isPreviewing = previewId !== undefined && (t.id || null) === (previewId || null)
-        r.classList.toggle('is-selected', isSaved)
+        const key = 'P:' + (t.id || '')
+        const isPreviewing = pk === key
+        r.classList.toggle('is-selected', sk === key)
         r.classList.toggle('is-playing', isPreviewing)
         r.classList.toggle('paused', isPreviewing && bgMusic.paused)
       })
-      saveBtn.disabled = previewId === undefined || (previewId || null) === (savedId || null)
+      // Sanctify rows (search results + the saved "your song" row) highlight
+      // off the same keys - a preset preview clears them, and vice-versa.
+      app.querySelectorAll('.st-sanctify-row').forEach(r => {
+        const key = 'S:' + r.dataset.path
+        const isPreviewing = pk === key
+        r.classList.toggle('is-selected', sk === key)
+        r.classList.toggle('is-playing', isPreviewing)
+        r.classList.toggle('paused', isPreviewing && bgMusic.paused)
+      })
+      saveBtn.disabled = !pk || pk === sk
       playBtn.classList.toggle('loading', stLoading)
       playBtn.innerHTML = stLoading ? '' : (bgMusic.paused ? '&#9654;' : '&#10074;&#10074;')
     }
@@ -5904,6 +6144,7 @@ function renderSoundtrackPicker() {
           return
         }
         previewId = t.id
+        previewSanctify = null // a preset preview supersedes any Sanctify preview
         stPreviewTrackId = previewId
         soundtrackPreviewBoost = true // audible even if the chef has muted - see syncMusic()
         soundtrackPreviewPaused = false
@@ -5919,8 +6160,38 @@ function renderSoundtrackPicker() {
       })
     })
 
+    // Preview a Sanctify song: sign its audio URL, then play through the same
+    // bgMusic pipeline + mini-player as presets. Async, so the mini shows a
+    // loading spinner while the URL is minted.
+    async function previewSanctifySong(song) {
+      if (previewSanctify && previewSanctify.path === song.path) {
+        soundtrackPreviewBoost = true
+        soundtrackPreviewPaused = !bgMusic.paused
+        syncMusic(); paint(); return
+      }
+      previewId = undefined
+      previewSanctify = song
+      stPreviewTrackId = 'S:' + song.path
+      soundtrackPreviewBoost = true
+      soundtrackPreviewPaused = false
+      stLoading = true
+      showMini({ art: coverSrc(song), title: song.title })
+      paint()
+      const signed = await sanctifySignedAudioUrl(song.path)
+      if (previewSanctify?.path !== song.path) return // user moved on while signing
+      if (!signed) { stLoading = false; toast("Couldn't load that song — reconnect Sanctify?"); paint(); return }
+      song.signedUrl = signed
+      bgMusic.src = signed
+      bgMusic.loop = true
+      bgMusic.currentTime = 0
+      updateMediaSessionTrack(song.title)
+      syncMusic()
+      bgMusic.play().catch(() => {})
+      paint()
+    }
+
     playBtn.addEventListener('click', () => {
-      if (previewId === undefined) return
+      if (!hasPreview()) return
       soundtrackPreviewBoost = true
       soundtrackPreviewPaused = !bgMusic.paused
       syncMusic()
@@ -5938,7 +6209,7 @@ function renderSoundtrackPicker() {
       return p
     }
     scrubEl.addEventListener('pointerdown', (e) => {
-      if (previewId === undefined) return
+      if (!hasPreview()) return
       scrubbing = true
       scrubEl.setPointerCapture(e.pointerId)
       seekAt(e.clientX)
@@ -5991,19 +6262,159 @@ function renderSoundtrackPicker() {
     // on-device bug where the player sat on top of the bug-report popup).
 
     saveBtn.addEventListener('click', async () => {
-      if (previewId === undefined) return
+      if (!hasPreview()) return
+      if (previewSanctify) {
+        const song = previewSanctify
+        const encoded = encodeSanctifyPick(song)
+        const { error } = await supabase.from('profiles').update({ soundtrack: encoded }).eq('id', currentUser.id)
+        if (error) { toast("Couldn't save — try again"); return }
+        currentProfile.soundtrack = encoded
+        savedRaw = encoded
+        savedPick = parseSanctifyPick(encoded)
+        // The preview IS now the applied track - keep it streaming, don't
+        // restart. currentTrackSrc holds the signed URL so teardown restores
+        // it, and dataset.sanctifyPath stops applySavedSoundtrack re-signing.
+        currentTrackSrc = song.signedUrl || bgMusic.src
+        bgMusic.dataset.sanctifyPath = song.path
+        scheduleSanctifyRefresh(song)
+        renderSanctifyResults() // repaint the saved-song row into place
+        paint()
+        toast(`Saved — "${song.title}" is your soundtrack`)
+        return
+      }
       const track = soundtrackById(previewId)
       const { error } = await supabase.from('profiles').update({ soundtrack: previewId }).eq('id', currentUser.id)
       if (error) { toast("Couldn't save — try again"); return }
       currentProfile.soundtrack = previewId
       currentTrackSrc = soundtrackAbsUrl(track.src) // the preview IS now the saved/applied track
-      savedId = previewId
+      savedRaw = previewId
+      savedPick = null
+      delete bgMusic.dataset.sanctifyPath
+      clearSanctifyRefresh()
       paint()
       toast(`Saved — "${track.title}" is your soundtrack`)
     })
 
+    // ---- Sanctify section (admin only): connect card OR connected + search ----
+    // Sanctify stores cover_url as a full public URL when uploaded, but some
+    // rows hold a bare 'covers' object path (and some songs have none at all).
+    // Resolve to a usable URL, or null so render can fall back to a Sanctify
+    // placeholder - never the Chef Penguino icon.
+    const SANCTIFY_ICON = `${BASE}assets/sanctify-icon.png`
+    // Covers + artist photos live in Sanctify's PUBLIC `images` bucket (keys
+    // like `covers/<slug>.jpg` / `artists/<slug>.jpg`). cover_url is sometimes
+    // stored as a full URL, sometimes as a bare (or `assets/`-prefixed) path -
+    // handle all three, always resolving a path against `images`.
+    const publicCover = (v) => {
+      if (typeof v !== 'string' || !v) return null
+      if (/^https?:\/\//.test(v)) return v
+      const key = v.replace(/^\/+/, '').replace(/^assets\//, '')
+      try { return getSanctifyClient().storage.from('images').getPublicUrl(key).data.publicUrl || null } catch { return null }
+    }
+    const coverSrc = (song) => song.cover || SANCTIFY_ICON
+
+    function sanctifyRowHtml(song, savedRow) {
+      return `
+        <button type="button" class="st-row st-sanctify-row" data-path="${escapeHtml(song.path)}"${savedRow ? '' : ` data-sidx="${sanctifyResults.indexOf(song)}"`}>
+          <img class="st-art" src="${coverSrc(song)}" alt="" />
+          <span class="st-meta"><span class="st-title">${escapeHtml(song.title)}</span><span class="st-artist">${escapeHtml(song.artist || 'Sanctify')} · Sanctify</span></span>
+          <span class="st-bars" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="st-tick" aria-hidden="true">✓</span>
+        </button>`
+    }
+
+    function renderSanctifyResults() {
+      const box = app.querySelector('#sanctify-results')
+      if (!box) return
+      let html = ''
+      // Show the saved Sanctify song pinned at top (unless it's already in the
+      // live results), so the admin always sees what's currently set.
+      if (savedPick && !sanctifyResults.some(s => s.path === savedPick.path)) {
+        html += `<div class="st-divider">Your Sanctify song</div>` + sanctifyRowHtml({ path: savedPick.path, title: savedPick.title, artist: savedPick.artist, cover: savedPick.cover }, true)
+      }
+      if (sanctifyResults.length) {
+        html += (savedPick ? `<div class="st-divider">Results</div>` : '') + sanctifyResults.map(s => sanctifyRowHtml(s, false)).join('')
+      }
+      box.innerHTML = html
+      box.querySelectorAll('.st-sanctify-row').forEach(r => {
+        r.addEventListener('click', () => {
+          const idx = r.dataset.sidx
+          const song = idx != null ? sanctifyResults[+idx] : { path: savedPick.path, title: savedPick.title, artist: savedPick.artist, cover: savedPick.cover }
+          previewSanctifySong(song)
+        })
+      })
+      paint()
+    }
+
+    let searchTimer = null
+    async function runSearch(q) {
+      q = q.trim()
+      if (!q) { sanctifyResults = []; renderSanctifyResults(); return }
+      try {
+        const { data, error } = await getSanctifyClient()
+          .from('songs')
+          .select('id,title,audio_url,cover_url,duration_seconds,artist:artists(name,profile_image_url)')
+          .eq('status', 'approved').not('audio_url', 'is', null)
+          .ilike('title', `%${q}%`).limit(20)
+        if (error) { sanctifyResults = []; renderSanctifyResults(); return }
+        sanctifyResults = (data || []).map(s => ({
+          path: s.audio_url, title: s.title, artist: s.artist?.name || '',
+          // Prefer the song's own cover, fall back to the artist's photo.
+          cover: publicCover(s.cover_url) || publicCover(s.artist?.profile_image_url),
+        }))
+        renderSanctifyResults()
+      } catch { sanctifyResults = []; renderSanctifyResults() }
+    }
+
+    async function mountSanctifySection() {
+      const sec = app.querySelector('#sanctify-sec')
+      if (!sec) return
+      let connected = false
+      try { connected = !!(await getSanctifyClient().auth.getSession()).data.session } catch { connected = false }
+      if (!connected) {
+        sec.innerHTML = `
+          <div class="sanc-card">
+            <div class="sanc-head">
+              <img class="sanc-logo" src="${BASE}assets/sanctify-icon.png" alt="Sanctify" />
+              <div><div class="sanc-name">Sanctify</div><div class="sanc-tag">Stream any song from your library</div></div>
+            </div>
+            <button type="button" class="btn-connect" id="sanc-connect"><span class="gicon">G</span> Connect with Google</button>
+          </div>`
+        sec.querySelector('#sanc-connect').addEventListener('click', async () => {
+          await getSanctifyClient().auth.signInWithOAuth({
+            provider: 'google',
+            options: { redirectTo: window.location.origin + BASE + '?cpsanctify=1', queryParams: { prompt: 'select_account' } },
+          })
+        })
+        return
+      }
+      let email = ''
+      try { email = (await getSanctifyClient().auth.getUser()).data.user?.email || '' } catch {}
+      sec.innerHTML = `
+        <div class="conn-bar">
+          <span class="conn-dot"></span>
+          <span class="conn-txt">Sanctify connected${email ? ` <span class="conn-email">· ${escapeHtml(email)}</span>` : ''}</span>
+          <span class="disc" role="button" tabindex="0" id="sanc-disconnect">Disconnect</span>
+        </div>
+        <div class="st-search"><span class="sicon" aria-hidden="true">🔍</span><input id="sanc-search" type="search" placeholder="Search songs on Sanctify…" autocomplete="off" /></div>
+        <div id="sanctify-results"></div>`
+      sec.querySelector('#sanc-disconnect').addEventListener('click', async () => {
+        try { await getSanctifyClient().auth.signOut() } catch {}
+        sanctifyResults = []
+        toast('Sanctify disconnected')
+        mountSanctifySection()
+      })
+      sec.querySelector('#sanc-search').addEventListener('input', (e) => {
+        clearTimeout(searchTimer)
+        const v = e.target.value
+        searchTimer = setTimeout(() => runSearch(v), 250)
+      })
+      renderSanctifyResults()
+    }
+
     app.querySelector('[data-action="back-to-settings"]').addEventListener('click', renderSettings)
 
+    if (admin) mountSanctifySection()
     stPreviewTrackId = previewId
     paint()
     screenTeardown = teardownSoundtrackPreview
@@ -6500,6 +6911,12 @@ function renderAdminEmotes() {
       </div>
       <div class="group">
         <p class="glab">Tag Emotes</p>
+        <div class="adm-search-card">
+          <span class="adm-search-ic" aria-hidden="true">🔍</span>
+          <input id="adm-emote-search" type="text" placeholder="Search emotes by name" autocomplete="off" />
+        </div>
+        <div class="adm-filter-row" id="adm-emote-filter"></div>
+        <div class="adm-list-count" id="adm-emote-count"></div>
         <div class="glist" id="adm-emote-list"></div>
       </div>
     </div>
@@ -6510,6 +6927,9 @@ function renderAdminEmotes() {
     loadEmoteData(true).then(renderAdminEmoteTypes)
     app.querySelector('[data-action="add-tag"]').addEventListener('click', addEmoteTag)
     app.querySelector('#adm-new-tag').addEventListener('keydown', (e) => { if (e.key === 'Enter') addEmoteTag() })
+    const searchEl = app.querySelector('#adm-emote-search')
+    searchEl.value = adminEmoteSearch
+    searchEl.addEventListener('input', (e) => { adminEmoteSearch = e.target.value; renderAdminEmoteList() })
   }, { key: 'admin-emotes' })
 }
 
@@ -7830,28 +8250,70 @@ function renderAdminEmoteTypes() {
     }))
   }
 
-  const listEl = app.querySelector('#adm-emote-list')
-  if (listEl) {
-    listEl.innerHTML = EMOTES.map(e => {
-      const tagId = emoteTagId(e)
-      const typeChip = tagId
-        ? `<span class="adm-emote-type">${escapeHtml(tagNameById(tagId) || '—')}</span>`
-        : `<span class="adm-emote-type none">No type</span>`
-      // Emotes have no still thumbnail - only the clip - so the preview is a
-      // muted video parked on its first frame (preload=metadata, never played).
-      // Without it the admin is renaming/tagging rows by title alone with no
-      // idea which animation they're actually looking at.
-      return `
-        <div class="adm-emote-row" data-emote-id="${e.id}" role="button" tabindex="0">
-          <video class="adm-emote-thumb" src="${BASE}assets/${e.clip}#t=0.1" muted playsinline preload="metadata" tabindex="-1" aria-hidden="true"></video>
-          <div class="adm-emote-info"><div class="adm-emote-name">${escapeHtml(emoteName(e))}</div><div class="adm-emote-sub">${escapeHtml(emoteDesc(e))}</div></div>
-          <div class="adm-emote-right">${typeChip}<span class="chevron" aria-hidden="true">›</span></div>
-        </div>`
-    }).join('')
-    listEl.querySelectorAll('[data-emote-id]').forEach(row => {
-      row.addEventListener('click', () => openEmoteEditPopup(EMOTE_BY_ID[row.dataset.emoteId]))
-    })
+  // Type filter chips: All · Untagged · <each type>. 'Untagged' surfaces the
+  // emotes still needing a tag - the admin's actual working set here. A
+  // filter whose tag was just deleted falls back to 'all' so nothing renders
+  // an empty list with no active chip.
+  const filterEl = app.querySelector('#adm-emote-filter')
+  if (filterEl) {
+    if (adminEmoteFilter !== 'all' && adminEmoteFilter !== 'untagged' && !emoteTags.some(t => t.id === adminEmoteFilter)) {
+      adminEmoteFilter = 'all'
+    }
+    const chips = [{ id: 'all', label: 'All' }, { id: 'untagged', label: 'Untagged' }, ...emoteTags.map(t => ({ id: t.id, label: t.name }))]
+    filterEl.innerHTML = chips.map(c =>
+      `<button type="button" class="adm-filter-chip ${adminEmoteFilter === c.id ? 'active' : ''}" data-filter="${escapeHtml(c.id)}">${escapeHtml(c.label)}</button>`
+    ).join('')
+    filterEl.querySelectorAll('[data-filter]').forEach(b => b.addEventListener('click', () => {
+      adminEmoteFilter = b.dataset.filter
+      filterEl.querySelectorAll('.adm-filter-chip').forEach(c => c.classList.toggle('active', c.dataset.filter === adminEmoteFilter))
+      renderAdminEmoteList()
+    }))
   }
+
+  renderAdminEmoteList()
+}
+
+// Renders the emote roster filtered by the admin's search text + type chip.
+// Split out of renderAdminEmoteTypes so typing/filtering re-renders only the
+// list, not the tag chips above it (which would blur the search input).
+function renderAdminEmoteList() {
+  const listEl = app.querySelector('#adm-emote-list')
+  if (!listEl) return
+  const q = adminEmoteSearch.trim().toLowerCase()
+  const rows = EMOTES.filter(e => {
+    const tagId = emoteTagId(e)
+    if (adminEmoteFilter === 'untagged') { if (tagId) return false }
+    else if (adminEmoteFilter !== 'all') { if (tagId !== adminEmoteFilter) return false }
+    if (!q) return true
+    return emoteName(e).toLowerCase().includes(q) || emoteDesc(e).toLowerCase().includes(q)
+  })
+
+  const countEl = app.querySelector('#adm-emote-count')
+  if (countEl) countEl.textContent = `${rows.length} of ${EMOTES.length} emote${EMOTES.length === 1 ? '' : 's'}`
+
+  if (!rows.length) {
+    listEl.innerHTML = '<p class="log-empty" style="padding:1.25rem 0.9375rem">No emotes match.</p>'
+    return
+  }
+  listEl.innerHTML = rows.map(e => {
+    const tagId = emoteTagId(e)
+    const typeChip = tagId
+      ? `<span class="adm-emote-type">${escapeHtml(tagNameById(tagId) || '—')}</span>`
+      : `<span class="adm-emote-type none">No type</span>`
+    // Emotes have no still thumbnail - only the clip - so the preview is a
+    // muted video parked on its first frame (preload=metadata, never played).
+    // Without it the admin is renaming/tagging rows by title alone with no
+    // idea which animation they're actually looking at.
+    return `
+      <div class="adm-emote-row" data-emote-id="${e.id}" role="button" tabindex="0">
+        <video class="adm-emote-thumb" src="${BASE}assets/${e.clip}#t=0.1" muted playsinline preload="metadata" tabindex="-1" aria-hidden="true"></video>
+        <div class="adm-emote-info"><div class="adm-emote-name">${escapeHtml(emoteName(e))}</div><div class="adm-emote-sub">${escapeHtml(emoteDesc(e))}</div></div>
+        <div class="adm-emote-right">${typeChip}<span class="chevron" aria-hidden="true">›</span></div>
+      </div>`
+  }).join('')
+  listEl.querySelectorAll('[data-emote-id]').forEach(row => {
+    row.addEventListener('click', () => openEmoteEditPopup(EMOTE_BY_ID[row.dataset.emoteId]))
+  })
 }
 
 async function addEmoteTag() {

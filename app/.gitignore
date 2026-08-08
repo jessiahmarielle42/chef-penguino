@@ -28,4 +28,5 @@ dist-ssr
 # which meant every container recycle destroyed it). Only its throwaway
 # output is ignored.
 review/shots/
+review/shots-wishlist/
 review/node_modules/
