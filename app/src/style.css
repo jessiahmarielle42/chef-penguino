@@ -358,7 +358,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .shop-banner-info { position: absolute; top:0.75rem; right:0.75rem; }
 
 /* sort + type control row under the shop banner */
-.shop-sort-row { display: flex; justify-content: flex-end; gap:0.5rem; margin-top:1.25rem; }
+.shop-sort-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap:0.5rem; margin-top:1.25rem; }
 .sort-btn {
   display: inline-flex; align-items: center; gap:0.375rem; cursor: pointer;
   background: var(--card); border: 1px solid var(--line); border-radius:0.75rem;
@@ -403,6 +403,18 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .badge-equip:active { transform: scale(0.95); }
 .badge-equip.equipped { background: rgba(86,192,138,0.85); color: #0d2c1c; border-color: rgba(86,192,138,0.6); }
 .anim-top .lock { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(10,6,4,0.55); font-size:1.875rem; }
+/* Shop wishlist star (preview feature) - top-right corner of unowned cards,
+   mirrors .anim-top .badge's flat/opaque pill treatment (no backdrop-filter,
+   see that rule's comment) so it reads consistently during momentum scroll. */
+.wishlist-star {
+  position: absolute; top:0.5rem; right:0.5rem; z-index: 1;
+  width:2rem; height:2rem; border-radius:50%; border: 1px solid rgba(247,237,223,0.15);
+  background: rgba(20,12,8,0.85); color: var(--scrim-text); font-size:1.0625rem; line-height: 1;
+  display: grid; place-items: center; cursor: pointer; padding: 0;
+}
+.wishlist-star:active { transform: scale(0.9); }
+.wishlist-star.active { background: rgba(255,216,115,0.92); color: #4d360a; border-color: rgba(255,216,115,0.6); }
+.wishlist-toggle.active { color: var(--fire); border-color: rgba(251,122,46,0.5); background: linear-gradient(160deg, rgba(251,122,46,0.14), var(--card)); }
 .anim-body { padding:0.8125rem 0.875rem; display: flex; align-items: center; gap:0.625rem; }
 .anim-info { flex: 1; min-width: 0; }
 .anim-body .nm { font-family: var(--font-display); font-weight: 800; font-size:0.9375rem; color: var(--cream); }

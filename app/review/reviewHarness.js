@@ -105,6 +105,7 @@ const FRESH_SIGNUP_PROFILE = {
   waving_free: false,
   onboarding_done: false,
   onboarding_coin_claimed: false,
+  wishlist: [],
 }
 
 // The important preset: reproduces a real, long-tenured signed-in chef's
@@ -131,6 +132,7 @@ const OWNER_PROFILE = {
   waving_free: false,
   onboarding_done: false,
   onboarding_coin_claimed: false,
+  wishlist: [],
 }
 
 // Relative to "now" (hoursAgo), not fixed clock times - a fixed 1:30pm etc.
@@ -446,6 +448,14 @@ export function installReviewHarness({ supabase, setUser, renderers, state, getC
     if (!partial) return
     if (partial.preset) {
       applyPreset(partial.preset)
+    }
+    // Lets a Playwright run swap the signed-in email on top of a preset
+    // (e.g. to switch a fresh-signup preset between a PREVIEW_EMAILS
+    // account and an ordinary one) without a whole new preset - used by
+    // the wishlist preview-flag checks.
+    if (partial.user) {
+      window.__reviewFixtures.user = { ...(window.__reviewFixtures.user || {}), ...partial.user }
+      if (installedSetUser) installedSetUser(window.__reviewFixtures.user, window.__reviewFixtures.profile)
     }
     if (partial.profile) {
       Object.assign(tables.profiles[0] || (tables.profiles[0] = {}), partial.profile)

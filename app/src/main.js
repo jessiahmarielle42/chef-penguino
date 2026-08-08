@@ -68,6 +68,14 @@ const DELETE_CLIP_ACTIONS = ['remove-friend', 'leave-group', 'delete-group', 'de
 const ADMIN_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
 function isAdmin() { return ADMIN_EMAILS.includes(currentUser?.email) }
 
+// Preview gating (see CLAUDE.md 8c) - every new user-visible change ships
+// dark behind FEATURES[key] = 'preview' until the admin flips it to 'all'.
+// PREVIEW_EMAILS is deliberately NEVER fed into isAdmin() - preview access
+// is not admin access.
+const PREVIEW_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
+const FEATURES = { wishlist: 'preview' }
+function featureOn(key) { return FEATURES[key] === 'all' || (FEATURES[key] === 'preview' && PREVIEW_EMAILS.includes(currentUser?.email)) }
+
 let currentUser = null
 let currentProfile = null
 
@@ -480,6 +488,9 @@ function load() {
     // balance and idempotent across a re-run, exactly like the signed-in RPC.
     coinAdjustment: 0,
     onboardingCoinClaimed: false,
+    // Guest-side wishlist (shop emote ids) - signed-in chefs use
+    // profiles.wishlist instead, see wishlist()/toggleWishlist().
+    wishlist: [],
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -1224,6 +1235,44 @@ function isOwned(id) {
   if (id === 'waving') return wavingFreeForCurrentUser() || ownedEmotes().includes(id)
   return ownedEmotes().includes(id)
 }
+
+// Shop wishlist (preview feature, see FEATURES.wishlist). Same
+// guest-vs-signed-in split as ownedEmotes(): guests keep it in
+// state.wishlist, signed-in chefs in profiles.wishlist (guarded with `?? []`
+// so the app works before that column's migration is run). On sign-in the
+// real profile row always wins over any local guest list - no merge, MVP.
+function wishlist() {
+  return (currentProfile ? currentProfile.wishlist : state.wishlist) || []
+}
+function isWishlisted(id) { return wishlist().includes(id) }
+async function toggleWishlist(id) {
+  const cur = wishlist()
+  const next = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]
+  if (currentUser && currentProfile) {
+    const { error } = await supabase.from('profiles').update({ wishlist: next }).eq('id', currentUser.id)
+    if (error) { toast(error.message); return }
+    currentProfile.wishlist = next
+  } else {
+    state.wishlist = next
+    save()
+  }
+  return next.includes(id)
+}
+// Silently drops `id` from the wishlist without a toast - used by buyEmote()
+// so a purchase auto-clears it (spec: no announcement, it's just tidy-up).
+async function removeFromWishlistSilently(id) {
+  const cur = wishlist()
+  if (!cur.includes(id)) return
+  const next = cur.filter(x => x !== id)
+  if (currentUser && currentProfile) {
+    const { error } = await supabase.from('profiles').update({ wishlist: next }).eq('id', currentUser.id)
+    if (!error) currentProfile.wishlist = next
+  } else {
+    state.wishlist = next
+    save()
+  }
+}
+
 function coinsEarned() { return Math.floor(Math.floor(displayPizzas()) / 12) }
 // coin_adjustment is the net of coins gifted away (-) and received (+), PLUS
 // the +1 the onboarding tour's free coin credits when it grants waving (see
@@ -1328,6 +1377,7 @@ async function buyEmote(id) {
     state.ownedEmotes = next
     save()
   }
+  if (featureOn('wishlist')) removeFromWishlistSilently(id)
 }
 
 async function equipEmote(id) {
@@ -2551,6 +2601,10 @@ function pizzaImagePath(count) {
 // recently-added emotes first (a natural default for a shop).
 let shopSort = 'newest'
 let shopType = 'all'   // 'all' or an emote_tags id
+// Wishlist filter toggle (preview feature, see FEATURES.wishlist). Not
+// persisted across navigation per spec - always starts off on a fresh
+// renderShop() call chain, e.g. after leaving and re-entering the Shop tab.
+let shopWishlistOnly = false
 
 // Admin emote-management filters (Admin Dashboard -> Emotes). Kept module-
 // level so a re-render (e.g. after tagging one) preserves the admin's search
@@ -2576,6 +2630,7 @@ function sortedShopEmotes() {
     list = [...EMOTES].reverse()
   }
   if (shopType !== 'all') list = list.filter(e => emoteTagId(e) === shopType)
+  if (featureOn('wishlist') && shopWishlistOnly) list = list.filter(e => isWishlisted(e.id))
   return list
 }
 
@@ -2661,12 +2716,18 @@ async function renderShop(scrollTop) {
     const lock = (!owned) ? '<div class="lock">🔒</div>' : ''
 
     const action = owned ? '' : `<button class="btn btn-buy" type="button" data-buy="${e.id}">${coinImg()}1</button>`
+    // Star only ever renders on an unowned card - see spec point 1 - and
+    // only while the preview flag is on for this user.
+    const wishlisted = !owned && featureOn('wishlist') && isWishlisted(e.id)
+    const star = (!owned && featureOn('wishlist'))
+      ? `<button class="wishlist-star ${wishlisted ? 'active' : ''}" type="button" data-wishlist="${e.id}" aria-label="${wishlisted ? 'Remove from wishlist' : 'Add to wishlist'}" aria-pressed="${wishlisted}">${wishlisted ? '★' : '☆'}</button>`
+      : ''
 
     return `
       <div class="anim-card">
         <div class="anim-top" data-emote="${e.id}">
           <img class="anim-still" src="${thumb}" alt="${escapeHtml(emoteName(e))}" />
-          ${badge}${lock}
+          ${badge}${lock}${star}
         </div>
         <div class="anim-body">
           <div class="anim-info"><div class="nm">${escapeHtml(emoteName(e))}</div><div class="ds">${escapeHtml(emoteDesc(e))}</div></div>
@@ -2677,7 +2738,15 @@ async function renderShop(scrollTop) {
         </div>
       </div>
     `
-  }).join('') : '<p class="shop-empty">No emotes to show here yet.</p>'
+  }).join('') : (
+    (featureOn('wishlist') && shopWishlistOnly)
+      ? '<p class="shop-empty">No wishlisted emotes yet — tap the ☆ on any emote to save it here.</p>'
+      : '<p class="shop-empty">No emotes to show here yet.</p>'
+  )
+
+  const wishlistToggle = featureOn('wishlist')
+    ? `<button class="sort-btn wishlist-toggle ${shopWishlistOnly ? 'active' : ''}" type="button" data-action="wishlist-filter" aria-pressed="${shopWishlistOnly}">${shopWishlistOnly ? '★' : '☆'} Wishlist</button>`
+    : ''
 
   const content = `
     <div class="shop-banner" role="button" tabindex="0" data-action="shop-coin-info">
@@ -2689,6 +2758,7 @@ async function renderShop(scrollTop) {
       </div>
     </div>
     <div class="shop-sort-row">
+      ${wishlistToggle}
       <button class="sort-btn" type="button" data-action="sort">Sort by: <b>${SORT_LABELS[shopSort]}</b> <span class="chev">▼</span></button>
       <button class="sort-btn" type="button" data-action="type">Type: <b>${escapeHtml(typeLabel())}</b> <span class="chev">▼</span></button>
     </div>
@@ -2702,6 +2772,32 @@ async function renderShop(scrollTop) {
     app.querySelector('[data-action="shop-coin-info"]')?.addEventListener('click', openCoinInfo)
     app.querySelector('[data-action="sort"]')?.addEventListener('click', openSortMenu)
     app.querySelector('[data-action="type"]')?.addEventListener('click', openTypeMenu)
+    app.querySelector('[data-action="wishlist-filter"]')?.addEventListener('click', () => {
+      const y = app.querySelector('.scroll')?.scrollTop
+      shopWishlistOnly = !shopWishlistOnly
+      renderShop(y)
+    })
+
+    app.querySelectorAll('[data-wishlist]').forEach(btn => {
+      // stopPropagation: the star sits inside .anim-top, which also carries
+      // the preview-tap wiring further down - without this a star tap would
+      // also start playing the clip underneath it.
+      btn.addEventListener('click', async (ev) => {
+        ev.stopPropagation()
+        const id = btn.dataset.wishlist
+        const nowOn = await toggleWishlist(id)
+        toast(nowOn ? 'Added to wishlist' : 'Removed from wishlist')
+        btn.classList.toggle('active', nowOn)
+        btn.textContent = nowOn ? '★' : '☆'
+        btn.setAttribute('aria-pressed', String(nowOn))
+        btn.setAttribute('aria-label', nowOn ? 'Remove from wishlist' : 'Add to wishlist')
+        // Only re-render the whole grid if the wishlist filter is active -
+        // toggling a star elsewhere shouldn't yank the card out from under
+        // the chef's thumb mid-tap; the filtered view needs the full
+        // re-render since the card must disappear.
+        if (shopWishlistOnly) { const y = app.querySelector('.scroll')?.scrollTop; renderShop(y) }
+      })
+    })
 
     app.querySelectorAll('[data-preview]').forEach(btn => {
       btn.addEventListener('click', () => {
