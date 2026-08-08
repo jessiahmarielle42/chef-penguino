@@ -210,6 +210,19 @@ alike (a bugfix can itself have problems that must not reach all users):
   previewed on-device; verify those via the harness `guest` preset and
   re-check on-device after the flip.
 
+## 8d. Overnight/long runs — arm an hourly watchdog
+Cloud containers auto-pause when idle, which has silently stalled overnight
+builds. Whenever a multi-stage run will outlive the current exchange
+(overnight builds, long worker pipelines), arm a recurring self check-in
+BEFORE going quiet: `send_later` (claude-code-remote MCP) ~60 min out, whose
+message says which stages should be running and instructs: check progress,
+restart any stalled/dead worker, re-arm the next check-in, stay silent to
+the user unless truly blocked. Each firing re-arms the next until the run
+(build + verification + commits) is complete. Server-side triggers fire
+into the session and wake a paused container; worker completions also wake
+it — the watchdog is the backstop, not the primary signal. Commit + push
+work as stages finish so a stall never loses progress.
+
 ## 8a. Version numbering — always 4 digits
 `APP_VERSION` in `app/src/main.js` is always **4 dot-separated numbers**
 (`vMAJOR.MINOR.FEATURE.FIX`), never 3. When bumping it, always land on a
