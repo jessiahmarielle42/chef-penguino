@@ -210,18 +210,27 @@ alike (a bugfix can itself have problems that must not reach all users):
   previewed on-device; verify those via the harness `guest` preset and
   re-check on-device after the flip.
 
-## 8d. Overnight/long runs — arm an hourly watchdog
-Cloud containers auto-pause when idle, which has silently stalled overnight
-builds. Whenever a multi-stage run will outlive the current exchange
-(overnight builds, long worker pipelines), arm a recurring self check-in
-BEFORE going quiet: `send_later` (claude-code-remote MCP) ~60 min out, whose
-message says which stages should be running and instructs: check progress,
-restart any stalled/dead worker, re-arm the next check-in, stay silent to
-the user unless truly blocked. Each firing re-arms the next until the run
-(build + verification + commits) is complete. Server-side triggers fire
-into the session and wake a paused container; worker completions also wake
-it — the watchdog is the backstop, not the primary signal. Commit + push
-work as stages finish so a stall never loses progress.
+## 8d. Overnight/long runs — recurring cron watchdog, no background waits
+Cloud containers auto-pause when idle, and pausing KILLS every process
+inside the container. Wake-ups come only from server-side events (user
+messages, tracked worker-agent completions, scheduled triggers) — a killed
+process never completes, so a session asleep waiting on one sleeps forever.
+Proven overnight (Aug 2026): two one-shot `send_later` watchdogs fired and
+recovered stalls correctly, then the chain died the one time a wake ended
+without re-arming the next link. Rules:
+- Use ONE recurring hourly cron trigger (`create_trigger` with
+  `cron_expression`, self-binding into the session), created BEFORE going
+  quiet and deleted when the run completes. Never a chain of one-shot
+  `send_later`s — one missed re-arm kills a chain; a cron can't be missed.
+- NEVER end a turn waiting on an in-container background process during an
+  overnight run. Run verification synchronously inside a wake window; every
+  wake re-checks committed on-disk state, not remembered in-memory state.
+- Deploy dark FIRST (rule 8c), verify before the FLIP: once the build is
+  green and flag-off is confirmed identical, merge to main dark
+  immediately. The full verification suite gates flipping the flag to
+  'all', never the dark deploy — a slow suite must not keep finished work
+  off the preview accounts.
+- Commit + push as each stage finishes so a stall never loses progress.
 
 ## 8a. Version numbering — always 4 digits
 `APP_VERSION` in `app/src/main.js` is always **4 dot-separated numbers**
