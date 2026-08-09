@@ -1600,9 +1600,17 @@ function autoplayEmoteWhenReady(imgEl, emoteId, revertSrc) {
 // with preload="metadata" decodes and displays just that one frame without
 // downloading or playing the whole clip. See EMOTE_THUMB_SEEK above for why
 // most emotes don't use the (often blank/generic) first frame.
+// NEVER emits "#t=0": that fragment asks the video to seek to where it
+// already is, so no seek fires at all - and with preload="metadata" Safari
+// decodes no frame until a seek forces one, leaving the card permanently
+// blank (device-reported: my-favourite/chef-mouse/chef-mouse-hamster, the
+// three emotes not listed in EMOTE_THUMB_SEEK, showed nothing while every
+// seeked emote rendered fine). THUMB_SEEK_MIN is far enough past zero to
+// count as a real seek and still lands on the opening frame.
+const THUMB_SEEK_MIN = 0.05
 function emoteThumbSrc(id) {
   const e = EMOTE_BY_ID[id]
-  const t = EMOTE_THUMB_SEEK[id] ?? 0
+  const t = Math.max(EMOTE_THUMB_SEEK[id] ?? 0, THUMB_SEEK_MIN)
   return `${BASE}assets/${e.clip}#t=${t}`
 }
 function buildEmoteThumbEl(id, className, elId) {
