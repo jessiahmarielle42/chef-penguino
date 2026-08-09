@@ -30,7 +30,7 @@ let sanctifyReturnCode = null
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.4.1'
+const APP_VERSION = 'v2.5.4.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -1512,6 +1512,9 @@ async function removeFromSeries(id) {
 // back at slot 1 (which autoplay already plays on arrival). Index 0 means
 // "slot 1 was the last thing played"; each tap advances it before playing.
 let heroCycleIndex = 0
+// Timestamp of the 'playing' event for the emote clip currently on screen, or
+// 0 when nothing is playing. Drives heroTapAdvance()'s grace period.
+let liveEmotePlayingSince = 0
 
 // Preloaded emote clips so tapping starts playback instantly.
 const preloadedEmotes = {}
@@ -1532,7 +1535,36 @@ for (const e of EMOTES) {
 // preloadedEmotes above is a const and needs to be resolved AFTER its own
 // declaration, which is why this isn't up at the top of the review block.)
 if (import.meta.env.VITE_REVIEW) {
-  window.__emoteDebug = { playEmoteInto, forceParkLiveEmotes, preloadedEmotes }
+  window.__emoteDebug = {
+    playEmoteInto, forceParkLiveEmotes, preloadedEmotes,
+    // Lets review scripts simulate "a clip has been visibly playing for N ms"
+    // and "nothing is playing" without a video decoder (none here).
+    setPlayingSince: (t) => { liveEmotePlayingSince = t },
+    forceIdle: () => {
+      const still = document.querySelector('#hero-card .hero-still')
+      if (still && still.tagName === 'VIDEO') still._pendingRevert?.()
+      liveEmotePlayingSince = 0
+    },
+    // Puts the hero card into the exact state "a clip is on screen and has
+    // been visibly playing for `ms`". Needed because these headless browsers
+    // have no H.264 decoder: a real playEmoteInto() reverts instantly when
+    // play() rejects, so the mid-playback state can't otherwise be reached.
+    simulatePlaying: (ms) => {
+      const still = document.querySelector('#hero-card .hero-still')
+      if (!still) return false
+      const v = document.createElement('video')
+      v.className = still.className; v.id = still.id
+      v._pendingRevert = () => {
+        const img = document.createElement('img')
+        img.className = v.className; img.id = v.id; img.alt = ''
+        if (v.isConnected) v.replaceWith(img)
+        liveEmotePlayingSince = 0
+      }
+      still.replaceWith(v)
+      liveEmotePlayingSince = ms === null ? 0 : Date.now() - ms
+      return true
+    },
+  }
 }
 function parkVideo(v) {
   v.pause()
@@ -1645,6 +1677,7 @@ function playEmoteInto(imgEl, emoteId, revertSrc, onRevert) {
   // is what corrupted the shared node into not autoplaying and, once, into
   // sitting on top of the back button eating clicks. One node, one listener.
   if (v._pendingRevert) v.removeEventListener('ended', v._pendingRevert)
+  if (v._pendingPlaying) v.removeEventListener('playing', v._pendingPlaying)
   v.className = imgEl.className
   v.id = imgEl.id
   v.style.cssText = ''
@@ -1658,6 +1691,8 @@ function playEmoteInto(imgEl, emoteId, revertSrc, onRevert) {
     if (done) return
     done = true
     v._pendingRevert = null
+    if (v._pendingPlaying) { v.removeEventListener('playing', v._pendingPlaying); v._pendingPlaying = null }
+    liveEmotePlayingSince = 0
     const img = document.createElement('img')
     img.className = v.className
     img.id = v.id
@@ -1673,7 +1708,44 @@ function playEmoteInto(imgEl, emoteId, revertSrc, onRevert) {
   }
   v._pendingRevert = back
   v.addEventListener('ended', back, { once: true })
+  // 'playing' - not the play() call - is the moment frames actually reach the
+  // screen. heroTapAdvance() measures its grace period from here, so a tap
+  // can never be judged against a clip that was still buffering.
+  const onPlaying = () => { liveEmotePlayingSince = Date.now() }
+  v._pendingPlaying = onPlaying
+  v.addEventListener('playing', onPlaying, { once: true })
+  liveEmotePlayingSince = 0
   v.play().catch(back)
+}
+
+// Advances the hero card to the next emote in `series`, shared by the chef's
+// own Home and a visited friend's Pizzeria.
+//
+// Two rules, both from real tap behaviour:
+//  1. The index advances ONLY when a clip actually starts. It used to advance
+//     on every tap while playback was skipped whenever a <video> was already
+//     on screen, so taps during a clip silently burned slots - tap twice
+//     during clip 2 and the next tap jumped to clip 5.
+//  2. A tap DURING a playing clip interrupts it and starts the next one
+//     immediately (no waiting for 'ended'), but only once that clip has been
+//     genuinely on screen for HERO_TAP_GRACE_MS. Taps before that - including
+//     every tap while a clip is still buffering - are ignored outright, so an
+//     impatient double-tap on a slow connection can't skip anything.
+const HERO_TAP_GRACE_MS = 500
+function heroTapAdvance(series, revertSrc, hostSel) {
+  if (!series.length) { toast('Equip emotes in shop'); return }
+  const still = app.querySelector(`${hostSel} .hero-still`)
+  if (!still) return
+  if (still.tagName === 'VIDEO') {
+    if (!liveEmotePlayingSince || Date.now() - liveEmotePlayingSince < HERO_TAP_GRACE_MS) return
+    still._pendingRevert?.()   // interrupt: swap back to an <img> right now
+  }
+  const img = app.querySelector(`${hostSel} .hero-still`)
+  if (!img || img.tagName !== 'IMG') return
+  heroCycleIndex = (heroCycleIndex + 1) % series.length
+  const nextId = series[heroCycleIndex]
+  if (window.__emoteDebug) window.__emoteDebug.lastHeroTapId = nextId
+  playEmoteInto(img, nextId, revertSrc)
 }
 
 // Called right before mountScreen wipes #app's DOM. Any preloaded emote
@@ -2118,21 +2190,13 @@ async function renderHome() {
     // behaviour, unchanged. If the chef owns no emote yet, tapping just
     // nudges toward the Shop via toast - no navigation, no clip to play.
     const attachEmoteTap = (btnHost) => {
-      btnHost.addEventListener('click', () => {
-        if (!heroSeries.length) { toast('Equip emotes in shop'); return }
-        heroCycleIndex = (heroCycleIndex + 1) % heroSeries.length
-        const nextId = heroSeries[heroCycleIndex]
-        // Optional chaining is load-bearing: __emoteDebug only exists in the
-        // VITE_REVIEW build, so a bare assignment threw a TypeError here in
-        // production and killed the tap before the clip could play.
-        if (window.__emoteDebug) window.__emoteDebug.lastHeroTapId = nextId
-        const img = app.querySelector('#hero-card .hero-still')
-        if (img && img.tagName === 'IMG') {
-          playEmoteInto(img, nextId, heroSrc)
-        }
-      })
+      btnHost.addEventListener('click', () => heroTapAdvance(heroSeries, heroSrc, '#hero-card'))
     }
     attachEmoteTap(app.querySelector('#hero-card'))
+    // Warm every clip in the series, not just the one playing now, so the
+    // next tap starts instantly instead of stalling on a fetch (a stall is
+    // what made chefs tap again, which is how slots got skipped).
+    heroSeries.forEach(warmEmote)
     // Greet the chef with their equipped emote on arrival - buffered first so
     // it plays smoothly rather than stuttering into life. No clip to preload
     // when the chef owns nothing yet.
@@ -4701,17 +4765,13 @@ function renderFriendHome(friend) {
     })
     app.querySelector('#hero-card')?.addEventListener('click', () => {
       if (!friendSeries.length) return
-      heroCycleIndex = (heroCycleIndex + 1) % friendSeries.length
-      const nextId = friendSeries[heroCycleIndex]
-      // See the same guard in renderHome's attachEmoteTap - __emoteDebug is
-      // VITE_REVIEW-only and threw here in production.
-      if (window.__emoteDebug) window.__emoteDebug.lastHeroTapId = nextId
-      const img = app.querySelector('#hero-card .hero-still')
-      if (img && img.tagName === 'IMG') playEmoteInto(img, nextId, heroSrc)
+      heroTapAdvance(friendSeries, heroSrc, '#hero-card')
     })
     // Same welcome on a friend's Pizzeria: preload, then play once. Skip
     // entirely if the friend owns no emote - nothing to preload or play.
     if (friendEmote) autoplayEmoteWhenReady(app.querySelector('#hero-card .hero-still'), friendEmote, heroSrc)
+    // Warm the visited chef's whole series too - same reason as on Home.
+    friendSeries.forEach(warmEmote)
   }, { hideStatusBar: true, key: 'friend-home' })
 }
 
