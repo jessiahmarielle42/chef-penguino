@@ -210,18 +210,43 @@ alike (a bugfix can itself have problems that must not reach all users):
   previewed on-device; verify those via the harness `guest` preset and
   re-check on-device after the flip.
 
-## 8d. Overnight/long runs — arm an hourly watchdog
-Cloud containers auto-pause when idle, which has silently stalled overnight
-builds. Whenever a multi-stage run will outlive the current exchange
-(overnight builds, long worker pipelines), arm a recurring self check-in
-BEFORE going quiet: `send_later` (claude-code-remote MCP) ~60 min out, whose
-message says which stages should be running and instructs: check progress,
-restart any stalled/dead worker, re-arm the next check-in, stay silent to
-the user unless truly blocked. Each firing re-arms the next until the run
-(build + verification + commits) is complete. Server-side triggers fire
-into the session and wake a paused container; worker completions also wake
-it — the watchdog is the backstop, not the primary signal. Commit + push
-work as stages finish so a stall never loses progress.
+## 8d. When the admin leaves — the unattended-work protocol
+Follow this EXACTLY whenever the admin says they're leaving / going to sleep
+/ will check back later, or whenever a run will outlive the current
+exchange. Not optional, and not to be improvised on.
+
+**The constraint:** cloud containers auto-pause when idle, and a pause KILLS
+every process inside the container. Wakes come only from server-side events
+(user messages, tracked worker-agent completions, scheduled triggers). So a
+session waiting on an in-container process sleeps forever — the process it
+is waiting for is already dead.
+
+**The protocol:**
+1. BEFORE going quiet, create ONE recurring hourly cron trigger
+   (`create_trigger` with `cron_expression`, e.g. `23 * * * *`, self-binding
+   into the session). NEVER a chain of one-shot `send_later`s — a single
+   missed re-arm silently ends the chain, which is exactly how the Aug 8
+   overnight run was lost (both watchdogs fired correctly; the chain died
+   when one wake ended without arming the next).
+2. Its prompt names the remaining stages and instructs: resume from
+   committed on-disk state, restart anything stalled, stay silent to the
+   user unless truly blocked.
+3. NEVER end a turn waiting on an in-container background process. Run
+   verification synchronously inside a wake window.
+4. Every wake re-reads committed state (`git log`, the files) — never
+   in-memory state from before the pause.
+5. Commit AND push after every stage, so a stall can never lose work.
+6. Deploy dark FIRST (rule 8c), verify after: the moment the build is green
+   and flag-off behaviour is confirmed unchanged, merge to `main` with flags
+   at `'preview'`. Slow verification gates the FLIP to `'all'`, never the
+   dark deploy — finished work must not sit off the preview accounts all
+   night waiting on a suite.
+7. DELETE the cron trigger when the run completes, and report a scorecard:
+   which wakes fired, what shipped, actual vs estimated tokens.
+
+**Proven, not assumed** (Aug 9 2026): six consecutive hourly wakes, each
+committing and pushing to live `main` from a fully paused container, zero
+gaps, ~2k tokens per wake.
 
 ## 8a. Version numbering — always 4 digits
 `APP_VERSION` in `app/src/main.js` is always **4 dot-separated numbers**
