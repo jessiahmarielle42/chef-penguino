@@ -30,7 +30,7 @@ let sanctifyReturnCode = null
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.5.0'
+const APP_VERSION = 'v2.5.6.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -73,7 +73,7 @@ function isAdmin() { return ADMIN_EMAILS.includes(currentUser?.email) }
 // PREVIEW_EMAILS is deliberately NEVER fed into isAdmin() - preview access
 // is not admin access.
 const PREVIEW_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
-const FEATURES = { shopPreviewFix: 'all', wishlist: 'all', emoteSeries: 'all' }  // 'preview' | 'all'
+const FEATURES = { shopPreviewFix: 'all', wishlist: 'all', emoteSeries: 'all', draggableFab: 'preview' }  // 'preview' | 'all'
 function featureOn(key) { return FEATURES[key] === 'all' || (FEATURES[key] === 'preview' && PREVIEW_EMAILS.includes(currentUser?.email)) }
 
 let currentUser = null
@@ -1937,6 +1937,7 @@ function mountScreen(active, contentHtml, after, opts = {}) {
   if (prevScroll && mountedScreenKey) scrollMemory.set(mountedScreenKey, prevScroll.scrollTop)
   const carryTop = scrollMemory.get(key) || 0
   forceParkLiveEmotes()
+  resetFabCorner()   // no persistence: every navigation returns it to default
   app.innerHTML = `
     <div class="app">
       ${opts.hideStatusBar ? '' : statusBarHtml()}
@@ -5864,10 +5865,128 @@ function ensureBugFab() {
       </svg>
     `
     bugFabEl.addEventListener('click', openBugReport)
+    if (featureOn('draggableFab')) makeFabDraggable(bugFabEl)
     document.body.appendChild(bugFabEl)
     new MutationObserver(updateBugFabVisibility).observe(app, { childList: true, subtree: true })
   }
   updateBugFabVisibility()
+}
+
+// ---- Draggable, snap-to-corner FAB (preview-gated) -------------------------
+// Drag the bug FAB anywhere and it snaps to whichever of the four viewport
+// corners its centre lands nearest. Deliberately NOT persisted: every screen
+// mount resets it to the default corner (see resetFabCorner in mountScreen),
+// so it can never end up parked somewhere unhelpful on a screen the chef
+// didn't move it on.
+//
+// Corner offsets reuse the app's own measured chrome rather than new guesses:
+// bottom corners sit at var(--tabbar-h) + 0.6rem (the same expression the
+// static FAB always used - --tabbar-h is measured on-device and already
+// includes the home-indicator inset), and top corners clear the iOS status
+// bar via env(safe-area-inset-top). The FAB intentionally does NOT lift for
+// the soundtrack mini-player; it hovers over it on z-index (see style.css).
+const FAB_DRAG_THRESHOLD_PX = 8
+const FAB_DEFAULT_CORNER = 'bottom-left'
+const FAB_CORNER_CLASS = {
+  'bottom-left': 'fab-bl', 'bottom-right': 'fab-br',
+  'top-left': 'fab-tl', 'top-right': 'fab-tr',
+}
+function applyFabCorner(el, corner) {
+  el.classList.remove(...Object.values(FAB_CORNER_CLASS))
+  el.classList.add(FAB_CORNER_CLASS[corner])
+}
+function resetFabCorner() {
+  if (bugFabEl && featureOn('draggableFab')) applyFabCorner(bugFabEl, FAB_DEFAULT_CORNER)
+}
+function makeFabDraggable(el) {
+  let drag = null
+  let suppressClick = false
+  applyFabCorner(el, FAB_DEFAULT_CORNER)
+  // Without touch-action:none the browser claims the gesture as a scroll and
+  // pointermove stops firing mid-drag.
+  el.style.touchAction = 'none'
+
+  const settle = () => {
+    if (drag) return   // a new gesture already started; don't clobber it
+    // Clearing the inline transform matters: an inline transform outranks the
+    // #bug-fab:active / .pressed scale rule, so leaving one behind would kill
+    // the FAB's press feedback for good.
+    el.style.transition = ''
+    el.style.transform = ''
+  }
+
+  el.addEventListener('pointerdown', (e) => {
+    // Clear the flag at the START of every gesture, never relying on a click
+    // to consume it. WebKit fires NO click after a real drag (Chromium does),
+    // so a flag left set by the drag silently swallowed the NEXT genuine tap.
+    suppressClick = false
+    drag = { x: e.clientX, y: e.clientY, moved: false }
+    try { el.setPointerCapture(e.pointerId) } catch {}
+    el.style.transition = 'none'   // 1:1 with the finger, no easing lag
+  })
+
+  el.addEventListener('pointermove', (e) => {
+    if (!drag) return
+    const dx = e.clientX - drag.x
+    const dy = e.clientY - drag.y
+    if (!drag.moved && Math.hypot(dx, dy) >= FAB_DRAG_THRESHOLD_PX) {
+      drag.moved = true
+      el.classList.add('fab-dragging')
+    }
+    if (drag.moved) el.style.transform = `translate(${dx}px, ${dy}px)`
+  })
+
+  el.addEventListener('pointerup', (e) => {
+    const state = drag
+    drag = null
+    if (!state) return
+    try { el.releasePointerCapture(e.pointerId) } catch {}
+    el.classList.remove('fab-dragging')
+    if (!state.moved) { settle(); return }   // under threshold: a tap, not a drag
+
+    suppressClick = true
+    const dropRect = el.getBoundingClientRect()
+    el.style.transform = ''
+
+    const cx = dropRect.left + dropRect.width / 2
+    const cy = dropRect.top + dropRect.height / 2
+    const corner = `${cy < innerHeight / 2 ? 'top' : 'bottom'}-${cx < innerWidth / 2 ? 'left' : 'right'}`
+    applyFabCorner(el, corner)
+
+    // FLIP: the corner swap teleports the button. Measure where it landed,
+    // counter-translate it back to the finger's drop point, then transition
+    // that offset to zero so it appears to glide into the corner.
+    requestAnimationFrame(() => {
+      const finalRect = el.getBoundingClientRect()
+      el.style.transform = `translate(${dropRect.left - finalRect.left}px, ${dropRect.top - finalRect.top}px)`
+      requestAnimationFrame(() => {
+        el.style.transition = 'transform 250ms ease-out'
+        el.style.transform = 'translate(0px, 0px)'
+        // A timer, not transitionend, is the authority for cleanup: WebKit
+        // did not reliably fire transitionend here and the FAB was left with
+        // a stale inline transform (which would also have disabled its press
+        // feedback). transitionend still fires settle() early when it works.
+        setTimeout(settle, 300)
+      })
+    })
+  })
+
+  el.addEventListener('pointercancel', () => {
+    drag = null
+    el.classList.remove('fab-dragging')
+    settle()
+  })
+
+  el.addEventListener('transitionend', (e) => { if (e.propertyName === 'transform') settle() })
+
+  // Capture phase, so this runs BEFORE the bubble-phase openBugReport
+  // listener and can cancel it: a drag must never open the bug report.
+  el.addEventListener('click', (e) => {
+    if (!suppressClick) return
+    suppressClick = false
+    e.stopImmediatePropagation()
+    e.preventDefault()
+  }, true)
 }
 function updateBugFabVisibility() {
   if (!bugFabEl) return

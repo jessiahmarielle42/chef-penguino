@@ -2796,6 +2796,27 @@ img.shop-image {
 }
 #bug-fab:active, #bug-fab.pressed { transform: scale(0.9); }
 
+/* ---- Draggable snap-to-corner FAB (featureOn('draggableFab')) ----
+   These classes are only ever applied by makeFabDraggable(); with the flag
+   off no class is added and the static bottom-right rule above still owns
+   the position, byte-for-byte unchanged.
+   Each corner resets the opposite two edges to auto, otherwise the base
+   rule's right/bottom would fight the class's left/top and the button would
+   be pinned by both. Bottom corners reuse the SAME expression the static FAB
+   always used (--tabbar-h is measured on-device by syncTabbarHeight and
+   already includes the home-indicator inset) - deliberately no mini-player
+   lift, per the note further down: the FAB hovers over the player on
+   z-index. Top corners clear the iOS status bar via the real safe-area
+   inset rather than a hardcoded guess. */
+#bug-fab.fab-bl, #bug-fab.fab-br { bottom: calc(var(--tabbar-h, 5.5rem) + 0.6rem); top: auto; }
+#bug-fab.fab-tl, #bug-fab.fab-tr { top: calc(env(safe-area-inset-top, 0px) + 1rem); bottom: auto; }
+#bug-fab.fab-bl, #bug-fab.fab-tl { left: 0.9rem; right: auto; }
+#bug-fab.fab-br, #bug-fab.fab-tr { right: 0.9rem; left: auto; }
+/* While dragging: no press-scale (it would fight the drag translate, and an
+   inline transform outranks it anyway) and no pointer-events weirdness. */
+#bug-fab.fab-dragging { cursor: grabbing; transition: none; }
+#bug-fab.fab-dragging:active { transform: none; }
+
 /* ---------- Report Bugs popup ---------- */
 /* Real full-phone screenshot: a live, scaled-down clone of the screen the user
    was on, in the phone's own portrait aspect (390:844). */
