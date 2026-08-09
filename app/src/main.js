@@ -30,7 +30,7 @@ let sanctifyReturnCode = null
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.4.0'
+const APP_VERSION = 'v2.5.4.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -2122,7 +2122,10 @@ async function renderHome() {
         if (!heroSeries.length) { toast('Equip emotes in shop'); return }
         heroCycleIndex = (heroCycleIndex + 1) % heroSeries.length
         const nextId = heroSeries[heroCycleIndex]
-        window.__emoteDebug.lastHeroTapId = nextId
+        // Optional chaining is load-bearing: __emoteDebug only exists in the
+        // VITE_REVIEW build, so a bare assignment threw a TypeError here in
+        // production and killed the tap before the clip could play.
+        if (window.__emoteDebug) window.__emoteDebug.lastHeroTapId = nextId
         const img = app.querySelector('#hero-card .hero-still')
         if (img && img.tagName === 'IMG') {
           playEmoteInto(img, nextId, heroSrc)
@@ -4700,7 +4703,9 @@ function renderFriendHome(friend) {
       if (!friendSeries.length) return
       heroCycleIndex = (heroCycleIndex + 1) % friendSeries.length
       const nextId = friendSeries[heroCycleIndex]
-      window.__emoteDebug.lastHeroTapId = nextId
+      // See the same guard in renderHome's attachEmoteTap - __emoteDebug is
+      // VITE_REVIEW-only and threw here in production.
+      if (window.__emoteDebug) window.__emoteDebug.lastHeroTapId = nextId
       const img = app.querySelector('#hero-card .hero-still')
       if (img && img.tagName === 'IMG') playEmoteInto(img, nextId, heroSrc)
     })
