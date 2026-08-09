@@ -1213,6 +1213,15 @@ const EMOTE_THUMB_SEEK = {
   'meelo-pizza': 2.5,
   'rat-in-the-kitchen': 3.5,
   ratatouille: 2.5,
+  // These three were originally left unmapped on the belief their first
+  // frame already showed their subject. Checking the extracted frames
+  // directly proved otherwise - all three open on the same generic
+  // storefront establishing shot as everything else, and only reach their
+  // own subject (Meelo held up; penguin + Meelo at the pizza; the hamster
+  // in a chef's hat) around the 2s mark, which matches each one's desc.
+  'my-favourite': 2.0,
+  'chef-mouse': 2.0,
+  'chef-mouse-hamster': 2.0,
 }
 
 // Admin-managed emote metadata: a single Type tag plus optional Title/
