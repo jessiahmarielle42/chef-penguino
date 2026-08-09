@@ -43,13 +43,17 @@ async function run(browserType, name) {
     ? { ...devices['iPhone 13'] } : { viewport: { width: 390, height: 844 } })
   const page = await ctx.newPage()
 
-  // ---- flag OFF: nothing changes at all ----
+  // ---- RELEASED (FEATURES.draggableFab === 'all'): an ordinary, non-preview
+  // account gets the draggable FAB too. Before the release flip these two
+  // asserted the opposite (no classes, static bottom-right); they were
+  // rewritten at flip time, and their flipping IS the evidence the gate was
+  // what gated it. Revert them if the flag ever goes back to 'preview'. ----
   await boot(page, 'ordinary-user@example.com')
   const off = await box(page)
-  check(`${name} flag off: no corner classes`, !/fab-(bl|br|tl|tr)/.test(off.cls), off.cls || '(none)')
-  check(`${name} flag off: still bottom-RIGHT`, off.cx > off.vw / 2, `cx=${Math.round(off.cx)} of ${off.vw}`)
+  check(`${name} released: ordinary user gets a corner class`, /fab-(bl|br|tl|tr)/.test(off.cls), off.cls || '(none)')
+  check(`${name} released: ordinary user defaults bottom-LEFT`, off.cx < off.vw / 2, `cx=${Math.round(off.cx)} of ${off.vw}`)
 
-  // ---- flag ON ----
+  // ---- same behaviour for a preview account ----
   await boot(page, 'keefefons@gmail.com')
   const start = await box(page)
   const tabbarTop = await page.evaluate(() => document.querySelector('.tabbar').getBoundingClientRect().top)
