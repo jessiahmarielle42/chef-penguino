@@ -30,7 +30,7 @@ let sanctifyReturnCode = null
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.4.2'
+const APP_VERSION = 'v2.5.5.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -73,7 +73,7 @@ function isAdmin() { return ADMIN_EMAILS.includes(currentUser?.email) }
 // PREVIEW_EMAILS is deliberately NEVER fed into isAdmin() - preview access
 // is not admin access.
 const PREVIEW_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
-const FEATURES = { shopPreviewFix: 'preview', wishlist: 'preview', emoteSeries: 'preview' }  // 'preview' | 'all'
+const FEATURES = { shopPreviewFix: 'all', wishlist: 'all', emoteSeries: 'all' }  // 'preview' | 'all'
 function featureOn(key) { return FEATURES[key] === 'all' || (FEATURES[key] === 'preview' && PREVIEW_EMAILS.includes(currentUser?.email)) }
 
 let currentUser = null
@@ -2883,7 +2883,7 @@ function renderSeriesTray(series, thumb) {
   }).join('')
   return `
     <div class="series-tray">
-      <div class="series-tray-h">My Series</div>
+      <div class="series-tray-h">My Series<span class="series-tray-hint">ⓘ tap to remove</span></div>
       <div class="series-slots">${slots}</div>
     </div>
   `

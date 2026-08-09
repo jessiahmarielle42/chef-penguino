@@ -383,7 +383,17 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   background: var(--card); border: 1px solid var(--line); border-radius:1.125rem;
   padding:0.9375rem; margin-top:1.25rem;
 }
-.series-tray-h { font-family: var(--font-display); font-weight: 800; font-size:0.875rem; color: var(--cream); margin-bottom:0.75rem; }
+/* Title row: the heading keeps its weight, the hint sits beside it as quiet
+   secondary text so it reads as guidance, not a second heading. baseline
+   alignment keeps the two type sizes sitting on the same line. */
+.series-tray-h {
+  font-family: var(--font-display); font-weight: 800; font-size:0.875rem; color: var(--cream);
+  margin-bottom:0.75rem; display: flex; align-items: baseline; gap:0.5rem; flex-wrap: wrap;
+}
+.series-tray-hint {
+  font-family: var(--font-body); font-weight: 600; font-size:0.6875rem;
+  color: var(--muted); letter-spacing: 0.01em;
+}
 .series-slots { display: grid; grid-template-columns: repeat(5, 1fr); gap:0.5rem; }
 .series-slot {
   position: relative; aspect-ratio: 1/1; border-radius:0.75rem; overflow: hidden;
