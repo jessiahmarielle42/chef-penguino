@@ -187,6 +187,42 @@ it:
 - Prefer additive, reversible changes; when a change could regress existing
   behaviour, verify the old path still works, not just the new one.
 
+## 8c. Preview gating — EVERY change ships dark until the admin releases it
+Standing process for ALL user-visible changes — new features AND bugfixes
+alike (a bugfix can itself have problems that must not reach all users):
+- `main.js` holds the gate:
+  `PREVIEW_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']`
+  and a `FEATURES = { key: 'preview' | 'all' }` map, checked via a single
+  `featureOn(key)` helper. New user-visible behaviour renders only when its
+  flag is `'all'`, or `'preview'` and the signed-in email is in
+  PREVIEW_EMAILS.
+- Every new change lands with its flag at `'preview'`, so pushing `main`
+  deploys it dark: only the two preview accounts see it live.
+- The admin tests on the preview accounts, then says to release it; the
+  rollout is flipping that one flag to `'all'` — a one-line commit, no other
+  code changes, so what was tested is exactly what ships.
+- Once a flag has been `'all'` for a while and the change is settled,
+  remove the flag and the gate branches for it (dead flags rot).
+- PREVIEW_EMAILS is NOT an admin list: it must never feed `isAdmin()` or
+  grant dashboard/moderation powers. `jessiahmarielle@gmail.com` previews
+  features but is not a full admin.
+- Limit: preview needs a signed-in email, so guest-only paths can't be
+  previewed on-device; verify those via the harness `guest` preset and
+  re-check on-device after the flip.
+
+## 8d. Overnight/long runs — arm an hourly watchdog
+Cloud containers auto-pause when idle, which has silently stalled overnight
+builds. Whenever a multi-stage run will outlive the current exchange
+(overnight builds, long worker pipelines), arm a recurring self check-in
+BEFORE going quiet: `send_later` (claude-code-remote MCP) ~60 min out, whose
+message says which stages should be running and instructs: check progress,
+restart any stalled/dead worker, re-arm the next check-in, stay silent to
+the user unless truly blocked. Each firing re-arms the next until the run
+(build + verification + commits) is complete. Server-side triggers fire
+into the session and wake a paused container; worker completions also wake
+it — the watchdog is the backstop, not the primary signal. Commit + push
+work as stages finish so a stall never loses progress.
+
 ## 8a. Version numbering — always 4 digits
 `APP_VERSION` in `app/src/main.js` is always **4 dot-separated numbers**
 (`vMAJOR.MINOR.FEATURE.FIX`), never 3. When bumping it, always land on a

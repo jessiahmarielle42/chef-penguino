@@ -30,7 +30,7 @@ let sanctifyReturnCode = null
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.3.1'
+const APP_VERSION = 'v2.5.4.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -67,6 +67,14 @@ const DELETE_CLIP_ACTIONS = ['remove-friend', 'leave-group', 'delete-group', 'de
 // auth.email() server-side and can't be spoofed from here.
 const ADMIN_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
 function isAdmin() { return ADMIN_EMAILS.includes(currentUser?.email) }
+
+// Preview gating (see CLAUDE.md 8c) - every new user-visible change ships
+// dark behind FEATURES[key] = 'preview' until the admin flips it to 'all'.
+// PREVIEW_EMAILS is deliberately NEVER fed into isAdmin() - preview access
+// is not admin access.
+const PREVIEW_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
+const FEATURES = { shopPreviewFix: 'preview', wishlist: 'preview', emoteSeries: 'preview' }  // 'preview' | 'all'
+function featureOn(key) { return FEATURES[key] === 'all' || (FEATURES[key] === 'preview' && PREVIEW_EMAILS.includes(currentUser?.email)) }
 
 let currentUser = null
 let currentProfile = null
@@ -133,7 +141,7 @@ async function refreshProfile() {
   // fine and soundtrackById(undefined) treats it as the default track.
   let { data } = await supabase
     .from('profiles')
-    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels, level_seen, waving_free, onboarding_done, onboarding_coin_claimed, soundtrack')
+    .select('id, display_name, friend_code, pizzas, avatar_url, owned_emotes, equipped_emote, coin_adjustment, task_type_labels, level_seen, waving_free, onboarding_done, onboarding_coin_claimed, soundtrack, emote_series')
     .eq('id', currentUser.id)
     .single()
   if (!data) {
@@ -467,7 +475,7 @@ function load() {
   const defaults = {
     pizzas: 0, muted: false, volume: 0.5, lastVolume: 0.5, darkenLevel: 1, autoDarken: true,
     timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null,
-    pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', lastSeenCoins: null,
+    pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', emoteSeries: [], lastSeenCoins: null,
     lightMode: false, taskTypeLabels: {}, deleteAnimations: true, onboardingDone: false,
     lastHomescreenPromptAt: null, homescreenPromptDismissedForever: false,
     // Undefined until captureGuestWavingFreeCaptured() runs once at boot -
@@ -480,6 +488,9 @@ function load() {
     // balance and idempotent across a re-run, exactly like the signed-in RPC.
     coinAdjustment: 0,
     onboardingCoinClaimed: false,
+    // Guest-side wishlist (shop emote ids) - signed-in chefs use
+    // profiles.wishlist instead, see wishlist()/toggleWishlist().
+    wishlist: [],
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -1173,6 +1184,37 @@ const EMOTES = [
 ]
 const EMOTE_BY_ID = Object.fromEntries(EMOTES.map(e => [e.id, e]))
 
+// Per-emote still-frame timestamp (seconds) used for shop-card thumbnails -
+// see emoteThumbSrc()/buildEmoteThumbEl() below. Every clip opens on the
+// same generic "chef standing at the display case" establishing shot, which
+// looks identical across emotes and tells the chef nothing about what the
+// move actually does - so most entries here pick a later moment where the
+// clip's own hero action/prop is on screen. Emotes not listed default to
+// t=0 (chosen by checking their first frame is already representative,
+// e.g. chef-mouse/chef-mouse-hamster open right on Meelo/the hamster).
+const EMOTE_THUMB_SEEK = {
+  waving: 1.5,
+  inspection: 2.5,
+  'spin-wheel': 2.5,
+  eating: 2.5,
+  'lovey-talk': 2.5,
+  'show-off': 2.5,
+  'phase-through': 1.5,
+  'happy-feet': 1.5,
+  fireworks: 2.5,
+  'happy-birthday': 2.5,
+  'bang-bang': 1.5,
+  'spilt-wine': 1.5,
+  'say-grace': 1.5,
+  'whack-a-meelo': 1.5,
+  'lightsaber-battle': 2.5,
+  'meelo-omelette': 2.5,
+  'meelo-milo': 3.0,
+  'meelo-pizza': 2.5,
+  'rat-in-the-kitchen': 3.5,
+  ratatouille: 2.5,
+}
+
 // Admin-managed emote metadata: a single Type tag plus optional Title/
 // Description overrides per emote, loaded from Supabase (see
 // migration_emote_tags.sql). Empty until loadEmoteData() runs; the accessors
@@ -1224,6 +1266,44 @@ function isOwned(id) {
   if (id === 'waving') return wavingFreeForCurrentUser() || ownedEmotes().includes(id)
   return ownedEmotes().includes(id)
 }
+
+// Shop wishlist (preview feature, see FEATURES.wishlist). Same
+// guest-vs-signed-in split as ownedEmotes(): guests keep it in
+// state.wishlist, signed-in chefs in profiles.wishlist (guarded with `?? []`
+// so the app works before that column's migration is run). On sign-in the
+// real profile row always wins over any local guest list - no merge, MVP.
+function wishlist() {
+  return (currentProfile ? currentProfile.wishlist : state.wishlist) || []
+}
+function isWishlisted(id) { return wishlist().includes(id) }
+async function toggleWishlist(id) {
+  const cur = wishlist()
+  const next = cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]
+  if (currentUser && currentProfile) {
+    const { error } = await supabase.from('profiles').update({ wishlist: next }).eq('id', currentUser.id)
+    if (error) { toast(error.message); return }
+    currentProfile.wishlist = next
+  } else {
+    state.wishlist = next
+    save()
+  }
+  return next.includes(id)
+}
+// Silently drops `id` from the wishlist without a toast - used by buyEmote()
+// so a purchase auto-clears it (spec: no announcement, it's just tidy-up).
+async function removeFromWishlistSilently(id) {
+  const cur = wishlist()
+  if (!cur.includes(id)) return
+  const next = cur.filter(x => x !== id)
+  if (currentUser && currentProfile) {
+    const { error } = await supabase.from('profiles').update({ wishlist: next }).eq('id', currentUser.id)
+    if (!error) currentProfile.wishlist = next
+  } else {
+    state.wishlist = next
+    save()
+  }
+}
+
 function coinsEarned() { return Math.floor(Math.floor(displayPizzas()) / 12) }
 // coin_adjustment is the net of coins gifted away (-) and received (+), PLUS
 // the +1 the onboarding tour's free coin credits when it grants waving (see
@@ -1328,6 +1408,7 @@ async function buyEmote(id) {
     state.ownedEmotes = next
     save()
   }
+  if (featureOn('wishlist')) removeFromWishlistSilently(id)
 }
 
 async function equipEmote(id) {
@@ -1341,6 +1422,87 @@ async function equipEmote(id) {
     save()
   }
 }
+
+// =================================================================
+//  Emote Series (preview feature - see FEATURES.emoteSeries)
+// =================================================================
+// An ordered list of 1-5 OWNED emote ids the hero card cycles through.
+// Slot 1 IS the equipped emote - one concept, not two - so every write
+// here also writes the existing equipped-emote field to series[0], and old
+// clients / not-yet-migrated columns keep seeing the right main emote.
+// Raw stored value, no fallback - null/[] both mean "no series set".
+function rawEmoteSeries() {
+  return (currentProfile ? currentProfile.emote_series : state.emoteSeries) || []
+}
+
+// The series to actually use for cycling/rendering: the stored series if
+// one exists, else the single equipped emote (today's behaviour), else
+// empty (owns nothing yet).
+function mySeries() {
+  const raw = rawEmoteSeries()
+  if (raw.length) return raw
+  const eq = equippedEmote()
+  return eq ? [eq] : []
+}
+
+// Same fallback shape as mySeries(), generalized to any profile row (e.g. a
+// friend's) - mirrors effectiveEmoteFor()'s generalization of equippedEmote().
+function seriesFor(profileRow) {
+  const raw = profileRow?.emote_series
+  if (Array.isArray(raw) && raw.length) return raw
+  const eq = effectiveEmoteFor(profileRow)
+  return eq ? [eq] : []
+}
+
+// Persists a new series AND mirrors series[0] into the existing equipped-
+// emote field in the same write, so the invariant "equipped == series[0]"
+// never drifts and old clients/visitors still see the right main emote.
+async function setEmoteSeries(next) {
+  const equip = next[0] || null
+  if (currentUser && currentProfile) {
+    const { error } = await supabase.from('profiles').update({ emote_series: next, equipped_emote: equip }).eq('id', currentUser.id)
+    if (error) { toast(error.message); return false }
+    currentProfile.emote_series = next
+    currentProfile.equipped_emote = equip
+  } else {
+    state.emoteSeries = next
+    state.equippedEmote = equip
+    save()
+  }
+  return true
+}
+
+// Appends an owned emote to the first empty slot. Duplicates and the 5-slot
+// cap are both blocked. Returns the toast message to show - callers must
+// show it AFTER their own re-render (mountScreen() replaces app.innerHTML
+// wholesale, which would wipe a toast fired before the re-render - see
+// confirmBuy() for the same convention).
+async function addToSeries(id) {
+  if (!isOwned(id)) return null
+  const current = mySeries()
+  if (current.includes(id)) return '✓ In series'
+  if (current.length >= 5) return 'Series full (max 5)'
+  const ok = await setEmoteSeries([...current, id])
+  return ok ? 'Added to series' : null
+}
+
+// Removes a slot; later slots shift up (array filter does this for free).
+// Blocked below 1 remaining slot - a series can't go empty. Same
+// return-a-toast-message convention as addToSeries() above.
+async function removeFromSeries(id) {
+  const current = mySeries()
+  if (current.length <= 1) return 'Keep at least 1 emote'
+  await setEmoteSeries(current.filter(x => x !== id))
+  return null
+}
+
+// Hero-card tap-cycle position within the active emote series (preview
+// feature - see FEATURES.emoteSeries). Transient, module-level, and reset
+// to 0 whenever the Home or a friend's Pizzeria screen (re)mounts - see
+// renderHome()/renderFriendHome() - so leaving and returning always starts
+// back at slot 1 (which autoplay already plays on arrival). Index 0 means
+// "slot 1 was the last thing played"; each tap advances it before playing.
+let heroCycleIndex = 0
 
 // Preloaded emote clips so tapping starts playback instantly.
 const preloadedEmotes = {}
@@ -1430,6 +1592,27 @@ function autoplayEmoteWhenReady(imgEl, emoteId, revertSrc) {
   if (v.readyState >= 4) { start(); return }
   v.addEventListener('canplaythrough', start)
   timer = setTimeout(start, 2500)
+}
+
+// Shop-card static thumbnail: a real still frame from the emote's own clip
+// rather than a shared generic image, derived at runtime (no extra image
+// assets) via the browser's native "#t=<seconds>" media fragment - loading
+// with preload="metadata" decodes and displays just that one frame without
+// downloading or playing the whole clip. See EMOTE_THUMB_SEEK above for why
+// most emotes don't use the (often blank/generic) first frame.
+function emoteThumbSrc(id) {
+  const e = EMOTE_BY_ID[id]
+  const t = EMOTE_THUMB_SEEK[id] ?? 0
+  return `${BASE}assets/${e.clip}#t=${t}`
+}
+function buildEmoteThumbEl(id, className, elId) {
+  const v = document.createElement('video')
+  v.className = className || 'anim-still'
+  if (elId) v.id = elId
+  v.src = emoteThumbSrc(id)
+  v.muted = true; v.playsInline = true; v.preload = 'metadata'
+  v.setAttribute('aria-hidden', 'true')
+  return v
 }
 
 // Swap an <img> for the equipped/given emote clip, play it, then revert.
@@ -1843,6 +2026,7 @@ function toast(msg) {
 // =================================================================
 async function renderHome() {
   afterLogChange = renderHome
+  heroCycleIndex = 0
   const lifetime = displayPizzas()
   const stash = stashCount()
   const toNext = 12 - stash
@@ -1866,6 +2050,10 @@ async function renderHome() {
   // reads "Tap to emote", but tapping just toasts a nudge to the Shop
   // instead of navigating (no clip to play).
   const myEmote = equippedEmote()
+  // Series feature (preview): the hero card cycles through the whole series
+  // on tap. Flag off (or no series set) this is just [myEmote] - a single-
+  // item list taps back into itself, i.e. today's replay-on-tap behaviour.
+  const heroSeries = featureOn('emoteSeries') ? mySeries() : (myEmote ? [myEmote] : [])
   const heroTapHtml = `<button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>`
 
   const content = `
@@ -1907,15 +2095,20 @@ async function renderHome() {
     app.querySelector('[data-action="stash-info"]')?.addEventListener('click', openStashInfo)
     app.querySelector('[data-action="emote-info"]')?.addEventListener('click', (e) => { e.stopPropagation(); openEmoteInfo() })
 
-    // Tap the shopfront to play the equipped emote, then revert to the still.
-    // If the chef owns no emote yet, tapping just nudges toward the Shop via
-    // toast - no navigation, no clip to play.
+    // Tap the shopfront to play the next emote in the series, looping back
+    // to slot 1 after the last (see heroCycleIndex). A 1-item series (flag
+    // off, or on but only one emote) just replays itself - today's
+    // behaviour, unchanged. If the chef owns no emote yet, tapping just
+    // nudges toward the Shop via toast - no navigation, no clip to play.
     const attachEmoteTap = (btnHost) => {
       btnHost.addEventListener('click', () => {
-        if (!myEmote) { toast('Equip emotes in shop'); return }
+        if (!heroSeries.length) { toast('Equip emotes in shop'); return }
+        heroCycleIndex = (heroCycleIndex + 1) % heroSeries.length
+        const nextId = heroSeries[heroCycleIndex]
+        window.__emoteDebug.lastHeroTapId = nextId
         const img = app.querySelector('#hero-card .hero-still')
         if (img && img.tagName === 'IMG') {
-          playEmoteInto(img, myEmote, heroSrc)
+          playEmoteInto(img, nextId, heroSrc)
         }
       })
     }
@@ -2551,6 +2744,10 @@ function pizzaImagePath(count) {
 // recently-added emotes first (a natural default for a shop).
 let shopSort = 'newest'
 let shopType = 'all'   // 'all' or an emote_tags id
+// Wishlist filter toggle (preview feature, see FEATURES.wishlist). Not
+// persisted across navigation per spec - always starts off on a fresh
+// renderShop() call chain, e.g. after leaving and re-entering the Shop tab.
+let shopWishlistOnly = false
 
 // Admin emote-management filters (Admin Dashboard -> Emotes). Kept module-
 // level so a re-render (e.g. after tagging one) preserves the admin's search
@@ -2576,10 +2773,37 @@ function sortedShopEmotes() {
     list = [...EMOTES].reverse()
   }
   if (shopType !== 'all') list = list.filter(e => emoteTagId(e) === shopType)
+  if (featureOn('wishlist') && shopWishlistOnly) list = list.filter(e => isWishlisted(e.id))
   return list
 }
 
 function typeLabel() { return shopType === 'all' ? 'All' : (tagNameById(shopType) || 'All') }
+
+// "My Series" editor tray shown above the emote grid (preview only - see
+// featureOn('emoteSeries')). 5 slots, filled in add order (no drag), slot 1
+// tagged MAIN since it's also the equipped emote. Tapping a filled slot
+// removes it; empty slots are just dashed placeholders.
+function renderSeriesTray(series, thumb) {
+  const slots = Array.from({ length: 5 }, (_, i) => {
+    const id = series[i]
+    if (!id) return '<div class="series-slot empty" aria-hidden="true"></div>'
+    const e = EMOTE_BY_ID[id]
+    const label = e ? emoteName(e) : id
+    return `
+      <button type="button" class="series-slot filled" data-series-remove="${id}" aria-label="Remove ${escapeHtml(label)} from series">
+        <img src="${thumb}" alt="" />
+        <span class="series-slot-num">${i + 1}</span>
+        ${i === 0 ? '<span class="series-slot-main">MAIN</span>' : ''}
+      </button>
+    `
+  }).join('')
+  return `
+    <div class="series-tray">
+      <div class="series-tray-h">My Series</div>
+      <div class="series-slots">${slots}</div>
+    </div>
+  `
+}
 
 function openSortMenu() {
   const opts = [
@@ -2641,6 +2865,7 @@ async function renderShop(scrollTop) {
   await loadEmoteData()
 
   const thumb = `${BASE}assets/display-case/shop-preview.jpg`
+  const shopPreviewFixOn = featureOn('shopPreviewFix')
   const shopList = sortedShopEmotes()
   // Render-time override, never persisted: while the tour is active and
   // hasn't completed the waving purchase yet, Waving renders Locked/buyable
@@ -2649,24 +2874,42 @@ async function renderShop(scrollTop) {
   // instant tour.wavingPurchased flips true, this stops overriding and the
   // card reflects real ownership again (which, for an owner, was never
   // touched - see completeOnboardingPurchase()).
+  const seriesOn = featureOn('emoteSeries')
+  const currentSeries = seriesOn ? mySeries() : []
+
   const cards = shopList.length ? shopList.map(e => {
     const tourLocked = !!(tour && e.id === 'waving' && !tour.wavingPurchased)
     const owned = tourLocked ? false : isOwned(e.id)
     const equipped = tourLocked ? false : equippedEmote() === e.id
 
     let badge
-    if (equipped) badge = `<button class="badge badge-equip equipped" type="button" data-equip="${e.id}">✓ Equipped</button>`
+    if (seriesOn) {
+      const inSeries = owned && currentSeries.includes(e.id)
+      if (inSeries) badge = `<button class="badge badge-equip equipped" type="button" disabled>✓ In series</button>`
+      else if (owned) badge = `<button class="badge badge-equip" type="button" data-series-add="${e.id}">＋ Series</button>`
+      else badge = '<span class="badge">Locked</span>'
+    } else if (equipped) badge = `<button class="badge badge-equip equipped" type="button" data-equip="${e.id}">✓ Equipped</button>`
     else if (owned) badge = `<button class="badge badge-equip" type="button" data-equip="${e.id}">Equip</button>`
     else badge = '<span class="badge">Locked</span>'
     const lock = (!owned) ? '<div class="lock">🔒</div>' : ''
 
     const action = owned ? '' : `<button class="btn btn-buy" type="button" data-buy="${e.id}">${coinImg()}1</button>`
+    // Star only ever renders on an unowned card - see spec point 1 - and
+    // only while the preview flag is on for this user.
+    const wishlisted = !owned && featureOn('wishlist') && isWishlisted(e.id)
+    const star = (!owned && featureOn('wishlist'))
+      ? `<button class="wishlist-star ${wishlisted ? 'active' : ''}" type="button" data-wishlist="${e.id}" aria-label="${wishlisted ? 'Remove from wishlist' : 'Add to wishlist'}" aria-pressed="${wishlisted}">${wishlisted ? '★' : '☆'}</button>`
+      : ''
+
+    const still = shopPreviewFixOn
+      ? `<video class="anim-still" src="${emoteThumbSrc(e.id)}" muted playsinline preload="metadata" aria-hidden="true"></video>`
+      : `<img class="anim-still" src="${thumb}" alt="${escapeHtml(emoteName(e))}" />`
 
     return `
       <div class="anim-card">
         <div class="anim-top" data-emote="${e.id}">
-          <img class="anim-still" src="${thumb}" alt="${escapeHtml(emoteName(e))}" />
-          ${badge}${lock}
+          ${still}
+          ${badge}${lock}${star}
         </div>
         <div class="anim-body">
           <div class="anim-info"><div class="nm">${escapeHtml(emoteName(e))}</div><div class="ds">${escapeHtml(emoteDesc(e))}</div></div>
@@ -2677,7 +2920,15 @@ async function renderShop(scrollTop) {
         </div>
       </div>
     `
-  }).join('') : '<p class="shop-empty">No emotes to show here yet.</p>'
+  }).join('') : (
+    (featureOn('wishlist') && shopWishlistOnly)
+      ? '<p class="shop-empty">No wishlisted emotes yet — tap the ☆ on any emote to save it here.</p>'
+      : '<p class="shop-empty">No emotes to show here yet.</p>'
+  )
+
+  const wishlistToggle = featureOn('wishlist')
+    ? `<button class="sort-btn wishlist-toggle ${shopWishlistOnly ? 'active' : ''}" type="button" data-action="wishlist-filter" aria-pressed="${shopWishlistOnly}">${shopWishlistOnly ? '★' : '☆'} Wishlist</button>`
+    : ''
 
   const content = `
     <div class="shop-banner" role="button" tabindex="0" data-action="shop-coin-info">
@@ -2688,7 +2939,9 @@ async function renderShop(scrollTop) {
         <div class="s">Unlock new moves for your chef.</div>
       </div>
     </div>
+    ${seriesOn ? renderSeriesTray(currentSeries, thumb) : ''}
     <div class="shop-sort-row">
+      ${wishlistToggle}
       <button class="sort-btn" type="button" data-action="sort">Sort by: <b>${SORT_LABELS[shopSort]}</b> <span class="chev">▼</span></button>
       <button class="sort-btn" type="button" data-action="type">Type: <b>${escapeHtml(typeLabel())}</b> <span class="chev">▼</span></button>
     </div>
@@ -2702,15 +2955,55 @@ async function renderShop(scrollTop) {
     app.querySelector('[data-action="shop-coin-info"]')?.addEventListener('click', openCoinInfo)
     app.querySelector('[data-action="sort"]')?.addEventListener('click', openSortMenu)
     app.querySelector('[data-action="type"]')?.addEventListener('click', openTypeMenu)
+    app.querySelector('[data-action="wishlist-filter"]')?.addEventListener('click', () => {
+      const y = app.querySelector('.scroll')?.scrollTop
+      shopWishlistOnly = !shopWishlistOnly
+      renderShop(y)
+    })
+
+    app.querySelectorAll('[data-wishlist]').forEach(btn => {
+      // stopPropagation: the star sits inside .anim-top, which also carries
+      // the preview-tap wiring further down - without this a star tap would
+      // also start playing the clip underneath it.
+      btn.addEventListener('click', async (ev) => {
+        ev.stopPropagation()
+        const id = btn.dataset.wishlist
+        const nowOn = await toggleWishlist(id)
+        toast(nowOn ? 'Added to wishlist' : 'Removed from wishlist')
+        btn.classList.toggle('active', nowOn)
+        btn.textContent = nowOn ? '★' : '☆'
+        btn.setAttribute('aria-pressed', String(nowOn))
+        btn.setAttribute('aria-label', nowOn ? 'Remove from wishlist' : 'Add to wishlist')
+        // Only re-render the whole grid if the wishlist filter is active -
+        // toggling a star elsewhere shouldn't yank the card out from under
+        // the chef's thumb mid-tap; the filtered view needs the full
+        // re-render since the card must disappear.
+        if (shopWishlistOnly) { const y = app.querySelector('.scroll')?.scrollTop; renderShop(y) }
+      })
+    })
 
     app.querySelectorAll('[data-preview]').forEach(btn => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.preview
         const top = btn.closest('.anim-card').querySelector('.anim-top')
-        const img = top.querySelector('.anim-still')
-        if (img && img.tagName === 'IMG') {
+        const stillEl = top.querySelector('.anim-still')
+        if (stillEl) {
+          const className = stillEl.className, elId = stillEl.id
           top.classList.remove('previewing'); void top.offsetWidth; top.classList.add('previewing')
-          playEmoteInto(img, id, thumb)
+          if (shopPreviewFixOn) top.classList.add('previewing-nogrey')
+          // 'previewing-nogrey' hides the lock/dim overlay (see
+          // .anim-top.previewing-nogrey .lock in style.css) for the duration
+          // of the clip, gated behind featureOn('shopPreviewFix') - restore
+          // it the instant the clip ends, whether naturally or because
+          // another preview (or a screen change) interrupted it first.
+          // playEmoteInto() always reverts to a plain <img>(revertSrc)
+          // internally - when the fix is on, swap that back out for the real
+          // per-emote thumbnail video (see buildEmoteThumbEl) instead of
+          // leaving the generic placeholder showing.
+          playEmoteInto(stillEl, id, thumb, (img) => {
+            top.classList.remove('previewing', 'previewing-nogrey')
+            if (shopPreviewFixOn) img.replaceWith(buildEmoteThumbEl(id, className, elId))
+          })
           toast(`▶ Previewing ${emoteName(EMOTE_BY_ID[id])}…`)
         }
       })
@@ -2727,6 +3020,25 @@ async function renderShop(scrollTop) {
         const y = app.querySelector('.scroll')?.scrollTop
         await equipEmote(btn.dataset.equip)
         renderShop(y)
+      })
+    })
+    app.querySelectorAll('[data-series-add]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const y = app.querySelector('.scroll')?.scrollTop
+        const msg = await addToSeries(btn.dataset.seriesAdd)
+        // Await the re-render (mountScreen() replaces app.innerHTML
+        // wholesale) BEFORE toasting, or the toast node gets wiped out
+        // by the mount that lands right after it - see setEmoteSeries().
+        await renderShop(y)
+        if (msg) toast(msg)
+      })
+    })
+    app.querySelectorAll('[data-series-remove]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const y = app.querySelector('.scroll')?.scrollTop
+        const msg = await removeFromSeries(btn.dataset.seriesRemove)
+        await renderShop(y)
+        if (msg) toast(msg)
       })
     })
   })
@@ -2747,7 +3059,17 @@ function confirmBuy(id) {
   o.querySelector('[data-action="yes"]').addEventListener('click', async () => {
     o.remove()
     await buyEmote(id)
-    equipEmote(id)
+    // No automatic "add to series" on purchase (per spec: purchase never
+    // touches the series) - but a chef's very first-ever emote still needs
+    // to become the equipped/main one, same as today, so seed a 1-slot
+    // series for them. Anyone who already has a series (or a plain
+    // equipped emote pre-series) keeps it untouched; they add the new
+    // purchase to their series explicitly via the "+ Series" control.
+    if (featureOn('emoteSeries')) {
+      if (!rawEmoteSeries().length) await setEmoteSeries([id])
+    } else {
+      equipEmote(id)
+    }
     shopSort = 'owned'
     renderShop()
     toast(`Unlocked! ${coinImg('toast-coin')} −1`)
@@ -3224,7 +3546,7 @@ async function loadFriendsList() {
 // unfiltered pre-migration query - which only ever contained accepted rows
 // anyway - so the board still loads if that migration hasn't been run yet.
 async function fetchAcceptedFriends() {
-  const sel = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote, owned_emotes, waving_free, baking_since)'
+  const sel = 'friend_id, profiles:friend_id(id, display_name, pizzas, avatar_url, friend_code, equipped_emote, owned_emotes, waving_free, baking_since, emote_series)'
   let { data, error } = await supabase.from('friends').select(sel).eq('status', 'accepted')
   // Fall back twice: once without the status filter (pre-friend-requests DB),
   // then without baking_since (pre-migration_baking_now DB), so the board
@@ -4306,6 +4628,7 @@ function openNootCooldownInfo(name) {
 }
 
 function renderFriendHome(friend) {
+  heroCycleIndex = 0
   const stash = Math.floor(friend.pizzas) % 12
   const toNext = 12 - stash
   const pct = Math.round((stash / 12) * 100)
@@ -4314,6 +4637,9 @@ function renderFriendHome(friend) {
   // never assume the raw equipped_emote DB field is playable, since a new
   // signup who hasn't bought anything yet still has it defaulted to 'waving'.
   const friendEmote = effectiveEmoteFor(friend)
+  // Series feature (preview): cycle through the visited chef's own series.
+  // Flag off (or no series set) this is just [friendEmote], same as today.
+  const friendSeries = featureOn('emoteSeries') ? seriesFor(friend) : (friendEmote ? [friendEmote] : [])
 
   const content = `
     <div class="viewing-banner" id="viewing-banner" role="button" tabindex="0" aria-label="Back to Chefs">
@@ -4354,9 +4680,12 @@ function renderFriendHome(friend) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); renderFriends() }
     })
     app.querySelector('#hero-card')?.addEventListener('click', () => {
-      if (!friendEmote) return
+      if (!friendSeries.length) return
+      heroCycleIndex = (heroCycleIndex + 1) % friendSeries.length
+      const nextId = friendSeries[heroCycleIndex]
+      window.__emoteDebug.lastHeroTapId = nextId
       const img = app.querySelector('#hero-card .hero-still')
-      if (img && img.tagName === 'IMG') playEmoteInto(img, friendEmote, heroSrc)
+      if (img && img.tagName === 'IMG') playEmoteInto(img, nextId, heroSrc)
     })
     // Same welcome on a friend's Pizzeria: preload, then play once. Skip
     // entirely if the friend owns no emote - nothing to preload or play.

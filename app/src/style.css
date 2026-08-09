@@ -358,7 +358,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .shop-banner-info { position: absolute; top:0.75rem; right:0.75rem; }
 
 /* sort + type control row under the shop banner */
-.shop-sort-row { display: flex; justify-content: flex-end; gap:0.5rem; margin-top:1.25rem; }
+.shop-sort-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap:0.5rem; margin-top:1.25rem; }
 .sort-btn {
   display: inline-flex; align-items: center; gap:0.375rem; cursor: pointer;
   background: var(--card); border: 1px solid var(--line); border-radius:0.75rem;
@@ -377,6 +377,31 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 }
 .popup .sort-option.active { border-color: rgba(251,122,46,0.5); background: linear-gradient(160deg, rgba(251,122,46,0.14), var(--card-2)); color: var(--fire); }
 .shop-empty { text-align: center; color: var(--muted); font-size:0.875rem; padding:2rem 1rem; }
+
+/* "My Series" editor tray (preview feature - FEATURES.emoteSeries) */
+.series-tray {
+  background: var(--card); border: 1px solid var(--line); border-radius:1.125rem;
+  padding:0.9375rem; margin-top:1.25rem;
+}
+.series-tray-h { font-family: var(--font-display); font-weight: 800; font-size:0.875rem; color: var(--cream); margin-bottom:0.75rem; }
+.series-slots { display: grid; grid-template-columns: repeat(5, 1fr); gap:0.5rem; }
+.series-slot {
+  position: relative; aspect-ratio: 1/1; border-radius:0.75rem; overflow: hidden;
+  padding: 0; cursor: pointer; isolation: isolate;
+}
+.series-slot.empty { border: 1.5px dashed var(--line); background: transparent; cursor: default; }
+.series-slot.filled { border: 1px solid var(--line); background: var(--card-2); }
+.series-slot.filled img { width:100%; height:100%; object-fit: cover; display: block; }
+.series-slot.filled:active { transform: scale(0.94); }
+.series-slot-num {
+  position: absolute; bottom:0.25rem; right:0.3125rem; font-size:0.625rem; font-weight: 800;
+  color: var(--scrim-text); text-shadow: 0 1px 2px rgba(0,0,0,0.7);
+}
+.series-slot-main {
+  position: absolute; top:0.25rem; left:0.25rem; font-size:0.5rem; font-weight: 800; letter-spacing: 0.05em;
+  padding:0.125rem 0.3125rem; border-radius:62.4375rem; background: rgba(251,122,46,0.9); color:#2a1608;
+}
+.badge-equip[disabled] { cursor: default; }
 
 .anim-card {
   background: var(--card); border: 1px solid var(--line); border-radius:1.125rem; overflow: hidden; margin-top:0.75rem;
@@ -403,6 +428,25 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
 .badge-equip:active { transform: scale(0.95); }
 .badge-equip.equipped { background: rgba(86,192,138,0.85); color: #0d2c1c; border-color: rgba(86,192,138,0.6); }
 .anim-top .lock { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(10,6,4,0.55); font-size:1.875rem; }
+/* While a preview clip is actively playing, drop the greyed/locked look so
+   the clip is clearly visible - restored the instant the clip ends (or
+   another preview takes over). Gated behind featureOn('shopPreviewFix') -
+   see the `[data-preview]` handler in renderShop(), which only ever adds
+   'previewing-nogrey' (as opposed to the pre-existing, ungated 'previewing'
+   glow class) when the flag is on for the signed-in chef. */
+.anim-top.previewing-nogrey .lock { display: none; }
+/* Shop wishlist star (preview feature) - top-right corner of unowned cards,
+   mirrors .anim-top .badge's flat/opaque pill treatment (no backdrop-filter,
+   see that rule's comment) so it reads consistently during momentum scroll. */
+.wishlist-star {
+  position: absolute; top:0.5rem; right:0.5rem; z-index: 1;
+  width:2rem; height:2rem; border-radius:50%; border: 1px solid rgba(247,237,223,0.15);
+  background: rgba(20,12,8,0.85); color: var(--scrim-text); font-size:1.0625rem; line-height: 1;
+  display: grid; place-items: center; cursor: pointer; padding: 0;
+}
+.wishlist-star:active { transform: scale(0.9); }
+.wishlist-star.active { background: rgba(255,216,115,0.92); color: #4d360a; border-color: rgba(255,216,115,0.6); }
+.wishlist-toggle.active { color: var(--fire); border-color: rgba(251,122,46,0.5); background: linear-gradient(160deg, rgba(251,122,46,0.14), var(--card)); }
 .anim-body { padding:0.8125rem 0.875rem; display: flex; align-items: center; gap:0.625rem; }
 .anim-info { flex: 1; min-width: 0; }
 .anim-body .nm { font-family: var(--font-display); font-weight: 800; font-size:0.9375rem; color: var(--cream); }
