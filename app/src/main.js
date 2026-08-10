@@ -30,7 +30,7 @@ let sanctifyReturnCode = null
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.6.2'
+const APP_VERSION = 'v2.5.6.3'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -11058,7 +11058,21 @@ function buildOnboardingSteps() {
     {
       id: 'see-all',
       kind: 'action',
-      ready: () => !!document.querySelector('.cal-seeall-btn[data-action="see-all-sessions"]'),
+      // "See All Sessions" only exists on HOME. Device-reported: after ending
+      // the practice session and dismissing the results, a guest could end up
+      // back on the cook/duration screen - and this step then waited forever
+      // for a button that screen will never contain, showing no card at all.
+      // It was the only screen-dependent step with no recovery kick (compare
+      // buy-waving's renderShop and tap-emote-demo's renderHome), so the tour
+      // had no way back. Kick Home, throttled, exactly like those two.
+      ready: () => {
+        if (document.querySelector('.cal-seeall-btn[data-action="see-all-sessions"]')) return true
+        if (Date.now() - homeLastKickAt > 1200) { homeLastKickAt = Date.now(); renderHome() }
+        return false
+      },
+      // probe stays PURE (no kick) - the self-heal scan calls it speculatively
+      // on steps the tour is not on, and a rendering side effect there would
+      // yank the chef between screens.
       probe: () => !!document.querySelector('.cal-seeall-btn[data-action="see-all-sessions"]'),
       getTarget: () => document.querySelector('.cal-seeall-btn[data-action="see-all-sessions"]'),
       text: `Tap <b>See All Sessions</b> to view your history.`,

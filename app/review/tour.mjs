@@ -96,6 +96,7 @@ async function main() {
 
     const log = []
     let step = 0
+  let detoured = false
     const maxSteps = 40
     let lastCardText = null
     let stalledCount = 0
@@ -322,6 +323,30 @@ async function main() {
           return true
         })
         if (hitDelete) { step += 1; await page.waitForTimeout(600); continue }
+      }
+
+      // DETOUR=see-all: reproduces a device-reported dead end. A guest ended
+      // the practice session and the tour went blank while the app sat on the
+      // cook/duration screen - see-all's target ("See All Sessions") exists
+      // only on Home and the step had no recovery kick. Navigate away ONCE at
+      // that step and let the run continue: if the tour can't get itself back,
+      // the run strands here exactly as it did on the device.
+      if (process.env.DETOUR === 'see-all' && !detoured) {
+        const onSeeAll = await page.evaluate(() =>
+          /See All Sessions/i.test(document.querySelector('#tour-card')?.textContent || ''))
+        if (onSeeAll) {
+          detoured = true
+          console.log('  [detour] navigating OFF Home mid-step')
+          // Any registered NON-Home screen reproduces the condition (the
+          // device case was the cook/duration screen; the harness doesn't
+          // register that renderer, and what matters is simply "not Home").
+          await page.evaluate(() => window.__review('renderShop'))
+          await page.waitForTimeout(3000)   // must self-recover within this
+          const recovered = await page.evaluate(() =>
+            !!document.querySelector('.cal-seeall-btn[data-action="see-all-sessions"]'))
+          console.log(`  [detour] recovered to Home: ${recovered}`)
+          if (!recovered) { log.push({ step, note: 'DETOUR FAILED - tour did not recover' }); break }
+        }
       }
 
       // Click the real spotlighted target, exactly the way a chef would tap
