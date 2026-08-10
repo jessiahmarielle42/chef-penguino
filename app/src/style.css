@@ -411,7 +411,7 @@ button.chip { font-family: inherit; appearance: none; cursor: pointer; }
   position: absolute; top:0.25rem; left:0.25rem; font-size:0.5rem; font-weight: 800; letter-spacing: 0.05em;
   padding:0.125rem 0.3125rem; border-radius:62.4375rem; background: rgba(251,122,46,0.9); color:#2a1608;
 }
-.badge-equip[disabled] { cursor: default; }
+.badge-equip[disabled], .badge-equip[aria-disabled="true"] { cursor: default; }
 
 .anim-card {
   background: var(--card); border: 1px solid var(--line); border-radius:1.125rem; overflow: hidden; margin-top:0.75rem;

@@ -74,12 +74,16 @@ async function main() {
   await page.evaluate(() => window.__reviewSetFixtures({ preset: 'owner-many-sessions' }))
   await page.evaluate(() => window.__review('renderShop'))
   await page.waitForSelector('.anim-card')
+  // RELEASED (FEATURES.emoteSeries === 'all'): the series UI now renders for
+  // an ordinary account too, so these assert the released shape. Their
+  // flipping at release time is the evidence the gate was doing the gating.
+  // The equipped badge is now "✓ In series" - matched via data-emote-badge,
+  // the mode-agnostic hook, NOT data-equip: keying the onboarding tour off
+  // data-equip is exactly what stranded it once this feature shipped.
   let hasTray = await page.$('.series-tray')
-  assert(!hasTray, 'no .series-tray in DOM when flag is off')
-  let hasSeriesAdd = await page.$('[data-series-add]')
-  assert(!hasSeriesAdd, 'no [data-series-add] buttons when flag is off')
-  let equipBtn = await page.$('[data-equip="waving"].equipped')
-  assert(!!equipBtn, 'plain "✓ Equipped" badge still renders for owned/equipped emote when flag is off')
+  assert(!!hasTray, '.series-tray renders post-release')
+  let equipBtn = await page.$('[data-emote-badge="waving"].equipped')
+  assert(!!equipBtn, 'equipped badge for waving is findable via data-emote-badge (tour depends on this)')
   await page.screenshot({ path: path.join(shotsDir, `series-${engine}-a-flag-off.png`) })
 
   // ---------------------------------------------------------------

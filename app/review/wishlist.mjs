@@ -72,7 +72,7 @@ async function runEngine(engineName) {
   await page.waitForFunction(() => typeof window.__review === 'function', { timeout: 15000 })
 
   // ---- (a) flag off / non-preview user -> zero wishlist DOM ----
-  console.log('(a) non-preview user: flag off')
+  console.log('(a) non-preview user: released, sees wishlist')
   await page.evaluate(() => window.__reviewSetFixtures({
     preset: 'fresh-signup',
     user: { email: 'not-preview@example.com' },
@@ -83,8 +83,13 @@ async function runEngine(engineName) {
     stars: document.querySelectorAll('.wishlist-star').length,
     toggle: document.querySelectorAll('.wishlist-toggle').length,
   }))
-  assert(noWishlistDom.stars === 0, `no .wishlist-star for non-preview user (found ${noWishlistDom.stars})`)
-  assert(noWishlistDom.toggle === 0, `no .wishlist-toggle for non-preview user (found ${noWishlistDom.toggle})`)
+  // RELEASED (FEATURES.wishlist === 'all'): an ordinary, non-preview account
+  // now gets the wishlist too. Before the release flip these asserted the
+  // opposite (zero wishlist DOM); rewritten at flip time, and their flipping
+  // is itself the evidence the gate was what gated it. Revert if it ever
+  // goes back to 'preview'.
+  assert(noWishlistDom.stars > 0, `non-preview user sees wishlist stars post-release (found ${noWishlistDom.stars})`)
+  assert(noWishlistDom.toggle > 0, `non-preview user sees the wishlist filter post-release (found ${noWishlistDom.toggle})`)
   await shot('a-flag-off')
 
   // ---- (b)-(e) preview user ----

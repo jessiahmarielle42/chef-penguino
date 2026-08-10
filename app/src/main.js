@@ -30,7 +30,7 @@ let sanctifyReturnCode = null
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.6.1'
+const APP_VERSION = 'v2.5.6.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -2144,7 +2144,18 @@ async function renderHome() {
   // on tap. Flag off (or no series set) this is just [myEmote] - a single-
   // item list taps back into itself, i.e. today's replay-on-tap behaviour.
   const heroSeries = featureOn('emoteSeries') ? mySeries() : (myEmote ? [myEmote] : [])
-  const heroTapHtml = `<button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>`
+  // Only offered when the chef actually HAS a move to play. It used to render
+  // unconditionally, which was wrong twice over: it told a chef who owns
+  // nothing to "Tap to emote" (tapping only toasted a nudge to the Shop), and
+  // it made the onboarding tour's tap-emote-demo probe - which looks for
+  // exactly this button - match on ANY mounted Home. The tour's forward
+  // self-heal scan looks up to 3 steps ahead, so from buy-waving that probe
+  // yanked the tour straight to the emote demo, skipping the purchase
+  // entirely and leaving a guest staring at "tap to emote" with no emote.
+  // Matches how a friend's Pizzeria has always guarded this button.
+  const heroTapHtml = heroSeries.length
+    ? `<button class="hero-tap" type="button" data-action="emote">💃 Tap to emote</button>`
+    : ''
 
   const content = `
     <div class="hero-card" id="hero-card" role="button" tabindex="0">
@@ -2967,14 +2978,27 @@ async function renderShop(scrollTop) {
     const owned = tourLocked ? false : isOwned(e.id)
     const equipped = tourLocked ? false : equippedEmote() === e.id
 
+    // data-emote-badge is a STABLE hook that identifies which emote a badge
+    // belongs to in BOTH markup modes. The onboarding tour's equipped-shown
+    // step used to query [data-equip="waving"].equipped - but the series
+    // feature replaced that badge with "✓ In series"/"＋ Series", which carry
+    // data-series-add or nothing at all. So once the series flag went to
+    // 'all', that selector could never match and the tour stranded silently
+    // the moment the chef bought Waving. Anything keying off "which emote is
+    // this badge for" must use this attribute, never the mode-specific ones.
     let badge
     if (seriesOn) {
       const inSeries = owned && currentSeries.includes(e.id)
-      if (inSeries) badge = `<button class="badge badge-equip equipped" type="button" disabled>✓ In series</button>`
-      else if (owned) badge = `<button class="badge badge-equip" type="button" data-series-add="${e.id}">＋ Series</button>`
-      else badge = '<span class="badge">Locked</span>'
-    } else if (equipped) badge = `<button class="badge badge-equip equipped" type="button" data-equip="${e.id}">✓ Equipped</button>`
-    else if (owned) badge = `<button class="badge badge-equip" type="button" data-equip="${e.id}">Equip</button>`
+      // aria-disabled, NOT the `disabled` attribute: a disabled button fires no
+      // click event at all, and the onboarding tour rings this very badge while
+      // telling the chef to "tap anywhere to dismiss" - tapping the highlighted
+      // element did nothing and the tour stalled. aria-disabled keeps it
+      // non-actionable and announced correctly while letting the tap bubble.
+      if (inSeries) badge = `<button class="badge badge-equip equipped" type="button" data-emote-badge="${e.id}" aria-disabled="true">✓ In series</button>`
+      else if (owned) badge = `<button class="badge badge-equip" type="button" data-emote-badge="${e.id}" data-series-add="${e.id}">＋ Series</button>`
+      else badge = `<span class="badge" data-emote-badge="${e.id}">Locked</span>`
+    } else if (equipped) badge = `<button class="badge badge-equip equipped" type="button" data-emote-badge="${e.id}" data-equip="${e.id}">✓ Equipped</button>`
+    else if (owned) badge = `<button class="badge badge-equip" type="button" data-emote-badge="${e.id}" data-equip="${e.id}">Equip</button>`
     else badge = '<span class="badge">Locked</span>'
     const lock = (!owned) ? '<div class="lock">🔒</div>' : ''
 
@@ -11283,8 +11307,12 @@ function buildOnboardingSteps() {
     {
       id: 'equipped-shown',
       kind: 'explain',
-      ready: () => !!document.querySelector('[data-equip="waving"].equipped'),
-      getTarget: () => document.querySelector('[data-equip="waving"].equipped'),
+      // Mode-agnostic: matches "✓ Equipped" (series off) AND "✓ In series"
+      // (series on). Keying off data-equip alone stranded the tour here for
+      // every chef once the series feature shipped - see the data-emote-badge
+      // note in renderShop().
+      ready: () => !!document.querySelector('[data-emote-badge="waving"].equipped'),
+      getTarget: () => document.querySelector('[data-emote-badge="waving"].equipped'),
       text: `Nice - <b>Waving</b> is now equipped, so it's the move your chef performs.`,
       hintText: 'Tap anywhere to dismiss',
     },
@@ -11311,6 +11339,12 @@ function buildOnboardingSteps() {
       ready: () => {
         const btn = document.querySelector('.hero-tap[data-action="emote"]')
         if (btn) return true
+        // Nothing to demo: the chef owns no emote, so the button will never
+        // appear and the renderHome kick below would retry forever - a hard
+        // freeze with no instruction on screen. Skip straight to the next
+        // step instead. Reachable if the purchase was somehow missed; the
+        // tour should degrade to "carry on", never to "stuck".
+        if (!equippedEmote()) { tourAdvance(); return false }
         if (Date.now() - homeLastKickAt > 1200) { homeLastKickAt = Date.now(); renderHome() }
         return false
       },
