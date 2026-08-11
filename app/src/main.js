@@ -403,8 +403,11 @@ const DURATIONS = [
 // overridden per-user (profiles.task_type_labels JSONB for signed-in users,
 // state.taskTypeLabels for guests). See migration_task_types.sql.
 const TASK_TYPES = [
-  { key: 'deep',     emoji: '🍅', title: 'Deep Work',        desc: 'Impt projects, studying, etc.' },
-  { key: 'shallow',  emoji: '🥦', title: 'Admin',             desc: 'Emails, errands, etc.' },
+  // desc intentionally blank for ALL types: two rows carrying a subtitle
+  // while three didn't made the picker uneven and read as unfinished. Chefs
+  // can still add their own via Settings > Task types.
+  { key: 'deep',     emoji: '🍅', title: 'Deep Work',        desc: '' },
+  { key: 'shallow',  emoji: '🥦', title: 'Admin',             desc: '' },
   { key: 'chores',   emoji: '🍄‍🟫', title: 'Chores',           desc: '' },
   { key: 'exercise', emoji: '🧀', title: 'Exercise',         desc: '' },
   { key: 'planning', emoji: '🥖', title: 'Other',            desc: '', fixed: true },

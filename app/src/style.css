@@ -1543,6 +1543,12 @@ img.avatar-circle {
 .home-btn-col .start-btn {
   width: 100%;
 }
+/* Matches .tt-type-row's min-height - see the note there. Scoped to the type
+   picker (the button is a sibling of .tt-type-list inside .picker-content),
+   so .start-btn everywhere else keeps its own sizing. */
+.tt-type-list ~ .start-btn {
+  min-height: var(--tt-row-h, 3.5rem); box-sizing: border-box;
+}
 
 .back-arrow-fixed {
   position: absolute;
@@ -2687,10 +2693,15 @@ img.shop-image {
    .start-btn below so the type-row list and the Start cooking button read
    as one aligned column instead of two different auto-sized widths. */
 .tt-type-list { display: flex; flex-direction: column; gap:0.625rem; width: min(100%, 21rem); margin:0 auto 1.25rem; }
+/* One shared height for every row AND the Start cooking button below them,
+   so the whole picker reads as one consistent stack. min-height (not a fixed
+   height) so a chef's custom two-line description still expands its row
+   instead of clipping. */
 .tt-type-row {
   display: flex; align-items: center; gap:0.75rem; cursor: pointer;
   background: var(--card); border: 1px solid var(--line); border-radius:1rem;
   padding:0.8125rem 0.9375rem;
+  min-height: var(--tt-row-h, 3.5rem); box-sizing: border-box;
 }
 .tt-type-row.selected {
   border-color: rgba(251,122,46,0.55);
