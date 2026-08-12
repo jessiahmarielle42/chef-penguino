@@ -30,7 +30,7 @@ let sanctifyReturnCode = null
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.6.4'
+const APP_VERSION = 'v2.5.7.0'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -121,7 +121,9 @@ function wireSignInButtons(root) {
   root.querySelector('[data-action="apple"]')?.addEventListener('click', signInWithApple)
 }
 
+let authSignOutIsUserInitiated = false
 async function signOut() {
+  authSignOutIsUserInitiated = true
   unsubscribeFromSocial()
   await supabase.auth.signOut()
   currentUser = null
@@ -506,8 +508,35 @@ function load() {
   return defaults
 }
 
+// Cap on locally-retained log entries, applied ONLY as quota relief and ONLY
+// for signed-in chefs (whose history lives in Supabase and is re-fetched).
+// A guest's log is their only copy, so it is never trimmed - for them a full
+// disk means we surface the failure instead of destroying their history.
+const LOCAL_LOG_CAP = 300
 function save() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    return
+  } catch (err) {
+    // QuotaExceededError. This used to throw straight through, which is worse
+    // than it sounds: iOS answers sustained localStorage pressure on an origin
+    // by evicting that origin's storage WHOLESALE - and that takes Supabase's
+    // auth token with it, silently signing the chef out of Google. Chefs
+    // noticed it "after every update" because a deploy forces the reload that
+    // makes an already-lost session visible. Shedding our own bulk (old log
+    // rows the cloud already has) keeps us under the cap so the eviction that
+    // kills the session never gets triggered.
+    try {
+      if (isSignedIn() && Array.isArray(state.log) && state.log.length > LOCAL_LOG_CAP) {
+        state.log = state.log.slice(0, LOCAL_LOG_CAP)
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+        return
+      }
+    } catch {}
+    // Never let a failed local write throw into a caller - a save() that blows
+    // up mid-flow used to take the rest of that function with it.
+    try { localStorage.setItem('cp-save-failed-at', String(Date.now())) } catch {}
+  }
 }
 
 // The status bar area behind an installed web app is painted with theme-color,
@@ -983,7 +1012,31 @@ async function finalizeSession(playAlarm) {
 }
 
 // ---------- boot ----------
+// Records WHY a chef stopped being signed in, so a future "I got signed out"
+// report arrives with evidence instead of guesswork. One small localStorage
+// key; surfaced in Settings > Version for preview accounts only.
+const AUTH_DIAG_KEY = 'cp-auth-diag'
+function authDiag(patch) {
+  try {
+    const prev = JSON.parse(localStorage.getItem(AUTH_DIAG_KEY) || '{}')
+    localStorage.setItem(AUTH_DIAG_KEY, JSON.stringify({ ...prev, ...patch }))
+  } catch {}
+}
+function readAuthDiag() {
+  try { return JSON.parse(localStorage.getItem(AUTH_DIAG_KEY) || '{}') } catch { return {} }
+}
+
 async function boot() {
+  // Was a persisted Supabase token present at startup? If this is false on a
+  // launch where the chef expected to be signed in, the token vanished from
+  // storage (eviction/quota) rather than being rejected by the server - two
+  // very different bugs that look identical from the outside.
+  let tokenAtBoot = false
+  try {
+    tokenAtBoot = Object.keys(localStorage).some(k => /^sb-.*-auth-token$/.test(k))
+  } catch {}
+  authDiag({ tokenAtBoot, bootAt: new Date().toISOString(), saveFailedAt: localStorage.getItem('cp-save-failed-at') || null })
+
   const { data } = await supabase.auth.getSession()
   if (data.session?.user) {
     await handleSignedIn(data.session.user)
@@ -1001,6 +1054,11 @@ async function boot() {
         ensureBugFab()
       })
     } else if (event === 'SIGNED_OUT') {
+      // userInitiated is set by signOut()/delete-account right before they call
+      // supabase. Anything else landing here is an INVOLUNTARY sign-out (a
+      // refresh that couldn't be honoured) - the case actually worth catching.
+      authDiag({ lastSignOutAt: new Date().toISOString(), userInitiated: !!authSignOutIsUserInitiated })
+      authSignOutIsUserInitiated = false
       unsubscribeFromSocial()
       currentUser = null
       currentProfile = null
@@ -4555,6 +4613,7 @@ function confirmDeleteAccountFinal() {
     // after a confirmed delete and before the sign-out.
     o.remove()
     await playDeleteClipFor('delete-account')
+    authSignOutIsUserInitiated = true
     await supabase.auth.signOut()
     currentUser = null
     currentProfile = null
@@ -5551,7 +5610,12 @@ function renderSettings(highlightProfile, highlightHomescreen) {
           <div><div class="gt">Legal and Disclaimers</div><div class="gs">We do not own the copyright</div></div>
           <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
         </div>
-        <div class="grow" id="version-row"><div><div class="gt">Version</div><div class="gs">${APP_VERSION}</div></div></div>
+        <div class="grow" id="version-row"><div><div class="gt">Version</div><div class="gs">${APP_VERSION}${(() => {
+          if (!PREVIEW_EMAILS.includes(currentUser?.email)) return ''
+          const d = readAuthDiag()
+          if (!d.bootAt) return ''
+          return ` · token@boot=${d.tokenAtBoot} lastSignOut=${d.lastSignOutAt ? (d.userInitiated ? 'byUser' : 'INVOLUNTARY') : 'none'}${d.saveFailedAt ? ' saveFailed' : ''}`
+        })()}</div></div></div>
         ${isAdmin() ? `
         <div class="grow" role="button" tabindex="0" data-action="admin-dashboard">
           <div><div class="gt">Admin Dashboard</div></div>
