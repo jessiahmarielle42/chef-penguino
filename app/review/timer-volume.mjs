@@ -107,7 +107,15 @@ async function run(browserType, name) {
   // the slider already sets an initial volume from the button's own y, so
   // establish a known mid-range baseline first, then verify each direction
   // moves the NUMBER the expected way from that baseline. ----
-  await page.mouse.move(b.cx, b.cy + 40, { steps: 4 }) // baseline: partway down the track
+  // Aim at the track's own MIDPOINT rather than a fixed pixel offset from the
+  // button: the capsule's padding changes where a given offset lands, and a
+  // baseline that happens to sit at the 0 or 1 ceiling makes "drag further
+  // that way" untestable (it silently passed/failed for the wrong reason).
+  const trackMid = await page.evaluate(() => {
+    const t = document.querySelector('.tvs-track').getBoundingClientRect()
+    return { x: t.left + t.width / 2, y: t.top + t.height / 2 }
+  })
+  await page.mouse.move(trackMid.x, trackMid.y, { steps: 4 })
   await page.waitForTimeout(80)
   const volBaseline = await getVolume(page)
   await page.mouse.move(b.cx, b.top - 60, { steps: 8 }) // drag well above the button = louder
