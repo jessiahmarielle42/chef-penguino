@@ -73,7 +73,7 @@ function isAdmin() { return ADMIN_EMAILS.includes(currentUser?.email) }
 // PREVIEW_EMAILS is deliberately NEVER fed into isAdmin() - preview access
 // is not admin access.
 const PREVIEW_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
-const FEATURES = { shopPreviewFix: 'all', wishlist: 'all', emoteSeries: 'all', draggableFab: 'all' }  // 'preview' | 'all'
+const FEATURES = { shopPreviewFix: 'all', wishlist: 'all', emoteSeries: 'all', draggableFab: 'all', timerVolumeSlider: 'preview' }  // 'preview' | 'all'
 function featureOn(key) { return FEATURES[key] === 'all' || (FEATURES[key] === 'preview' && PREVIEW_EMAILS.includes(currentUser?.email)) }
 
 let currentUser = null
@@ -9632,6 +9632,13 @@ function bakingCutoffISO() {
   return new Date(Date.now() - BAKING_STALE_HOURS * 3600 * 1000).toISOString()
 }
 
+// Press-and-hold volume slider on the timer screen's mute button
+// (featureOn('timerVolumeSlider')). Aborts the previous render's
+// document-level "tap elsewhere closes it" listener before wiring a fresh
+// one - otherwise every renderTimerLoop() re-render (pause/resume swap the
+// screen back and forth) would pile up another stale listener.
+let timerVolumeSliderAbort = null
+
 // ---------- Timer + looping gameplay video (unchanged mechanics) ----------
 function renderTimerLoop(justStarted) {
   const startedPaused = state.timer.segmentStartedAt == null
@@ -9649,6 +9656,11 @@ function renderTimerLoop(justStarted) {
         ${state.timer.type && taskTypeLabel(state.timer.type) ? `<div class="tt-timer-chip">${TASK_TYPE_EMOJI[state.timer.type]} ${escapeHtml(taskTypeLabel(state.timer.type).title)}</div>` : ''}
       </div>
       <button class="mute-btn" type="button" aria-label="Toggle music"></button>
+      ${featureOn('timerVolumeSlider') ? `
+      <div class="tvs-slider" hidden>
+        <div class="tvs-track"><i class="tvs-fill"></i></div>
+        <div class="tvs-thumb-hit"><div class="tvs-thumb"></div></div>
+      </div>` : ''}
       <div class="darken-overlay" hidden>
         <p class="darken-text">Auto-darken enabled to save battery and reduce distraction. Tap anywhere to brighten.</p>
         <div class="darken-slider-row">
@@ -9690,6 +9702,166 @@ function renderTimerLoop(justStarted) {
     save()
     if (!isPausedNow) syncMusic()
   })
+
+  timerVolumeSliderAbort?.abort()
+  if (featureOn('timerVolumeSlider')) {
+    const sliderEl = app.querySelector('.tvs-slider')
+    const fillEl = sliderEl.querySelector('.tvs-fill')
+    const trackEl = sliderEl.querySelector('.tvs-track')
+    const hitEl = sliderEl.querySelector('.tvs-thumb-hit')
+    const HOLD_MS = 250
+    const AUTO_HIDE_MS = 2500
+
+    timerVolumeSliderAbort = new AbortController()
+    const { signal } = timerVolumeSliderAbort
+
+    let holdTimer = null
+    let dragging = false
+    let pressMoved = false
+    let sliderOpen = false
+    let autoHideTimer = null
+    let suppressClick = false
+
+    muteBtn.style.touchAction = 'none'
+    muteBtn.style.webkitTouchCallout = 'none'
+    muteBtn.style.userSelect = 'none'
+    sliderEl.style.touchAction = 'none'
+    sliderEl.style.webkitTouchCallout = 'none'
+    sliderEl.style.userSelect = 'none'
+
+    const thumbEl = sliderEl.querySelector('.tvs-thumb')
+    const setFillFromVolume = () => {
+      const pct = `${Math.round(state.volume * 100)}%`
+      fillEl.style.height = pct
+      thumbEl.style.bottom = pct
+    }
+
+    const applyVolumeFromClientY = (clientY) => {
+      const rect = trackEl.getBoundingClientRect()
+      let frac = 1 - (clientY - rect.top) / rect.height
+      frac = Math.max(0, Math.min(1, frac))
+      state.volume = frac
+      state.muted = frac === 0
+      if (frac > 0) state.lastVolume = frac
+      setFillFromVolume()
+      updateMuteIcon()
+      if (!isPausedNow) syncMusic()
+    }
+
+    const clearAutoHide = () => { clearTimeout(autoHideTimer); autoHideTimer = null }
+    const armAutoHide = () => { clearAutoHide(); autoHideTimer = setTimeout(closeSlider, AUTO_HIDE_MS) }
+
+    function openSlider() {
+      if (sliderOpen) return
+      sliderOpen = true
+      setFillFromVolume()
+      sliderEl.hidden = false
+      const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
+      sliderEl.style.transition = 'none'
+      sliderEl.style.opacity = '0'
+      sliderEl.style.transform = 'scaleY(0.85)'
+      // Force layout so the opacity/transform starting values are committed
+      // before switching the transition back on, or the browser coalesces
+      // it into a no-op and the slider just appears with no animation.
+      void sliderEl.offsetHeight
+      sliderEl.style.transition = reduceMotion ? 'none' : 'opacity 150ms ease, transform 150ms ease'
+      sliderEl.style.opacity = '1'
+      sliderEl.style.transform = 'scaleY(1)'
+    }
+
+    function closeSlider() {
+      clearAutoHide()
+      if (!sliderOpen) return
+      sliderOpen = false
+      sliderEl.hidden = true
+      // No leftover inline transform/transition once hidden - it would
+      // outrank any CSS state the next time the slider opens.
+      sliderEl.style.transition = ''
+      sliderEl.style.opacity = ''
+      sliderEl.style.transform = ''
+    }
+
+    const clearHoldTimer = () => { clearTimeout(holdTimer); holdTimer = null }
+
+    muteBtn.addEventListener('pointerdown', (e) => {
+      // Clear the suppress flag at the START of every gesture, never on a
+      // click - WebKit fires no click after a real drag (Chromium does), so
+      // a flag left set by a drag would silently swallow the next real tap.
+      suppressClick = false
+      pressMoved = false
+      dragging = false
+      clearHoldTimer()
+      // Never arm the hold while the darkened overlay owns this touch - the
+      // first tap must only brighten the screen, per spec.
+      if (kitchenEl.classList.contains('darkened')) return
+      holdTimer = setTimeout(() => {
+        holdTimer = null
+        dragging = true
+        suppressClick = true
+        openSlider()
+        applyVolumeFromClientY(e.clientY)
+        try { muteBtn.setPointerCapture(e.pointerId) } catch {}
+      }, HOLD_MS)
+    }, { signal })
+
+    muteBtn.addEventListener('pointermove', (e) => {
+      if (!dragging) return
+      pressMoved = true
+      clearAutoHide()
+      applyVolumeFromClientY(e.clientY)
+    }, { signal })
+
+    const finishMuteBtnGesture = (e) => {
+      clearHoldTimer()
+      if (!dragging) return
+      try { muteBtn.releasePointerCapture(e.pointerId) } catch {}
+      dragging = false
+      save()
+      if (pressMoved) closeSlider()
+      else armAutoHide()
+    }
+    muteBtn.addEventListener('pointerup', finishMuteBtnGesture, { signal })
+    muteBtn.addEventListener('pointercancel', finishMuteBtnGesture, { signal })
+
+    // Capture phase, before the tap-to-mute click listener above, so a real
+    // hold/drag never also toggles mute.
+    muteBtn.addEventListener('click', (e) => {
+      if (!suppressClick) return
+      suppressClick = false
+      e.stopImmediatePropagation()
+      e.preventDefault()
+    }, { signal, capture: true })
+
+    // Once open, the track/thumb itself is directly draggable (or tappable)
+    // for the ~2.5s it stays open - a fresh gesture that doesn't need to
+    // re-run the hold timer.
+    const beginDirectDrag = (e) => {
+      if (!sliderOpen) return
+      dragging = true
+      pressMoved = true
+      clearAutoHide()
+      applyVolumeFromClientY(e.clientY)
+      try { sliderEl.setPointerCapture(e.pointerId) } catch {}
+    }
+    hitEl.addEventListener('pointerdown', beginDirectDrag, { signal })
+    hitEl.addEventListener('pointermove', (e) => { if (dragging) applyVolumeFromClientY(e.clientY) }, { signal })
+    const finishDirectDrag = (e) => {
+      if (!dragging) return
+      try { sliderEl.releasePointerCapture(e.pointerId) } catch {}
+      dragging = false
+      save()
+      armAutoHide()
+    }
+    hitEl.addEventListener('pointerup', finishDirectDrag, { signal })
+    hitEl.addEventListener('pointercancel', finishDirectDrag, { signal })
+
+    // Tapping anywhere else on screen closes the slider immediately.
+    document.addEventListener('pointerdown', (e) => {
+      if (!sliderOpen) return
+      if (sliderEl.contains(e.target) || muteBtn.contains(e.target)) return
+      closeSlider()
+    }, { signal, capture: true })
+  }
 
   const darkenOverlay = app.querySelector('.darken-overlay')
   const darkenSlider = app.querySelector('.darken-slider')

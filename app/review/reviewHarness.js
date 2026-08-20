@@ -434,6 +434,16 @@ export function installReviewHarness({ supabase, setUser, renderers, state, getC
     isOwned: (id) => getIsOwned?.(id),
   }
 
+  // Read-only peek at the live module-level `state` object, for Playwright
+  // assertions (e.g. timer-volume.mjs checking state.volume/state.muted
+  // without a settings-screen round trip). VITE_REVIEW-only, like the rest
+  // of this file.
+  window.__reviewGetState = () => installedState ? { ...installedState } : null
+  // Write hook for the same object, e.g. so timer-volume.mjs can turn off
+  // auto-darken before a long multi-step gesture test rather than racing
+  // the real 5s auto-darken timer.
+  window.__reviewSetState = (partial) => { if (installedState) Object.assign(installedState, partial) }
+
   applyPreset('fresh-signup')
 
   window.__review = async function (screenName) {
