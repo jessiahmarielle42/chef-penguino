@@ -48,6 +48,13 @@ async function run(browserType, name) {
   const ctx = await browser.newContext(name === 'webkit'
     ? { ...devices['iPhone 13'] } : { viewport: { width: 390, height: 844 } })
   const page = await ctx.newPage()
+  // Whether the browser ever FETCHES the clip. This is the real proof that
+  // it's bypassed and it needs no video decoder: if the intro is skipped the
+  // <video> is never created, so intro.mp4 is never requested. Headless
+  // Chromium/WebKit can't decode H.264, so watching frames was never an
+  // option - watching the network is.
+  let introRequests = []
+  page.on('request', (r) => { if (/intro\.mp4/.test(r.url())) introRequests.push(r.url()) })
 
   // ---- flag OFF: nothing changes ----
   await boot(page, 'ordinary@example.com')
@@ -99,6 +106,7 @@ async function run(browserType, name) {
   // ---- BEHAVIOUR on the real cook path: setting ON -> no intro video ----
   await page.evaluate(() => window.__review('renderHome'))
   await page.waitForSelector('.cta[data-action="cook"]')
+  introRequests = []
   const onSkip = await page.evaluate(() => {
     document.querySelector('.cta[data-action="cook"]').click()
     return {
@@ -108,6 +116,9 @@ async function run(browserType, name) {
   })
   check(`${name} setting ON: intro clip skipped`, !onSkip.intro, JSON.stringify(onSkip))
   check(`${name} setting ON: lands on duration picker`, onSkip.duration, JSON.stringify(onSkip))
+  await page.waitForTimeout(500)   // give any stray fetch time to appear
+  check(`${name} setting ON: intro.mp4 never even requested`, introRequests.length === 0,
+    `requests=${introRequests.length}`)
 
   // ---- ...and OFF still plays it (the old path must survive) ----
   await page.evaluate(() => window.__reviewSetState({ skipIntro: false }))
@@ -123,6 +134,41 @@ async function run(browserType, name) {
     return !!document.querySelector('.intro-video')
   })
   check(`${name} setting OFF: intro clip still plays`, onPlay, `introVideo=${onPlay}`)
+  await page.waitForTimeout(800)
+  check(`${name} setting OFF: intro.mp4 IS requested`, introRequests.length > 0,
+    `requests=${introRequests.length}`)
+
+  // ---- the setting survives a re-render of Settings (not reset to off) ----
+  await page.evaluate(() => window.__reviewSetState({ skipIntro: true }))
+  await page.evaluate(() => window.__review('renderSettings'))
+  await page.waitForSelector('[data-action="toggle-skip-intro"]')
+  const switchOn = await page.evaluate(() =>
+    !document.querySelector('[data-action="toggle-skip-intro"]').classList.contains('off'))
+  check(`${name} switch reflects saved state on re-render`, switchOn, `on=${switchOn}`)
+
+  // ---- round trip: turning it back OFF restores the intro ----
+  await page.evaluate(() => document.querySelector('[data-action="toggle-skip-intro"]').click())
+  const roundTrip = await page.evaluate(() => window.__reviewGetState().skipIntro)
+  check(`${name} toggling back off restores the setting`, roundTrip === false, `skipIntro=${roundTrip}`)
+
+  // ---- GUEST path (Not signed in -> "continue anyway") still shows the intro.
+  // Guests have no email so the flag is off for them: the clip must be
+  // untouched, and this is also the second renderIntro() call site, proving
+  // the gate did not break it.
+  await page.evaluate(() => window.__reviewSetFixtures({ preset: 'guest' }))
+  await page.evaluate(() => window.__review('renderHome'))
+  await page.waitForSelector('.cta[data-action="cook"]')
+  await page.evaluate(() => document.querySelector('.cta[data-action="cook"]').click())
+  await page.waitForTimeout(300)
+  const warned = await page.evaluate(() => !!document.querySelector('[data-action="risk"]'))
+  check(`${name} guest sees the not-signed-in warning`, warned, `warning=${warned}`)
+  if (warned) {
+    const guestIntro = await page.evaluate(() => {
+      document.querySelector('[data-action="risk"]').click()
+      return !!document.querySelector('.intro-video')
+    })
+    check(`${name} guest path still reaches the intro`, guestIntro, `introVideo=${guestIntro}`)
+  }
 
   await browser.close()
 }
