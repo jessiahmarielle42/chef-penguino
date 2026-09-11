@@ -30,7 +30,7 @@ let sanctifyReturnCode = null
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.8.1'
+const APP_VERSION = 'v2.5.8.2'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -73,7 +73,7 @@ function isAdmin() { return ADMIN_EMAILS.includes(currentUser?.email) }
 // PREVIEW_EMAILS is deliberately NEVER fed into isAdmin() - preview access
 // is not admin access.
 const PREVIEW_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
-const FEATURES = { shopPreviewFix: 'all', wishlist: 'all', emoteSeries: 'all', draggableFab: 'all', timerVolumeSlider: 'preview', timerNoDim: 'preview' }  // 'preview' | 'all'
+const FEATURES = { shopPreviewFix: 'all', wishlist: 'all', emoteSeries: 'all', draggableFab: 'all', timerVolumeSlider: 'preview', timerNoDim: 'preview', skipIntro: 'preview' }  // 'preview' | 'all'
 function featureOn(key) { return FEATURES[key] === 'all' || (FEATURES[key] === 'preview' && PREVIEW_EMAILS.includes(currentUser?.email)) }
 
 let currentUser = null
@@ -481,7 +481,7 @@ function load() {
     pizzas: 0, muted: false, volume: 0.5, lastVolume: 0.5, darkenLevel: 1, autoDarken: true,
     timer: null, log: [], cloudSynced: false, lastSeenPizzaCount: null,
     pendingSessions: [], ownedEmotes: [], equippedEmote: 'waving', emoteSeries: [], lastSeenCoins: null,
-    lightMode: false, taskTypeLabels: {}, deleteAnimations: true, onboardingDone: false,
+    lightMode: false, taskTypeLabels: {}, deleteAnimations: true, skipIntro: false, onboardingDone: false,
     lastHomescreenPromptAt: null, homescreenPromptDismissedForever: false,
     // Undefined until captureGuestWavingFreeCaptured() runs once at boot -
     // NOT defaulted true/false here so that helper can tell "never captured
@@ -5587,6 +5587,11 @@ function renderSettings(highlightProfile, highlightHomescreen) {
           <div><div class="gt">Auto-darken screen</div><div class="gs">Dims after 5s to save battery</div></div>
           <div class="right"><div class="switch ${state.autoDarken ? '' : 'off'}" role="button" tabindex="0" data-action="toggle-darken"></div></div>
         </div>
+        ${featureOn('skipIntro') ? `
+        <div class="grow">
+          <div><div class="gt">Skip intro video</div><div class="gs">Start cooking without the opening clip</div></div>
+          <div class="right"><div class="switch ${state.skipIntro ? '' : 'off'}" role="button" tabindex="0" data-action="toggle-skip-intro"></div></div>
+        </div>` : ''}
         <div class="grow" role="button" tabindex="0" data-action="task-types">
           <div><div class="gt">Task types</div><div class="gs">Rename your task categories</div></div>
           <div class="right"><span class="chevron" aria-hidden="true">›</span></div>
@@ -5683,6 +5688,9 @@ function renderSettings(highlightProfile, highlightHomescreen) {
     })
     app.querySelector('[data-action="toggle-theme"]').addEventListener('click', (e) => {
       state.lightMode = !state.lightMode; save(); applyTheme(); e.currentTarget.classList.toggle('off', state.lightMode)
+    })
+    app.querySelector('[data-action="toggle-skip-intro"]')?.addEventListener('click', (e) => {
+      state.skipIntro = !state.skipIntro; save(); e.currentTarget.classList.toggle('off', !state.skipIntro)
     })
     app.querySelector('[data-action="toggle-delete-animations"]').addEventListener('click', (e) => {
       state.deleteAnimations = !state.deleteAnimations; save(); e.currentTarget.classList.toggle('off', !state.deleteAnimations)
@@ -9451,6 +9459,16 @@ function showNotSignedInWarning() {
 //  Intro / results (unchanged mechanics)
 // =================================================================
 function renderIntro(onEnd, isAlarm, videoSrc = 'intro.mp4', sessionSummary) {
+  // "Skip intro video" (Settings > Focus session). Gated HERE rather than at
+  // the call sites so every entry into the opening clip is covered - today
+  // that's startCookingFlow() and the risk-confirm popup, but a third caller
+  // added later gets the behaviour for free instead of silently ignoring the
+  // chef's setting.
+  // Deliberately scoped to !isAlarm: this switch is about the clip that
+  // delays the START of a session. The alarm/results path also comes through
+  // here and must keep its "Tap for Results" screen, which is where the
+  // session's pizzas are actually shown.
+  if (!isAlarm && featureOn('skipIntro') && state.skipIntro) { onEnd(); return }
   app.innerHTML = `
     <div class="intro">
       <video class="intro-video" src="${BASE}assets/${videoSrc}" playsinline autoplay></video>
