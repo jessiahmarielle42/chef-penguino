@@ -1757,10 +1757,40 @@ img.avatar-circle {
 
 .kitchen.darkened > .kitchen-loop,
 .kitchen.darkened > .session-pizza-badge,
-.kitchen.darkened > .timer-hud,
+.kitchen:not(.timer-no-dim).darkened > .timer-hud,
 .kitchen.darkened > .mute-btn {
   filter: brightness(var(--darken-brightness, 0.15));
   transition: filter 500ms ease;
+}
+
+/* ---- Auto-darken keeps the TIMER readable (featureOn('timerNoDim')) ----
+   The countdown is the one thing a chef still needs to read across the room
+   while the screen is dimmed, so it is excluded from the dim. Note the timer
+   was being darkened TWICE and both had to be undone - fixing either alone
+   looks like nothing changed:
+     1. the brightness() filter on .timer-hud above (now scoped to
+        :not(.timer-no-dim), so flag-off behaviour is byte-identical), and
+     2. .darken-overlay's black scrim, which paints at z-index 5 OVER the HUD
+        at z-index 1.
+   Only the timer pill is spared. The caption and task chip are decorative,
+   so they keep dimming - at night you want the clock glowing, not a lit-up
+   paragraph. They sit above the scrim now but brightness() takes them to
+   near-black anyway, which is the intended "gone" look. */
+.kitchen.timer-no-dim.darkened > .timer-hud > .timer-caption,
+.kitchen.timer-no-dim.darkened > .timer-hud > .tt-timer-chip {
+  filter: brightness(var(--darken-brightness, 0.15));
+  transition: filter 500ms ease;
+}
+.kitchen.timer-no-dim.darkened > .timer-hud {
+  z-index: 6;   /* clears .darken-overlay (5) so the scrim can't tint it */
+}
+/* Taps must still BRIGHTEN, never pause. Lifting the HUD above the scrim
+   otherwise hands the tap to .timer-value (the pause button) - a chef tapping
+   the one thing they can see would silently pause their session. Disabling
+   its pointer-events while darkened lets the tap fall through to the scrim,
+   preserving the overlay's "Tap anywhere to brighten" promise. */
+.kitchen.timer-no-dim.darkened > .timer-hud > .timer-value {
+  pointer-events: none;
 }
 
 .darken-overlay {

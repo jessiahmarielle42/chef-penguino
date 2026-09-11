@@ -30,7 +30,7 @@ let sanctifyReturnCode = null
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.8.0'
+const APP_VERSION = 'v2.5.8.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -73,7 +73,7 @@ function isAdmin() { return ADMIN_EMAILS.includes(currentUser?.email) }
 // PREVIEW_EMAILS is deliberately NEVER fed into isAdmin() - preview access
 // is not admin access.
 const PREVIEW_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
-const FEATURES = { shopPreviewFix: 'all', wishlist: 'all', emoteSeries: 'all', draggableFab: 'all', timerVolumeSlider: 'preview' }  // 'preview' | 'all'
+const FEATURES = { shopPreviewFix: 'all', wishlist: 'all', emoteSeries: 'all', draggableFab: 'all', timerVolumeSlider: 'preview', timerNoDim: 'preview' }  // 'preview' | 'all'
 function featureOn(key) { return FEATURES[key] === 'all' || (FEATURES[key] === 'preview' && PREVIEW_EMAILS.includes(currentUser?.email)) }
 
 let currentUser = null
@@ -9644,7 +9644,7 @@ function renderTimerLoop(justStarted) {
   const startedPaused = state.timer.segmentStartedAt == null
 
   app.innerHTML = `
-    <div class="kitchen">
+    <div class="kitchen${featureOn('timerNoDim') ? ' timer-no-dim' : ''}">
       <video class="kitchen-loop" src="${BASE}assets/gameplay-loop.mp4" playsinline autoplay loop muted></video>
       <div class="session-pizza-badge">
         <img src="${BASE}assets/pizza-pop.png" alt="" />
