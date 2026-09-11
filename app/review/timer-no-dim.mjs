@@ -120,16 +120,21 @@ async function run(browserType, name) {
   await page.waitForTimeout(700)
   await page.screenshot({ path: `/tmp/claude-0/-home-user-chef-penguino/cb91145d-799f-5264-8422-ab1f01853fb6/scratchpad/nodim-${name}.png` })
 
-  // ---------- FLAG OFF (ordinary account) -> old behaviour intact ----------
+  // ---------- RELEASED (FEATURES.timerNoDim === 'all') ----------
+  // An ordinary, non-preview account now gets the same treatment. Before the
+  // release flip these asserted the OPPOSITE (no gate class, timer dims like
+  // everything else) and they failed the moment the flag moved - which is
+  // itself the evidence the gate was what gated it. Revert if it ever goes
+  // back to 'preview'.
   await setup(page, 'ordinary@example.com')
-  check(`${name} flag off: no gate class`,
-    await page.evaluate(() => !document.querySelector('.kitchen').classList.contains('timer-no-dim')))
+  check(`${name} released: ordinary account gets the gate class`,
+    await page.evaluate(() => document.querySelector('.kitchen').classList.contains('timer-no-dim')))
   const offBright = await shotLuma(page, '.timer-value')
   await darken(page)
   await page.waitForTimeout(900)
   const offDark = await shotLuma(page, '.timer-value')
   const offDrop = ((offBright - offDark) / offBright) * 100
-  check(`${name} flag off: timer STILL dims (>40% drop)`, offDrop > 40,
+  check(`${name} released: timer stays lit for ordinary accounts too (<5% drop)`, offDrop < 5,
     `bright=${offBright.toFixed(1)} dark=${offDark.toFixed(1)} drop=${offDrop.toFixed(1)}%`)
 
   await browser.close()

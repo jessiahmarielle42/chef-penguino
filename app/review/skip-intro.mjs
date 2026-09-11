@@ -56,13 +56,16 @@ async function run(browserType, name) {
   let introRequests = []
   page.on('request', (r) => { if (/intro\.mp4/.test(r.url())) introRequests.push(r.url()) })
 
-  // ---- flag OFF: nothing changes ----
+  // ---- RELEASED (FEATURES.skipIntro === 'all'): ordinary accounts see it too.
+  // This asserted the opposite before the release flip and failed the moment
+  // the flag moved, which is the evidence the gate was real. Revert if it
+  // ever goes back to 'preview'. ----
   await boot(page, 'ordinary@example.com')
   await page.evaluate(() => window.__review('renderSettings'))
   await page.waitForSelector('.glab')
   const off = await groupRows(page)
-  check(`${name} flag off: no Skip intro row`, !off.some(r => /skip intro/i.test(r.title)),
-    off.map(r => r.title).join(' | '))
+  check(`${name} released: ordinary account sees the Skip intro row`,
+    off.some(r => /skip intro/i.test(r.title)), off.map(r => r.title).join(' | '))
 
   // ---- flag ON: row present and geometrically consistent ----
   await boot(page, 'keefefons@gmail.com')
