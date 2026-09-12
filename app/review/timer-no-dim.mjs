@@ -186,6 +186,21 @@ async function run(browserType, name) {
   check(`${name} released: timer stays lit for ordinary accounts too (<5% drop)`, offDrop < 5,
     `bright=${offBright.toFixed(1)} dark=${offDark.toFixed(1)} drop=${offDrop.toFixed(1)}%`)
 
+  // noDimControls is released too, so an ordinary account must get the spared
+  // CONTROLS as well - not just the timer. Without this the released state for
+  // the people it actually affects had no guard at all.
+  check(`${name} released: ordinary account gets the controls gate class`,
+    await page.evaluate(() => document.querySelector('.kitchen').classList.contains('no-dim-controls')))
+  await brighten(page)
+  await page.waitForTimeout(300)
+  const offBadgeBright = await shotLuma(page, '.session-pizza-badge')
+  await darken(page)
+  await page.waitForTimeout(900)
+  const offBadgeDark = await shotLuma(page, '.session-pizza-badge')
+  const offBadgeDrop = ((offBadgeBright - offBadgeDark) / offBadgeBright) * 100
+  check(`${name} released: pizza count stays lit for ordinary accounts (<5% drop)`, offBadgeDrop < 5,
+    `bright=${offBadgeBright.toFixed(1)} dark=${offBadgeDark.toFixed(1)} drop=${offBadgeDrop.toFixed(1)}%`)
+
   await browser.close()
 }
 
