@@ -74,15 +74,16 @@ async function run(browserType, name) {
     await page.evaluate(() => document.querySelector('.kitchen').classList.contains('timer-no-dim')))
 
   const timerBright = await shotLuma(page, '.timer-value')
-  // Control element = the pizza badge, NOT the kitchen video: headless
-  // Chromium has no H.264 decoder, so the video renders near-black in both
-  // states and can't show dimming at all. The badge is a real UI element in
-  // the same dim list and renders identically in both engines.
-  const kitchenBright = await shotLuma(page, '.session-pizza-badge')
+  // Control element = the timer CAPTION. Not the kitchen video (headless
+  // Chromium has no H.264 decoder, so it is near-black either way and cannot
+  // show dimming), and no longer the pizza badge either - that is now
+  // deliberately spared, so using it as the "still dims" control made this
+  // assertion fail for the very reason the feature works.
+  const kitchenBright = await shotLuma(page, '.timer-caption')
   await darken(page)
   await page.waitForTimeout(900)   // let the 500ms filter transition settle
   const timerDark = await shotLuma(page, '.timer-value')
-  const kitchenDark = await shotLuma(page, '.session-pizza-badge')
+  const kitchenDark = await shotLuma(page, '.timer-caption')
 
   // THE core assertion: timer pixels essentially unchanged.
   const timerDrop = ((timerBright - timerDark) / timerBright) * 100
@@ -91,6 +92,54 @@ async function run(browserType, name) {
     `bright=${timerBright.toFixed(1)} dark=${timerDark.toFixed(1)} drop=${timerDrop.toFixed(1)}%`)
   check(`${name} OTHER UI still dims (>40% drop)`, kitchenDrop > 40,
     `bright=${kitchenBright.toFixed(1)} dark=${kitchenDark.toFixed(1)} drop=${kitchenDrop.toFixed(1)}%`)
+
+  // ---- the session CONTROLS are spared too (featureOn('noDimControls')) ----
+  const badgeBright = await shotLuma(page, '.session-pizza-badge')
+  const muteBright = await shotLuma(page, '.mute-btn')
+  await darken(page)
+  await page.waitForTimeout(900)
+  const badgeDark = await shotLuma(page, '.session-pizza-badge')
+  const muteDark = await shotLuma(page, '.mute-btn')
+  const badgeDrop = ((badgeBright - badgeDark) / badgeBright) * 100
+  const muteDrop = ((muteBright - muteDark) / muteBright) * 100
+  check(`${name} PIZZA COUNT pixels not dimmed (<5% drop)`, badgeDrop < 5,
+    `bright=${badgeBright.toFixed(1)} dark=${badgeDark.toFixed(1)} drop=${badgeDrop.toFixed(1)}%`)
+  check(`${name} SOUND BUTTON pixels not dimmed (<5% drop)`, muteDrop < 5,
+    `bright=${muteBright.toFixed(1)} dark=${muteDark.toFixed(1)} drop=${muteDrop.toFixed(1)}%`)
+
+  // The sound button must remain LIVE while dimmed - holding it is the only
+  // way to reach the volume slider, and a tap swallowed by "tap anywhere to
+  // brighten" would make sparing it pointless.
+  const mb = await page.evaluate(() => { const r = document.querySelector('.mute-btn').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 } })
+  const topAtMute = await page.evaluate(({ x, y }) => {
+    const el = document.elementFromPoint(x, y)
+    return el ? (el.className.baseVal ?? el.className ?? el.tagName) : null
+  }, mb)
+  check(`${name} sound button receives taps while dimmed`, String(topAtMute).includes('mute-btn'),
+    `elementFromPoint=${topAtMute}`)
+
+  // Hold it: the slider must open AND be visible above the scrim.
+  await page.mouse.move(mb.x, mb.y); await page.mouse.down()
+  await page.waitForTimeout(500)
+  const sliderState = await page.evaluate(() => {
+    const s = document.querySelector('.tvs-slider')
+    if (!s) return { present: false }
+    const cs = getComputedStyle(s)
+    const scrim = getComputedStyle(document.querySelector('.darken-overlay')).zIndex
+    return { present: true, hidden: s.hidden, z: cs.zIndex, scrim, filter: cs.filter }
+  })
+  await page.mouse.up()
+  check(`${name} hold while dimmed OPENS the volume slider`,
+    sliderState.present && !sliderState.hidden, JSON.stringify(sliderState))
+  check(`${name} volume slider sits above the scrim`,
+    sliderState.present && Number(sliderState.z) > Number(sliderState.scrim),
+    `z=${sliderState.z} scrim=${sliderState.scrim}`)
+  check(`${name} volume slider is not brightness-filtered`,
+    sliderState.present && sliderState.filter === 'none', String(sliderState.filter))
+  await brighten(page)
+  await page.waitForTimeout(300)
+  await darken(page)
+  await page.waitForTimeout(900)
 
   // The decorative caption must still dim.
   const capDark = await page.evaluate(() =>

@@ -1756,9 +1756,9 @@ img.avatar-circle {
 }
 
 .kitchen.darkened > .kitchen-loop,
-.kitchen.darkened > .session-pizza-badge,
+.kitchen:not(.no-dim-controls).darkened > .session-pizza-badge,
 .kitchen:not(.timer-no-dim).darkened > .timer-hud,
-.kitchen.darkened > .mute-btn {
+.kitchen:not(.no-dim-controls).darkened > .mute-btn {
   filter: brightness(var(--darken-brightness, 0.15));
   transition: filter 500ms ease;
 }
@@ -1791,6 +1791,25 @@ img.avatar-circle {
    preserving the overlay's "Tap anywhere to brighten" promise. */
 .kitchen.timer-no-dim.darkened > .timer-hud > .timer-value {
   pointer-events: none;
+}
+
+/* ---- Auto-darken also spares the session CONTROLS (featureOn('noDimControls'))
+   The pizza count and the sound button stay legible while dimmed, and so does
+   the volume slider the sound button reveals. Same two mechanisms as the
+   timer: drop them from the brightness() filter above (scoped with
+   :not(.no-dim-controls) so flag-off stays byte-identical) AND lift them
+   clear of .darken-overlay's scrim at z-index 5.
+
+   These KEEP their pointer events, unlike .timer-value. That is deliberate
+   and is the whole point of sparing them: holding the sound button to reach
+   the volume slider is impossible if the first touch is swallowed by
+   "tap anywhere to brighten". The rest of the screen still brightens on tap;
+   only these explicit controls stay live, so a chef can mute or change volume
+   mid-session without waking the whole screen. */
+.kitchen.no-dim-controls.darkened > .session-pizza-badge,
+.kitchen.no-dim-controls.darkened > .mute-btn,
+.kitchen.no-dim-controls.darkened > .tvs-slider {
+  z-index: 6;
 }
 
 .darken-overlay {

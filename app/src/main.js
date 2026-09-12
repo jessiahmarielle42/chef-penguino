@@ -30,7 +30,7 @@ let sanctifyReturnCode = null
 // Standard blank profile picture shown when a user hasn't chosen an avatar
 // (or an admin removes theirs) - a neutral silhouette, like other apps.
 const DEFAULT_AVATAR = `${BASE}assets/default-avatar.svg`
-const APP_VERSION = 'v2.5.9.0'
+const APP_VERSION = 'v2.5.9.1'
 
 const STORAGE_KEY = 'chef-penguino-save'
 
@@ -73,7 +73,7 @@ function isAdmin() { return ADMIN_EMAILS.includes(currentUser?.email) }
 // PREVIEW_EMAILS is deliberately NEVER fed into isAdmin() - preview access
 // is not admin access.
 const PREVIEW_EMAILS = ['keefefons@gmail.com', 'jessiahmarielle@gmail.com']
-const FEATURES = { shopPreviewFix: 'all', wishlist: 'all', emoteSeries: 'all', draggableFab: 'all', timerVolumeSlider: 'preview', timerNoDim: 'all', skipIntro: 'all' }  // 'preview' | 'all'
+const FEATURES = { shopPreviewFix: 'all', wishlist: 'all', emoteSeries: 'all', draggableFab: 'all', timerVolumeSlider: 'preview', timerNoDim: 'all', skipIntro: 'all', noDimControls: 'preview' }  // 'preview' | 'all'
 function featureOn(key) { return FEATURES[key] === 'all' || (FEATURES[key] === 'preview' && PREVIEW_EMAILS.includes(currentUser?.email)) }
 
 let currentUser = null
@@ -9662,7 +9662,7 @@ function renderTimerLoop(justStarted) {
   const startedPaused = state.timer.segmentStartedAt == null
 
   app.innerHTML = `
-    <div class="kitchen${featureOn('timerNoDim') ? ' timer-no-dim' : ''}">
+    <div class="kitchen${featureOn('timerNoDim') ? ' timer-no-dim' : ''}${featureOn('noDimControls') ? ' no-dim-controls' : ''}">
       <video class="kitchen-loop" src="${BASE}assets/gameplay-loop.mp4" playsinline autoplay loop muted></video>
       <div class="session-pizza-badge">
         <img src="${BASE}assets/pizza-pop.png" alt="" />
@@ -9809,9 +9809,14 @@ function renderTimerLoop(justStarted) {
       pressMoved = false
       dragging = false
       clearHoldTimer()
-      // Never arm the hold while the darkened overlay owns this touch - the
-      // first tap must only brighten the screen, per spec.
-      if (kitchenEl.classList.contains('darkened')) return
+      // While the screen is darkened the first tap normally only brightens, so
+      // the hold was not armed at all. featureOn('noDimControls') reverses
+      // that for THIS control on purpose: the sound button is lifted clear of
+      // the scrim and kept live precisely so a chef can reach volume without
+      // waking the screen - and "hold to reveal the slider" is impossible if
+      // the touch that starts the hold is swallowed. Everywhere else on the
+      // screen still just brightens.
+      if (kitchenEl.classList.contains('darkened') && !featureOn('noDimControls')) return
       holdTimer = setTimeout(() => {
         holdTimer = null
         dragging = true

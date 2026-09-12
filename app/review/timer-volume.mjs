@@ -174,7 +174,15 @@ async function run(browserType, name) {
   check(`${name} (f) Settings slider matches value set on timer screen`,
     Math.abs(settingsReading - volSetBySlider) < 0.02, `slider=${volSetBySlider} settings=${settingsReading}`)
 
-  // ---- (g) hold while darkened does NOT open the slider ----
+  // ---- (g) hold while darkened DOES open the slider ----
+  // This assertion used to require the opposite, because the original spec
+  // said the first touch on a darkened screen must only brighten. That was
+  // reversed on purpose by featureOn('noDimControls'): the sound button is
+  // now lifted clear of the scrim and kept live so volume is reachable
+  // mid-session without waking the screen, and "hold to reveal the slider"
+  // cannot work if the touch that starts the hold is swallowed. The rest of
+  // the screen still brightens on tap - see the noDimControls block in
+  // style.css and the guard in the mute button's pointerdown handler.
   await boot(page, 'keefefons@gmail.com')
   await page.evaluate(() => { document.querySelector('.kitchen').classList.add('darkened') })
   const b2 = await muteBox(page)
@@ -182,7 +190,7 @@ async function run(browserType, name) {
   await page.mouse.down()
   await page.waitForTimeout(450)
   const svDarkened = await sliderVisible(page)
-  check(`${name} (g) hold while darkened does NOT open slider`, !svDarkened || svDarkened.hidden, JSON.stringify(svDarkened))
+  check(`${name} (g) hold while darkened OPENS the slider`, !!svDarkened && !svDarkened.hidden, JSON.stringify(svDarkened))
   await page.mouse.up()
   await page.waitForTimeout(100)
 
